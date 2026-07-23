@@ -1,0 +1,5 @@
+bin/
+pharos
+*.exe
+*.tgz
+dist/

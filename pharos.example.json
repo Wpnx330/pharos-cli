@@ -1,0 +1,10 @@
+{
+  "name": "my-mcp-server",
+  "version": "1.0.0",
+  "description": "An MCP server for X",
+  "license": "MIT",
+  "homepage": "https://github.com/user/repo",
+  "repository": "https://github.com/user/repo",
+  "bin": "./server.js",
+  "files": ["./server.js", "./lib/", "./README.md"]
+}

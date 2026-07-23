@@ -21,7 +21,7 @@ var listCmd = &cobra.Command{
 			fmt.Fprintln(os.Stderr, ui.Error.Render("Cannot determine home directory:"), err)
 			return
 		}
-		mgr := install.NewManager(filepath.Join(home, ".pharos", "packages"))
+		mgr := install.NewManager(filepath.Join(home, ".pharos", "store"))
 		pkgs, err := mgr.List()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, ui.Error.Render("Failed to list packages:"), err)

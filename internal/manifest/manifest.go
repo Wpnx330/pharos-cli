@@ -11,14 +11,17 @@ import (
 
 // Manifest represents the contents of a pharos.json file.
 type Manifest struct {
-	Name        string   `json:"name"`
-	Version     string   `json:"version"`
-	Description string   `json:"description"`
-	License     string   `json:"license"`
-	Homepage    string   `json:"homepage"`
-	Repository  string   `json:"repository"`
-	Bin         string   `json:"bin"`
-	Files       []string `json:"files"`
+	Name         string   `json:"name"`
+	Version      string   `json:"version"`
+	Description  string   `json:"description"`
+	Transport    string   `json:"transport,omitempty"`
+	Runtime      string   `json:"runtime,omitempty"`
+	License      string   `json:"license"`
+	Homepage     string   `json:"homepage"`
+	Repository   string   `json:"repository"`
+	Bin          string   `json:"bin"`
+	Files        []string `json:"files"`
+	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 // Load reads and parses a pharos.json file from the given directory.

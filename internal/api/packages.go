@@ -37,11 +37,27 @@ type VersionDetail struct {
 
 // Manifest is the package manifest embedded in each version.
 type Manifest struct {
-	Name        string   `json:"name"`
-	Version     string   `json:"version"`
-	Transport   string   `json:"transport"`
-	Description string   `json:"description"`
-	Capabilities []string `json:"capabilities"`
+	Name         string            `json:"name"`
+	Version      string            `json:"version"`
+	Transport    string            `json:"transport"`
+	Description  string            `json:"description"`
+	Capabilities []string          `json:"capabilities"`
+	// Runtime hint for stdio servers: "npx", "uvx", "docker", "binary".
+	Runtime string `json:"runtime,omitempty"`
+	// Package is the npm/pip/docker image name to pass to the runtime.
+	// e.g. "@modelcontextprotocol/server-git" for npx, "mcp-server-git" for uvx.
+	Package string `json:"package,omitempty"`
+	// Bin is the relative path to the executable inside the tarball
+	// (for "binary" runtime). If empty, runtime package is used directly.
+	Bin string `json:"bin,omitempty"`
+	// Endpoint is the URL for http/sse transport servers.
+	Endpoint string `json:"endpoint,omitempty"`
+	// Env is the environment variables to set in the client config.
+	Env map[string]string `json:"env,omitempty"`
+	// Integrity is the sha512 hash of the tarball ("sha512-<base64>").
+	Integrity string `json:"integrity,omitempty"`
+	// Args are extra arguments appended after the package name.
+	Args []string `json:"args,omitempty"`
 }
 
 // GetPackage fetches full details for the named package.
@@ -81,4 +97,42 @@ func (c *Client) GetDistTags(name string) (map[string]string, error) {
 		return nil, err
 	}
 	return tags, nil
+}
+
+// GetVersionManifest fetches the manifest for a single version.
+func (c *Client) GetVersionManifest(name, version string) (*VersionDetail, error) {
+	data, err := c.get("/v1/packages/" + encodeQuery(name) + "/versions/" + encodeQuery(version))
+	if err != nil {
+		return nil, err
+	}
+	var vd VersionDetail
+	if err := json.Unmarshal(data, &vd); err != nil {
+		return nil, err
+	}
+	return &vd, nil
+}
+
+// VersionStrings extracts the list of version strings from a PackageDetail.
+func (pd *PackageDetail) VersionStrings() []string {
+	versions := make([]string, len(pd.Versions))
+	for i, v := range pd.Versions {
+		versions[i] = v.Version
+	}
+	return versions
+}
+
+// FindVersion returns the VersionDetail for the given version string,
+// or nil if not found.
+func (pd *PackageDetail) FindVersion(version string) *VersionDetail {
+	for i := range pd.Versions {
+		if pd.Versions[i].Version == version {
+			return &pd.Versions[i]
+		}
+	}
+	return nil
+}
+
+// TarballURL constructs the registry tarball URL for a name@version.
+func (c *Client) TarballURL(name, version string) string {
+	return c.BaseURL + "/v1/tarballs/" + name + "/" + version
 }

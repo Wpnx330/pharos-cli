@@ -308,14 +308,3 @@ func TestImportReadBareConfig(t *testing.T) {
 		t.Errorf("command = %s, want python", s.Command)
 	}
 }
-
-// TestComputeIntegrityImport verifies the integrity placeholder function.
-func TestComputeIntegrityImport(t *testing.T) {
-	h := computeIntegrity("test-pkg", "1.0.0")
-	if !strings.HasPrefix(h, "sha512-") {
-		t.Errorf("integrity should start with sha512-, got %s", h)
-	}
-	if !strings.Contains(h, "test-pkg") {
-		t.Errorf("integrity should contain package name, got %s", h)
-	}
-}

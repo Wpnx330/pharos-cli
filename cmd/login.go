@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -163,8 +164,24 @@ func openBrowser(url string) error {
 	case "windows":
 		return exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
 	default:
+		// WSL (Windows Subsystem for Linux) — runtime.GOOS is "linux" but
+		// we can open the Windows host's default browser via cmd.exe.
+		if isWSL() {
+			return exec.Command("cmd.exe", "/c", "start", "", url).Start()
+		}
 		return exec.Command("xdg-open", url).Start()
 	}
+}
+
+// isWSL reports whether we are running inside Windows Subsystem for Linux.
+// WSL kernels expose "microsoft" or "wsl" in /proc/sys/kernel/osrelease.
+func isWSL() bool {
+	data, err := os.ReadFile("/proc/sys/kernel/osrelease")
+	if err != nil {
+		return false
+	}
+	s := strings.ToLower(string(data))
+	return strings.Contains(s, "microsoft") || strings.Contains(s, "wsl")
 }
 
 const loginSuccessHTML = `<!DOCTYPE html>

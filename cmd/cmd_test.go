@@ -45,7 +45,7 @@ func TestDefaultCommand(t *testing.T) {
 		contains string
 	}{
 		{"node", "node server.js"},
-		{"python", "python -m my_mcp_server"},
+		{"python", "python server.py"},
 		{"docker", "docker run -i my-mcp-server"},
 		{"unknown", "node server.js"},
 	}

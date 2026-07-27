@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
 	"github.com/Wpnx330/pharos-cli/internal/manifest"
@@ -21,7 +22,7 @@ var initCmd = &cobra.Command{
 	Long: ui.Label.Render("pharos init") + ` creates a pharos.json manifest for your MCP server package.
 
 It interactively prompts for name, version, description, transport, runtime,
-command, and capabilities. Use --yes to accept defaults non-interactively.`,
+run command, and capabilities. Use --yes to accept defaults non-interactively.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		m := buildManifestInteractive()
 		if m == nil {
@@ -32,45 +33,67 @@ command, and capabilities. Use --yes to accept defaults non-interactively.`,
 	},
 }
 
-// buildManifestInteractive collects manifest fields via stdin prompts.
+// stdinReader is a buffered reader over os.Stdin for text prompts.
+var stdinReader = bufio.NewReader(os.Stdin)
+
+// buildManifestInteractive collects manifest fields via interactive prompts.
+// Uses arrow-key selectors for fixed-option fields and text input for freeform fields.
 // Returns nil if the user cancels.
+// If initYes is true, all defaults are accepted without prompting.
 func buildManifestInteractive() *manifest.Manifest {
+	if initYes {
+		return &manifest.Manifest{
+			Name:         "my-mcp-server",
+			Version:      "0.1.0",
+			Description:  "",
+			Transport:    "stdio",
+			Runtime:      "node",
+			Bin:          "node server.js",
+			Capabilities: []string{"tools"},
+			License:      "MIT",
+		}
+	}
+
 	m := &manifest.Manifest{}
 
-	m.Name = prompt("Package name", "my-mcp-server")
+	m.Name = textPrompt("Package name", "my-mcp-server")
 	if m.Name == "" {
 		fmt.Fprintln(os.Stderr, ui.Error.Render("Package name is required."))
 		return nil
 	}
 
-	m.Version = prompt("Version", "0.1.0")
-	m.Description = prompt("Description", "")
+	m.Version = textPrompt("Version", "0.1.0")
+	m.Description = textPrompt("Description", "")
 
-	transport := promptChoice("Transport", []string{"stdio", "http-sse"}, "stdio")
-	runtime := promptChoice("Runtime", []string{"node", "python", "docker"}, "node")
+	// Transport — arrow-key select
+	m.Transport = selectPrompt("Transport", []string{"stdio", "http-sse"}, "stdio")
 
-	m.Transport = transport
+	// Runtime — arrow-key select
+	runtime := selectPrompt("Runtime", []string{"node", "python", "docker"}, "node")
 	m.Runtime = runtime
-	m.Bin = prompt("Run command", defaultCommand(runtime, transport))
 
-	capsStr := prompt("Capabilities (comma-separated)", "tools")
-	m.Capabilities = splitCSV(capsStr)
+	m.Bin = textPrompt("Run command", defaultCommand(runtime, m.Transport))
 
-	m.License = prompt("License", "MIT")
-	m.Homepage = prompt("Homepage", "")
+	// Capabilities — multi-select
+	m.Capabilities = multiSelectPrompt("Capabilities", []string{
+		"tools", "resources", "prompts", "logging",
+	}, []string{"tools"})
+
+	// License — arrow-key select with "Other" fallback
+	m.License = selectPromptWithOther("License", []string{
+		"MIT", "Apache-2.0", "GPL-3.0", "BSD-3-Clause", "ISC", "Unlicense",
+	}, "MIT")
+
+	m.Homepage = textPrompt("Homepage", "")
 
 	return m
 }
 
-// stdinReader is a buffered reader over os.Stdin, initialised once.
-// Using bufio lets us read full lines including spaces (fmt.Scanln
-// stops at the first space, which caused multi-word descriptions to
-// bleed into subsequent prompts).
-var stdinReader = bufio.NewReader(os.Stdin)
+// ── Text prompt ──────────────────────────────────────────────────────────────
 
-// prompt prints a label and default, then reads a full line from stdin.
+// textPrompt prints a label and default, then reads a full line from stdin.
 // If the user enters nothing (just Enter), the default is used.
-func prompt(label, def string) string {
+func textPrompt(label, def string) string {
 	if def == "" {
 		fmt.Printf("%s  ", ui.Label.Render(label+":"))
 	} else {
@@ -84,19 +107,216 @@ func prompt(label, def string) string {
 	return input
 }
 
-// promptChoice presents a list of options and validates the choice.
-func promptChoice(label string, options []string, def string) string {
-	optStr := strings.Join(options, "/")
-	for {
-		val := prompt(fmt.Sprintf("%s (%s)", label, optStr), def)
-		for _, o := range options {
-			if val == o {
-				return val
+// ── Single-select prompt (arrow keys) ────────────────────────────────────────
+
+// selectModel is a minimal bubbletea program for arrow-key selection.
+type selectModel struct {
+	choices  []string
+	cursor   int
+	label    string
+	selected string
+	quitting bool
+}
+
+func (m selectModel) Init() tea.Cmd { return nil }
+
+func (m selectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "ctrl+c":
+			m.quitting = true
+			return m, tea.Quit
+		case "up", "k":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case "down", "j":
+			if m.cursor < len(m.choices)-1 {
+				m.cursor++
+			}
+		case "enter":
+			m.selected = m.choices[m.cursor]
+			m.quitting = true
+			return m, tea.Quit
+		}
+	}
+	return m, nil
+}
+
+func (m selectModel) View() string {
+	if m.quitting {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(ui.Label.Render(m.label))
+	b.WriteString("\n\n")
+	for i, choice := range m.choices {
+		cursor := "  "
+		if i == m.cursor {
+			cursor = ui.PackageName.Render("▸ ")
+		}
+		b.WriteString(fmt.Sprintf("  %s%s\n", cursor, choice))
+	}
+	b.WriteString("\n")
+	b.WriteString(ui.Muted.Render("  ↑/↓ to navigate · Enter to select · Ctrl+C to cancel"))
+	b.WriteString("\n")
+	return b.String()
+}
+
+// selectPrompt shows an arrow-key selectable list and returns the chosen option.
+func selectPrompt(label string, options []string, def string) string {
+	// Find default index
+	defIdx := 0
+	for i, o := range options {
+		if o == def {
+			defIdx = i
+			break
+		}
+	}
+
+	p := tea.NewProgram(selectModel{
+		choices: options,
+		cursor:  defIdx,
+		label:   label,
+	}, tea.WithoutCatchPanics())
+
+	finalModel, err := p.Run()
+	if err != nil {
+		// Fallback to text prompt if TUI fails (e.g. non-interactive terminal)
+		fmt.Fprintf(os.Stderr, "  %s\n", ui.Muted.Render("(falling back to text input)"))
+		return textPrompt(label, def)
+	}
+
+	m, ok := finalModel.(selectModel)
+	if !ok || m.selected == "" {
+		return def
+	}
+
+	fmt.Printf("%s  %s\n", ui.Label.Render(label+":"), ui.PackageName.Render(m.selected))
+	return m.selected
+}
+
+// selectPromptWithOther shows a selectable list plus an "Other" option.
+// If the user picks "Other", they get a text prompt to type a custom value.
+func selectPromptWithOther(label string, options []string, def string) string {
+	allOptions := append(options, "Other (type your own)")
+	choice := selectPrompt(label, allOptions, def)
+
+	if choice == "Other (type your own)" {
+		return textPrompt("  "+label+" (custom)", def)
+	}
+	return choice
+}
+
+// ── Multi-select prompt (checkboxes) ─────────────────────────────────────────
+
+// multiSelectModel is a bubbletea program for multi-select with checkboxes.
+type multiSelectModel struct {
+	choices   []string
+	selected  map[int]bool
+	cursor    int
+	label     string
+	quitting  bool
+	result    []string
+}
+
+func (m multiSelectModel) Init() tea.Cmd { return nil }
+
+func (m multiSelectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "ctrl+c":
+			m.quitting = true
+			return m, tea.Quit
+		case "up", "k":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case "down", "j":
+			if m.cursor < len(m.choices)-1 {
+				m.cursor++
+			}
+		case " ", "enter":
+			// Space toggles selection, Enter confirms
+			if msg.String() == " " {
+				m.selected[m.cursor] = !m.selected[m.cursor]
+			} else {
+				// Enter — collect selected
+				for i, ch := range m.choices {
+					if m.selected[i] {
+						m.result = append(m.result, ch)
+					}
+				}
+				m.quitting = true
+				return m, tea.Quit
 			}
 		}
-		fmt.Fprintf(os.Stderr, "%s  %s\n", ui.Error.Render("Invalid choice:"), val)
 	}
+	return m, nil
 }
+
+func (m multiSelectModel) View() string {
+	if m.quitting {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(ui.Label.Render(m.label))
+	b.WriteString("\n\n")
+	for i, choice := range m.choices {
+		cursor := "  "
+		if i == m.cursor {
+			cursor = ui.PackageName.Render("▸ ")
+		}
+		check := "☐"
+		if m.selected[i] {
+			check = ui.Success.Render("☑")
+		}
+		b.WriteString(fmt.Sprintf("  %s%s  %s\n", cursor, check, choice))
+	}
+	b.WriteString("\n")
+	b.WriteString(ui.Muted.Render("  ↑/↓ navigate · Space toggle · Enter confirm · Ctrl+C cancel"))
+	b.WriteString("\n")
+	return b.String()
+}
+
+// multiSelectPrompt shows a checkbox list and returns the selected options.
+func multiSelectPrompt(label string, options []string, defaults []string) []string {
+	selected := make(map[int]bool)
+	defSet := make(map[string]bool)
+	for _, d := range defaults {
+		defSet[d] = true
+	}
+	for i, o := range options {
+		if defSet[o] {
+			selected[i] = true
+		}
+	}
+
+	p := tea.NewProgram(multiSelectModel{
+		choices:  options,
+		selected: selected,
+		label:    label,
+	}, tea.WithoutCatchPanics())
+
+	finalModel, err := p.Run()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  %s\n", ui.Muted.Render("(falling back to text input)"))
+		fallback := textPrompt(label+" (comma-separated)", strings.Join(defaults, ","))
+		return splitCSV(fallback)
+	}
+
+	m, ok := finalModel.(multiSelectModel)
+	if !ok || len(m.result) == 0 {
+		return defaults
+	}
+
+	fmt.Printf("%s  %s\n", ui.Label.Render(label+":"), ui.PackageName.Render(strings.Join(m.result, ", ")))
+	return m.result
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
 // defaultCommand returns a sensible default command for the runtime.
 func defaultCommand(runtime, transport string) string {
@@ -104,7 +324,7 @@ func defaultCommand(runtime, transport string) string {
 	case "node":
 		return "node server.js"
 	case "python":
-		return "python -m my_mcp_server"
+		return "python server.py"
 	case "docker":
 		return "docker run -i my-mcp-server"
 	}

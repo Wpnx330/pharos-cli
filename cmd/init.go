@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -61,20 +62,26 @@ func buildManifestInteractive() *manifest.Manifest {
 	return m
 }
 
-// prompt prints a label and default, then reads a line from stdin.
-// If the user enters nothing, the default is used.
+// stdinReader is a buffered reader over os.Stdin, initialised once.
+// Using bufio lets us read full lines including spaces (fmt.Scanln
+// stops at the first space, which caused multi-word descriptions to
+// bleed into subsequent prompts).
+var stdinReader = bufio.NewReader(os.Stdin)
+
+// prompt prints a label and default, then reads a full line from stdin.
+// If the user enters nothing (just Enter), the default is used.
 func prompt(label, def string) string {
 	if def == "" {
 		fmt.Printf("%s  ", ui.Label.Render(label+":"))
 	} else {
 		fmt.Printf("%s  %s ", ui.Label.Render(label+":"), ui.Muted.Render("["+def+"]"))
 	}
-	var input string
-	fmt.Scanln(&input)
+	line, _ := stdinReader.ReadString('\n')
+	input := strings.TrimSpace(line)
 	if input == "" {
 		return def
 	}
-	return strings.TrimSpace(input)
+	return input
 }
 
 // promptChoice presents a list of options and validates the choice.

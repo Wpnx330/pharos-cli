@@ -51,7 +51,7 @@ func buildManifestInteractive() *manifest.Manifest {
 
 	m.Transport = transport
 	m.Runtime = runtime
-	m.Bin = prompt("Command", defaultCommand(runtime, transport))
+	m.Bin = prompt("Run command", defaultCommand(runtime, transport))
 
 	capsStr := prompt("Capabilities (comma-separated)", "tools")
 	m.Capabilities = splitCSV(capsStr)

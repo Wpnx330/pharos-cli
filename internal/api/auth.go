@@ -8,8 +8,10 @@ import (
 
 // CurrentUser is the response from GET /v1/auth/me.
 type CurrentUser struct {
-	ID         string   `json:"id"`
-	Username   string   `json:"username"`
+	ID         string   `json:"sub"`
+	Username   string   `json:"namespace"`
+	Scope      string   `json:"scope,omitempty"`
+	GitHubID   int64    `json:"github_id,omitempty"`
 	Email      string   `json:"email,omitempty"`
 	AvatarURL  string   `json:"avatar_url,omitempty"`
 	Namespaces []string `json:"namespaces,omitempty"`

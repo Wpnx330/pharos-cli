@@ -45,8 +45,11 @@ var whoamiCmd = &cobra.Command{
 		if user.AvatarURL != "" {
 			fmt.Printf("%s  %s\n", ui.Label.Render("Avatar:"), user.AvatarURL)
 		}
-		if user.ID != "" {
-			fmt.Printf("%s  %s\n", ui.Label.Render("ID:"), user.ID)
+		if user.GitHubID != 0 {
+			fmt.Printf("%s  %d\n", ui.Label.Render("GitHub ID:"), user.GitHubID)
+		}
+		if user.Scope != "" {
+			fmt.Printf("%s  %s\n", ui.Label.Render("Scope:"), user.Scope)
 		}
 		if len(user.Namespaces) > 0 {
 			fmt.Printf("%s  %s\n", ui.Label.Render("Namespaces:"), strings.Join(user.Namespaces, ", "))

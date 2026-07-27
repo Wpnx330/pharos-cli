@@ -185,7 +185,8 @@ func isWSL() bool {
 }
 
 const loginSuccessHTML = `<!DOCTYPE html>
-<html><body style="font-family:sans-serif;text-align:center;padding:3em">
+<html><head><meta charset="utf-8"></head>
+<body style="font-family:sans-serif;text-align:center;padding:3em">
 <h2>✓ Login Successful</h2>
 <p>You can close this tab and return to your terminal.</p>
 </body></html>`

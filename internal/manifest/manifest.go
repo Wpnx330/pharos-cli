@@ -17,10 +17,12 @@ type Manifest struct {
 	Transport    string   `json:"transport,omitempty"`
 	Runtime      string   `json:"runtime,omitempty"`
 	License      string   `json:"license"`
-	Homepage     string   `json:"homepage"`
-	Repository   string   `json:"repository"`
-	Bin          string   `json:"bin"`
-	Files        []string `json:"files"`
+	Homepage     string   `json:"homepage,omitempty"`
+	Repository   string   `json:"repository,omitempty"`
+	Bin          string   `json:"bin,omitempty"`
+	Command      string   `json:"command,omitempty"`
+	Entrypoint   string   `json:"entrypoint,omitempty"`
+	Files        []string `json:"files,omitempty"`
 	Capabilities []string `json:"capabilities,omitempty"`
 }
 
@@ -53,4 +55,13 @@ func (m *Manifest) Validate() error {
 		return fmt.Errorf("manifest missing required field: version")
 	}
 	return nil
+}
+
+// RunCommand returns the command used to launch the MCP server.
+// Prefers "command" field, falls back to "bin" for backwards compat.
+func (m *Manifest) RunCommand() string {
+	if m.Command != "" {
+		return m.Command
+	}
+	return m.Bin
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 )
 
@@ -28,18 +29,19 @@ func (c *Client) Health() (*HealthResponse, error) {
 
 // UploadResponse is the response from the POST /v1/uploads endpoint.
 type UploadResponse struct {
-	UploadID  string `json:"uploadId"`
-	URL       string `json:"url"`
-	BlobKey   string `json:"blobKey"`
-	Presigned string `json:"presignedUrl"`
+	UploadID    string `json:"uploadId"`
+	URL         string `json:"url"`
+	ContentHash string `json:"contentHash"`
 }
 
-// Upload initiates an upload by posting the tarball metadata to the
-// registry. The returned UploadResponse contains the upload session ID.
-func (c *Client) Upload(tarballName string, tarballSize int64) (*UploadResponse, error) {
+// Upload initiates an upload by posting the package name, version, and
+// tarball size to the registry. The returned UploadResponse contains a
+// presigned URL the client should PUT the tarball bytes to.
+func (c *Client) Upload(name, version string, tarballSize int64) (*UploadResponse, error) {
 	payload := map[string]any{
-		"filename": tarballName,
-		"size":     tarballSize,
+		"name":    name,
+		"version": version,
+		"size":    tarballSize,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -54,6 +56,35 @@ func (c *Client) Upload(tarballName string, tarballSize int64) (*UploadResponse,
 		return nil, err
 	}
 	return &resp, nil
+}
+
+// UploadToPresigned PUTs the tarball bytes to the presigned URL returned
+// by the upload session. This bypasses the registry API and goes directly
+// to blob storage (S3/MinIO/R2).
+func (c *Client) UploadToPresigned(presignedURL string, tarball []byte) error {
+	req, err := http.NewRequest(http.MethodPut, presignedURL, bytes.NewReader(tarball))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/gzip")
+	req.ContentLength = int64(len(tarball))
+
+	// Use a separate HTTP client without the auth header — presigned URLs
+	// are authenticated via the URL signature, not Bearer tokens.
+	client := &http.Client{}
+	if c.HTTPClient != nil {
+		client = c.HTTPClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("upload to blob store failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("blob store returned %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
 }
 
 // PublishRequest is the body sent to the PUT /v1/packages/<name> endpoint.

@@ -1,10 +1,13 @@
 package cmd
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -57,22 +60,49 @@ var publishCmd = &cobra.Command{
 			token = cfg.Token
 		}
 		if token == "" {
-			fmt.Fprintln(os.Stderr, ui.Error.Render("No auth token. Use --token or set 'pharos config token <token>'"))
+			fmt.Fprintln(os.Stderr, ui.Error.Render("No auth token. Use --token or run 'pharos login'"))
 			return
 		}
+
+		// Package the tarball
+		tarballName := fmt.Sprintf("%s-%s.tgz", m.Name, m.Version)
+		tarballPath := filepath.Join(dir, tarballName)
+
+		fmt.Printf("%s  %s\n", ui.Label.Render("Packaging..."), tarballName)
+		filesToPack := determinePackFiles(dir, m)
+		if err := createTarball(tarballPath, dir, filesToPack); err != nil {
+			fmt.Fprintln(os.Stderr, ui.Error.Render("Packaging failed:"), err)
+			return
+		}
+
+		// Read the tarball bytes
+		tarballBytes, err := os.ReadFile(tarballPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, ui.Error.Render("Cannot read tarball:"), err)
+			return
+		}
+		fmt.Printf("%s  %s\n", ui.Label.Render("Tarball size:"), formatSize(int64(len(tarballBytes))))
 
 		cfg, _ := config.Load()
 		client := api.New(cfg.Registry, token)
 
-		// Phase 1: upload
-		fmt.Printf("%s  %s\n", ui.Label.Render("Uploading tarball..."), filepath.Join(dir, "dist"))
-		uploadResp, err := client.Upload(m.Name+"-"+m.Version+".tgz", 0)
+		// Phase 1: create upload session
+		fmt.Printf("%s\n", ui.Label.Render("Uploading..."))
+		uploadResp, err := client.Upload(m.Name, m.Version, int64(len(tarballBytes)))
 		if err != nil {
-			fmt.Fprintln(os.Stderr, ui.Error.Render("Upload failed:"), err)
+			fmt.Fprintln(os.Stderr, ui.Error.Render("Upload session failed:"), err)
 			return
 		}
 
-		// Phase 2: publish
+		// Phase 2: PUT tarball bytes to presigned URL
+		if uploadResp.URL != "" {
+			if err := client.UploadToPresigned(uploadResp.URL, tarballBytes); err != nil {
+				fmt.Fprintln(os.Stderr, ui.Error.Render("Tarball upload failed:"), err)
+				return
+			}
+		}
+
+		// Phase 3: publish the package metadata
 		pubReq := &api.PublishRequest{
 			Name:        m.Name,
 			Version:     m.Version,
@@ -80,7 +110,7 @@ var publishCmd = &cobra.Command{
 			License:     m.License,
 			Homepage:    m.Homepage,
 			Repository:  m.Repository,
-			Bin:         m.Bin,
+			Bin:         m.RunCommand(),
 			Files:       m.Files,
 			UploadID:    uploadResp.UploadID,
 			DistTags:    map[string]string{"latest": m.Version},
@@ -94,8 +124,169 @@ var publishCmd = &cobra.Command{
 	},
 }
 
+// determinePackFiles returns the list of files to include in the tarball.
+// If the manifest declares a "files" field, uses that. Otherwise, packs
+// the manifest + entrypoint + any .py/.js/.ts files in the directory.
+func determinePackFiles(dir string, m *manifest.Manifest) []string {
+	// Always include the manifest
+	files := []string{"pharos.json"}
+
+	if cmd := m.RunCommand(); cmd != "" {
+		// Extract the script filename from the run command
+		// e.g. "python server.py" → "server.py"
+		parts := strings.Fields(cmd)
+		for _, p := range parts {
+			if strings.HasSuffix(p, ".py") || strings.HasSuffix(p, ".js") || strings.HasSuffix(p, ".ts") {
+				files = append(files, p)
+				break
+			}
+		}
+	}
+
+	// Also include the entrypoint if declared
+	if m.Entrypoint != "" {
+		hasEP := false
+		for _, f := range files {
+			if f == m.Entrypoint {
+				hasEP = true
+				break
+			}
+		}
+		if !hasEP {
+			files = append(files, m.Entrypoint)
+		}
+	}
+
+	// If manifest declares explicit files, use those instead
+	if len(m.Files) > 0 {
+		files = m.Files
+		// Make sure manifest is always included
+		hasManifest := false
+		for _, f := range files {
+			if f == "pharos.json" {
+				hasManifest = true
+				break
+			}
+		}
+		if !hasManifest {
+			files = append([]string{"pharos.json"}, files...)
+		}
+	}
+
+	// Deduplicate
+	seen := make(map[string]bool)
+	var result []string
+	for _, f := range files {
+		if !seen[f] {
+			seen[f] = true
+			result = append(result, f)
+		}
+	}
+	return result
+}
+
+// createTarball creates a .tar.gz archive containing the specified files
+// from the source directory.
+func createTarball(outputPath, srcDir string, files []string) error {
+	f, err := os.Create(outputPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	gw := gzip.NewWriter(f)
+	defer gw.Close()
+
+	tw := tar.NewWriter(gw)
+	defer tw.Close()
+
+	for _, file := range files {
+		filePath := filepath.Join(srcDir, file)
+		info, err := os.Stat(filePath)
+		if err != nil {
+			return fmt.Errorf("cannot stat %s: %w", file, err)
+		}
+		if info.IsDir() {
+			continue
+		}
+
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			return fmt.Errorf("cannot read %s: %w", file, err)
+		}
+
+		header := &tar.Header{
+			Name: file,
+			Size: info.Size(),
+			Mode: int64(info.Mode()),
+		}
+		if err := tw.WriteHeader(header); err != nil {
+			return err
+		}
+		if _, err := tw.Write(data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// formatSize formats a byte count as a human-readable string.
+func formatSize(bytes int64) string {
+	const (
+		KB = 1024
+		MB = KB * 1024
+	)
+	switch {
+	case bytes >= MB:
+		return fmt.Sprintf("%.1f MB", float64(bytes)/MB)
+	case bytes >= KB:
+		return fmt.Sprintf("%.1f KB", float64(bytes)/KB)
+	default:
+		return fmt.Sprintf("%d B", bytes)
+	}
+}
+
+// ── pharos package command ───────────────────────────────────────────────────
+
+var packageCmd = &cobra.Command{
+	Use:   "package [dir]",
+	Short: "Create a .tgz tarball from a package directory (like npm pack)",
+	Args:  cobra.MaximumNArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		dir := "."
+		if len(args) == 1 {
+			dir = args[0]
+		}
+
+		m, err := manifest.Load(dir)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, ui.Error.Render("Cannot read manifest:"), err)
+			return
+		}
+		if err := m.Validate(); err != nil {
+			fmt.Fprintln(os.Stderr, ui.Error.Render("Invalid manifest:"), err)
+			return
+		}
+
+		tarballName := fmt.Sprintf("%s-%s.tgz", m.Name, m.Version)
+		tarballPath := filepath.Join(dir, tarballName)
+
+		filesToPack := determinePackFiles(dir, m)
+		fmt.Printf("%s  %s\n", ui.Label.Render("Packaging:"), strings.Join(filesToPack, ", "))
+
+		if err := createTarball(tarballPath, dir, filesToPack); err != nil {
+			fmt.Fprintln(os.Stderr, ui.Error.Render("Packaging failed:"), err)
+			return
+		}
+
+		info, _ := os.Stat(tarballPath)
+		fmt.Printf("%s  %s (%s)\n", ui.Success.Render("✓ Created:"), tarballName, formatSize(info.Size()))
+	},
+}
+
 func init() {
 	publishCmd.Flags().StringVarP(&publishToken, "token", "t", "", "auth token (overrides config)")
-	publishCmd.Flags().BoolVar(&publishDryRun, "dry-run", false, "validate without publishing")
+	publishCmd.Flags().BoolVarP(&publishDryRun, "dry-run", "", false, "validate without publishing")
 	rootCmd.AddCommand(publishCmd)
+	rootCmd.AddCommand(packageCmd)
 }

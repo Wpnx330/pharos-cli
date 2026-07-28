@@ -88,6 +88,24 @@ var publishCmd = &cobra.Command{
 		cfg, _ := config.Load()
 		client := api.New(cfg.Registry, token)
 
+		// Phase 0: ensure the package exists in the registry.
+		// First-time publish requires creating the package before we can
+		// push a version. We use the authenticated user's namespace.
+		user, err := client.GetCurrentUser()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, ui.Error.Render("Cannot determine user namespace:"), err)
+			return
+		}
+		fmt.Printf("%s  %s\n", ui.Label.Render("Creating package..."), m.Name)
+		if err := client.CreatePackage(&api.CreatePackageRequest{
+			Name:        m.Name,
+			Namespace:   user.Username,
+			Description: m.Description,
+		}); err != nil {
+			fmt.Fprintln(os.Stderr, ui.Error.Render("Package creation failed:"), err)
+			return
+		}
+
 		// Phase 1: create upload session
 		fmt.Printf("%s\n", ui.Label.Render("Uploading..."))
 		uploadResp, err := client.Upload(m.Name, m.Version, int64(len(tarballBytes)))

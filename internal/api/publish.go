@@ -106,3 +106,29 @@ func (c *Client) Publish(name string, req *PublishRequest) error {
 	_, _, err = c.do(http.MethodPut, fmt.Sprintf("/v1/packages/%s", encodeQuery(name)), bytes.NewReader(body))
 	return err
 }
+
+// CreatePackageRequest is the body for POST /v1/packages.
+type CreatePackageRequest struct {
+	Name        string `json:"name"`
+	Namespace   string `json:"namespace"`
+	Description string `json:"description"`
+}
+
+// CreatePackage creates a new package within the user's namespace.
+// This must be called before publishing the first version.
+func (c *Client) CreatePackage(req *CreatePackageRequest) error {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	data, statusCode, err := c.do(http.MethodPost, "/v1/packages", bytes.NewReader(body))
+	if err != nil {
+		// 409 Conflict means the package already exists — that's fine.
+		if statusCode == http.StatusConflict {
+			return nil
+		}
+		return err
+	}
+	_ = data
+	return nil
+}

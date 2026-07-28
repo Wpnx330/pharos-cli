@@ -89,16 +89,12 @@ func (c *Client) UploadToPresigned(presignedURL string, tarball []byte) error {
 
 // PublishRequest is the body sent to the PUT /v1/packages/<name> endpoint.
 type PublishRequest struct {
-	Name        string            `json:"name"`
-	Version     string            `json:"version"`
-	Description string            `json:"description"`
-	License     string            `json:"license"`
-	Homepage    string            `json:"homepage"`
-	Repository  string            `json:"repository"`
-	Bin         string            `json:"bin"`
-	Files       []string          `json:"files"`
-	UploadID    string            `json:"uploadId,omitempty"`
-	DistTags    map[string]string `json:"distTags,omitempty"`
+	Version           string          `json:"version"`
+	Manifest          json.RawMessage `json:"manifest"`
+	BlobRef           string          `json:"blobRef"`
+	ArtifactType      string          `json:"artifactType,omitempty"`
+	ArtifactSize      int64           `json:"artifactSize,omitempty"`
+	ArtifactIntegrity string          `json:"artifactIntegrity,omitempty"`
 }
 
 // Publish registers a new package version with the registry.

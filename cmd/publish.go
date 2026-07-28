@@ -3,6 +3,8 @@ package cmd
 import (
 	"archive/tar"
 	"compress/gzip"
+	"crypto/sha512"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -103,17 +105,23 @@ var publishCmd = &cobra.Command{
 		}
 
 		// Phase 3: publish the package metadata
+		// The registry expects: version, manifest (raw JSON), blobRef, and
+		// optional artifact metadata (type, size, integrity hash).
+		manifestJSON, err := json.Marshal(m)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, ui.Error.Render("Cannot marshal manifest:"), err)
+			return
+		}
+
+		integrity := computeSHA512(tarballBytes)
+
 		pubReq := &api.PublishRequest{
-			Name:        m.Name,
-			Version:     m.Version,
-			Description: m.Description,
-			License:     m.License,
-			Homepage:    m.Homepage,
-			Repository:  m.Repository,
-			Bin:         m.RunCommand(),
-			Files:       m.Files,
-			UploadID:    uploadResp.UploadID,
-			DistTags:    map[string]string{"latest": m.Version},
+			Version:           m.Version,
+			Manifest:          manifestJSON,
+			BlobRef:           uploadResp.UploadID,
+			ArtifactType:      "tgz",
+			ArtifactSize:      int64(len(tarballBytes)),
+			ArtifactIntegrity: integrity,
 		}
 		fmt.Printf("%s  %s\n", ui.Label.Render("Publishing..."), m.Name)
 		if err := client.Publish(m.Name, pubReq); err != nil {
@@ -244,6 +252,13 @@ func formatSize(bytes int64) string {
 	default:
 		return fmt.Sprintf("%d B", bytes)
 	}
+}
+
+// computeSHA512 returns the hex-encoded SHA-512 hash of the data,
+// prefixed with "sha512-" as per the Pharos integrity format.
+func computeSHA512(data []byte) string {
+	h := sha512.Sum512(data)
+	return "sha512-" + hex.EncodeToString(h[:])
 }
 
 // ── pharos package command ───────────────────────────────────────────────────

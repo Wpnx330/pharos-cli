@@ -132,3 +132,17 @@ func (c *Client) CreatePackage(req *CreatePackageRequest) error {
 	_ = data
 	return nil
 }
+
+// SetVersionStatus changes the lifecycle status of a package version.
+// Valid statuses: active, deprecated, yanked, unpublished, deleted.
+func (c *Client) SetVersionStatus(name, version, status string) error {
+	payload := map[string]string{"status": status}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	_, _, err = c.do(http.MethodPatch,
+		fmt.Sprintf("/v1/packages/%s/versions/%s/status", encodeQuery(name), encodeQuery(version)),
+		bytes.NewReader(body))
+	return err
+}

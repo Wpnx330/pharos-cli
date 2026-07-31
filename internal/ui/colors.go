@@ -39,9 +39,17 @@ var (
 			Foreground(lipgloss.Color("#9E9E9E"))
 
 	// Header styles table column headers.
-	Header = lipgloss.NewStyle().
+	// Uses border-free styling — borders produce multi-line output
+	// that breaks column alignment in single-line rendering.
+	HeaderSimple = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color(Gold)).
-			BorderStyle(lipgloss.NormalBorder()).
-			BorderBottom(true)
+			Foreground(lipgloss.Color(Gold))
+
+	// Header is kept for backward compatibility but should not be
+	// used in table rendering (use HeaderSimple instead).
+	Header = lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color(Gold)).
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderBottom(true)
 )

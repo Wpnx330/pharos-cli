@@ -37,9 +37,9 @@ var searchCmd = &cobra.Command{
 			return
 		}
 		cols := []ui.TableColumn{
-			{Title: "NAME", Width: 28},
+			{Title: "NAME", Width: 20},
 			{Title: "VERSION", Width: 10},
-			{Title: "DESCRIPTION", Width: 50},
+			{Title: "DESCRIPTION", Width: 30},
 			{Title: "DOWNLOADS", Width: 10},
 		}
 		var rows []ui.TableRow

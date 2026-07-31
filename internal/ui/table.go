@@ -15,15 +15,40 @@ type TableColumn struct {
 type TableRow = []string
 
 // RenderTable renders a slice of rows as a formatted ASCII table.
-// Columns are aligned by the width defined in cols; cell text is
-// truncated to the column width.
+// Columns auto-size to fit content, capped at maxColWidth. The header
+// is bold/colored without border decorations (borders produce multi-line
+// output that breaks single-line column alignment).
 func RenderTable(cols []TableColumn, rows []TableRow) string {
+	const maxColWidth = 60
+	widths := make([]int, len(cols))
+	for i, c := range cols {
+		plain := stripANSI(c.Title)
+		w := len([]rune(plain))
+		if c.Width > w {
+			w = c.Width
+		}
+		widths[i] = w
+	}
+	// Expand to fit row content (but cap at maxColWidth)
+	for _, row := range rows {
+		for i, cell := range row {
+			plain := stripANSI(cell)
+			w := len([]rune(plain))
+			if w > widths[i] {
+				widths[i] = w
+			}
+			if widths[i] > maxColWidth {
+				widths[i] = maxColWidth
+			}
+		}
+	}
+
 	var b strings.Builder
 
-	// Header
+	// Header — simple bold color, no borders
 	headers := make([]string, len(cols))
 	for i, c := range cols {
-		headers[i] = pad(Header.Render(c.Title), c.Width)
+		headers[i] = pad(HeaderSimple.Render(c.Title), widths[i])
 	}
 	b.WriteString(strings.Join(headers, "  "))
 	b.WriteString("\n")
@@ -32,8 +57,7 @@ func RenderTable(cols []TableColumn, rows []TableRow) string {
 	for _, row := range rows {
 		cells := make([]string, len(cols))
 		for i, cell := range row {
-			w := cols[i].Width
-			cells[i] = pad(truncate(cell, w), w)
+			cells[i] = pad(truncate(cell, widths[i]), widths[i])
 		}
 		b.WriteString(strings.Join(cells, "  "))
 		b.WriteString("\n")

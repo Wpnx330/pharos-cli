@@ -194,12 +194,12 @@ func formatAuditReport(report *auditReport) string {
 	b.WriteString(ui.Label.Render("Security Audit Report") + "\n\n")
 
 	cols := []ui.TableColumn{
-		{Title: "SERVER", Width: 24},
-		{Title: "VERSION", Width: 10},
-		{Title: "ADVISORY", Width: 16},
-		{Title: "SEVERITY", Width: 10},
-		{Title: "FIXED IN", Width: 10},
-		{Title: "TITLE", Width: 40},
+		{Title: "SERVER", Width: 24, MaxWidth: 0},
+		{Title: "VERSION", Width: 10, MaxWidth: 10},
+		{Title: "ADVISORY", Width: 16, MaxWidth: 16},
+		{Title: "SEVERITY", Width: 10, MaxWidth: 10},
+		{Title: "FIXED IN", Width: 10, MaxWidth: 10},
+		{Title: "TITLE", Width: 40, MaxWidth: 60},
 	}
 
 	var rows []ui.TableRow

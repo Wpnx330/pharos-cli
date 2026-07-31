@@ -8,7 +8,8 @@ import (
 // TableColumn describes a single column in a table.
 type TableColumn struct {
 	Title string
-	Width int
+	Width int  // minimum width
+	MaxWidth int // 0 = no cap (use global maxColWidth); >0 = cap at this width
 }
 
 // TableRow is a slice of cell strings, one per column.
@@ -18,26 +19,32 @@ type TableRow = []string
 // Columns auto-size to fit content, capped at maxColWidth. The header
 // is bold/colored without border decorations (borders produce multi-line
 // output that breaks single-line column alignment).
+//
+// All width calculations use VISIBLE width (ANSI escape sequences stripped),
+// so styled cells (bold, colored) align correctly with unstyled cells.
 func RenderTable(cols []TableColumn, rows []TableRow) string {
-	const maxColWidth = 60
+	const maxColWidth = 80
 	widths := make([]int, len(cols))
 	for i, c := range cols {
 		plain := stripANSI(c.Title)
-		w := len([]rune(plain))
+		w := runeWidth(plain)
 		if c.Width > w {
 			w = c.Width
 		}
 		widths[i] = w
 	}
-	// Expand to fit row content (but cap at maxColWidth)
+	// Expand to fit row content (but cap at per-column or global max)
 	for _, row := range rows {
 		for i, cell := range row {
 			plain := stripANSI(cell)
-			w := len([]rune(plain))
+			w := runeWidth(plain)
 			if w > widths[i] {
 				widths[i] = w
 			}
-			if widths[i] > maxColWidth {
+			// Apply per-column cap if set, otherwise global cap
+			if cols[i].MaxWidth > 0 && widths[i] > cols[i].MaxWidth {
+				widths[i] = cols[i].MaxWidth
+			} else if widths[i] > maxColWidth {
 				widths[i] = maxColWidth
 			}
 		}
@@ -48,7 +55,7 @@ func RenderTable(cols []TableColumn, rows []TableRow) string {
 	// Header — simple bold color, no borders
 	headers := make([]string, len(cols))
 	for i, c := range cols {
-		headers[i] = pad(HeaderSimple.Render(c.Title), widths[i])
+		headers[i] = padStyled(HeaderSimple.Render(c.Title), widths[i])
 	}
 	b.WriteString(strings.Join(headers, "  "))
 	b.WriteString("\n")
@@ -57,7 +64,7 @@ func RenderTable(cols []TableColumn, rows []TableRow) string {
 	for _, row := range rows {
 		cells := make([]string, len(cols))
 		for i, cell := range row {
-			cells[i] = pad(truncate(cell, widths[i]), widths[i])
+			cells[i] = padStyled(truncateStyled(cell, widths[i]), widths[i])
 		}
 		b.WriteString(strings.Join(cells, "  "))
 		b.WriteString("\n")
@@ -66,9 +73,71 @@ func RenderTable(cols []TableColumn, rows []TableRow) string {
 	return b.String()
 }
 
+// runeWidth returns the visible width of a string (ANSI stripped).
+func runeWidth(s string) int {
+	return len([]rune(stripANSI(s)))
+}
+
+// padStyled right-pads a styled string with spaces to reach visible width n.
+// Works correctly with ANSI-styled strings by measuring stripped width.
+func padStyled(s string, n int) string {
+	plain := stripANSI(s)
+	visW := len([]rune(plain))
+	if visW >= n {
+		return s
+	}
+	return s + strings.Repeat(" ", n-visW)
+}
+
+// truncateStyled shortens a styled string to n VISIBLE runes, preserving
+// ANSI styling. Strips ANSI, truncates the plain text, re-applies the
+// original style prefix, and appends "…" if truncated.
+func truncateStyled(s string, n int) string {
+	if n <= 0 {
+		return s
+	}
+	plain := stripANSI(s)
+	visRunes := []rune(plain)
+	if len(visRunes) <= n {
+		return s // visible text fits, no truncation needed
+	}
+	// Extract the ANSI style prefix from the original string
+	ansiPrefix := extractANSIPrefix(s)
+	truncated := string(visRunes[:n-1])
+	if ansiPrefix != "" {
+		return ansiPrefix + truncated + "\x1b[0m…"
+	}
+	return truncated + "…"
+}
+
+// extractANSIPrefix pulls leading ANSI escape sequences from a string.
+// lipgloss typically emits \x1b[...m prefix + text + \x1b[0m suffix.
+func extractANSIPrefix(s string) string {
+	var prefix strings.Builder
+	i := 0
+	for i < len(s) {
+		if s[i] == '\x1b' {
+			// Find end of escape sequence (ends with 'm' for SGR)
+			j := i + 1
+			for j < len(s) && s[j] != 'm' {
+				j++
+			}
+			if j < len(s) {
+				prefix.WriteString(s[i : j+1])
+				i = j + 1
+			} else {
+				break
+			}
+		} else {
+			break // First non-ANSI char = start of visible text
+		}
+	}
+	return prefix.String()
+}
+
 // pad right-pads s with spaces to reach width n.
+// Deprecated: use padStyled for ANSI-styled strings.
 func pad(s string, n int) string {
-	// strip ANSI for width calc but keep original styling
 	plain := stripANSI(s)
 	if len(plain) >= n {
 		return s
@@ -77,6 +146,7 @@ func pad(s string, n int) string {
 }
 
 // truncate shortens s to n runes, appending "…" if trimmed.
+// Deprecated: use truncateStyled for ANSI-styled strings.
 func truncate(s string, n int) string {
 	if n <= 0 {
 		return s

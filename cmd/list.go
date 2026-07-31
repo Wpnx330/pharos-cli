@@ -100,14 +100,14 @@ var listCmd = &cobra.Command{
 
 		// Render table
 		cols := []ui.TableColumn{
-			{Title: "NAME", Width: 22},
-			{Title: "VERSION", Width: 10},
-			{Title: "TRANSPORT", Width: 11},
-			{Title: "STATUS", Width: 10},
-			{Title: "PORT", Width: 7},
-			{Title: "SIZE", Width: 9},
-			{Title: "MEMORY", Width: 9},
-			{Title: "UPTIME", Width: 9},
+			{Title: "NAME", Width: 22, MaxWidth: 0},
+			{Title: "VERSION", Width: 10, MaxWidth: 10},
+			{Title: "TRANSPORT", Width: 11, MaxWidth: 11},
+			{Title: "STATUS", Width: 10, MaxWidth: 10},
+			{Title: "PORT", Width: 7, MaxWidth: 7},
+			{Title: "SIZE", Width: 9, MaxWidth: 9},
+			{Title: "MEMORY", Width: 9, MaxWidth: 9},
+			{Title: "UPTIME", Width: 9, MaxWidth: 9},
 		}
 		var rows []ui.TableRow
 		for _, e := range entries {

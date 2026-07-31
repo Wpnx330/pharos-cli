@@ -13,17 +13,18 @@ type VersionInfo struct {
 // PackageDetail is the full package metadata returned by the package
 // detail endpoint.
 type PackageDetail struct {
-	Name        string            `json:"name"`
-	Title       string            `json:"title"`
-	Description string            `json:"description"`
-	License     string            `json:"license"`
-	RepoURL     string            `json:"repo_url"`
-	RepoSource  string            `json:"repo_source"`
-	ReadmeURL   string            `json:"readme_url"`
-	CreatedAt   string            `json:"created_at"`
-	ModifiedAt  string            `json:"modified_at"`
-	DistTags    map[string]string `json:"dist_tags"`
-	Versions    []VersionDetail   `json:"versions"`
+	Name         string            `json:"name"`
+	Title        string            `json:"title"`
+	Description  string            `json:"description"`
+	License      string            `json:"license"`
+	RepoURL      string            `json:"repo_url"`
+	RepoSource   string            `json:"repo_source"`
+	ReadmeURL    string            `json:"readme_url"`
+	CreatedAt    string            `json:"created_at"`
+	ModifiedAt   string            `json:"modified_at"`
+	LastSyncedAt string            `json:"last_synced_at"`
+	DistTags     map[string]string `json:"dist_tags"`
+	Versions     []VersionDetail   `json:"versions"`
 }
 
 // VersionDetail is a version entry embedded in PackageDetail.

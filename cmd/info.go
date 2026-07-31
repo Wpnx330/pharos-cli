@@ -113,10 +113,18 @@ var infoCmd = &cobra.Command{
 		}
 		printMeta("Git Repo", repo)
 
-		// Dates — format ISO timestamps to YYYY-MM-DD
-		printMeta("Created", formatDate(pkg.CreatedAt))
-		if pkg.ModifiedAt != "" {
-			printMeta("Modified", formatDate(pkg.ModifiedAt))
+		// Dates — show Created/Modified for native packages,
+		// Last Sync for synced packages (created/modified are
+		// internal-only for synced entries).
+		if pkg.LastSyncedAt != "" {
+			// Synced package — show Last Sync instead of Created/Modified
+			printMeta("Last Sync", formatDate(pkg.LastSyncedAt))
+		} else {
+			// Native (Pharos-published) package
+			printMeta("Created", formatDate(pkg.CreatedAt))
+			if pkg.ModifiedAt != "" {
+				printMeta("Modified", formatDate(pkg.ModifiedAt))
+			}
 		}
 
 		// Versions table

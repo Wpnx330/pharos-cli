@@ -62,7 +62,7 @@ type Manifest struct {
 
 // GetPackage fetches full details for the named package.
 func (c *Client) GetPackage(name string) (*PackageDetail, error) {
-	data, err := c.get("/v1/packages/" + encodeQuery(name))
+	data, err := c.get("/v1/packages/" + packagePath(name))
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +75,7 @@ func (c *Client) GetPackage(name string) (*PackageDetail, error) {
 
 // GetVersions fetches the version list for the named package.
 func (c *Client) GetVersions(name string) ([]VersionInfo, error) {
-	data, err := c.get("/v1/packages/" + encodeQuery(name) + "/versions")
+	data, err := c.get("/v1/packages/" + packagePath(name) + "/versions")
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +88,7 @@ func (c *Client) GetVersions(name string) ([]VersionInfo, error) {
 
 // GetDistTags fetches the dist-tags map for the named package.
 func (c *Client) GetDistTags(name string) (map[string]string, error) {
-	data, err := c.get("/v1/packages/" + encodeQuery(name) + "/dist-tags")
+	data, err := c.get("/v1/packages/" + packagePath(name) + "/dist-tags")
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +101,7 @@ func (c *Client) GetDistTags(name string) (map[string]string, error) {
 
 // GetVersionManifest fetches the manifest for a single version.
 func (c *Client) GetVersionManifest(name, version string) (*VersionDetail, error) {
-	data, err := c.get("/v1/packages/" + encodeQuery(name) + "/versions/" + encodeQuery(version))
+	data, err := c.get("/v1/packages/" + packagePath(name) + "/versions/" + encodeQuery(version))
 	if err != nil {
 		return nil, err
 	}
@@ -134,5 +134,5 @@ func (pd *PackageDetail) FindVersion(version string) *VersionDetail {
 
 // TarballURL constructs the registry tarball URL for a name@version.
 func (c *Client) TarballURL(name, version string) string {
-	return c.BaseURL + "/v1/tarballs/" + name + "/" + version
+	return c.BaseURL + "/v1/tarballs/" + packagePath(name) + "/" + version
 }

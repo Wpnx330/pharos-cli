@@ -93,3 +93,26 @@ func (e *APIError) Error() string {
 func encodeQuery(s string) string {
 	return url.QueryEscape(s)
 }
+
+// packagePath normalizes a package name into the URL path segment
+// that the registry's chi router can match, handling both unscoped
+// ("foo-bar") and scoped ("@scope/name" or "scope/name") names.
+// Scoped names are prefixed with "@" so they match the scoped route
+// /@{scope}/{name}.
+//
+// The returned segment is NOT URL-encoded — chi handles the path
+// segments natively. Use encodeQuery only for query parameters, not
+// for package paths. Callers prepend their own resource prefix
+// (e.g. "/v1/packages/" or "/v1/advisories/").
+func packagePath(name string) string {
+	if strings.HasPrefix(name, "@") {
+		// Already scoped: @scope/name → @scope/name
+		return name
+	}
+	if idx := strings.Index(name, "/"); idx > 0 {
+		// Unprefixed scope: scope/name → @scope/name
+		return "@" + name
+	}
+	// Unscoped: name → name
+	return name
+}

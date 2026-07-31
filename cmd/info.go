@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Wpnx330/pharos-cli/internal/api"
 	"github.com/Wpnx330/pharos-cli/internal/ui"
 )
 
@@ -34,40 +35,139 @@ var infoCmd = &cobra.Command{
 		if pkg.DistTags != nil {
 			latest = pkg.DistTags["latest"]
 		}
-		var versions []string
-		for _, v := range pkg.Versions {
-			versions = append(versions, v.Version)
-		}
-		var tags []string
-		for k, v := range pkg.DistTags {
-			tags = append(tags, k+":"+v)
-		}
-		sort.Strings(tags)
 
-		fmt.Printf("%s  %s\n", ui.Label.Render("Name:"), ui.PackageName.Render(pkg.Name))
-		if pkg.Title != "" {
-			fmt.Printf("%s  %s\n", ui.Label.Render("Title:"), pkg.Title)
+		// Determine the "latest" version manifest for header metadata.
+		var latestManifest *api.Manifest
+		if v := pkg.FindVersion(latest); v != nil {
+			latestManifest = &v.Manifest
+		} else if len(pkg.Versions) > 0 {
+			latestManifest = &pkg.Versions[0].Manifest
 		}
-		fmt.Printf("%s  %s\n", ui.Label.Render("Description:"), pkg.Description)
-		fmt.Printf("%s  %s\n", ui.Label.Render("Latest:"), latest)
-		fmt.Printf("%s  %s\n", ui.Label.Render("Versions:"), strings.Join(versions, ", "))
-		if pkg.License != "" {
-			fmt.Printf("%s  %s\n", ui.Label.Render("License:"), pkg.License)
+
+		// Header line: bold gold package name + muted version
+		fmt.Printf("%s %s\n",
+			ui.PackageName.Render(pkg.Name),
+			ui.Muted.Render("v"+latest))
+
+		// Description on its own line
+		if pkg.Description != "" {
+			fmt.Println(pkg.Description)
 		}
-		if pkg.RepoURL != "" {
-			fmt.Printf("%s  %s\n", ui.Label.Render("Repository:"), pkg.RepoURL)
+		fmt.Println()
+
+		// Metadata section — labels right-padded to 12 chars
+		labelWidth := 12
+		printMeta := func(label, value string) {
+			fmt.Printf("%-*s  %s\n", labelWidth, label+":", value)
 		}
-		if pkg.RepoURL != "" {
-			fmt.Printf("%s  %s\n", ui.Label.Render("Homepage:"), pkg.RepoURL)
+
+		if latestManifest != nil {
+			// Always show transport, runtime, capabilities, source
+			transport := latestManifest.Transport
+			if transport == "" {
+				transport = ui.Muted.Render("Not specified")
+			}
+			printMeta("Transport", transport)
+
+			runtime := latestManifest.Runtime
+			if runtime == "" {
+				runtime = ui.Muted.Render("Not specified")
+			}
+			printMeta("Runtime", runtime)
+
+			caps := strings.Join(latestManifest.Capabilities, ", ")
+			if caps == "" {
+				caps = ui.Muted.Render("None")
+			}
+			printMeta("Capabilities", caps)
+
+			source := pkg.RepoSource
+			if source == "" {
+				source = "unknown"
+			}
+			printMeta("Source", source)
+
+			// Verified — always show
+			printMeta("Verified", ui.Muted.Render("No"))
 		}
-		if len(tags) > 0 {
+
+		// License — show "Not specified" when empty
+		license := pkg.License
+		if license == "" {
+			license = ui.Muted.Render("Not specified")
+		}
+		printMeta("License", license)
+
+		// Repository — show "Not specified" when empty
+		repo := pkg.RepoURL
+		if repo == "" {
+			repo = ui.Muted.Render("Not specified")
+		}
+		printMeta("Repository", repo)
+
+		// Dates — format ISO timestamps to YYYY-MM-DD
+		printMeta("Created", formatDate(pkg.CreatedAt))
+		if pkg.ModifiedAt != "" {
+			printMeta("Modified", formatDate(pkg.ModifiedAt))
+		}
+
+		// Versions table
+		if len(pkg.Versions) > 0 {
+			fmt.Println()
+			fmt.Println(ui.Label.Render("VERSIONS"))
+			cols := []ui.TableColumn{
+				{Title: "Version", Width: 10, MaxWidth: 10},
+				{Title: "Status", Width: 10, MaxWidth: 10},
+				{Title: "Transport", Width: 12, MaxWidth: 12},
+				{Title: "Runtime", Width: 10, MaxWidth: 10},
+				{Title: "Created", Width: 12, MaxWidth: 12},
+			}
+			var rows []ui.TableRow
+			for _, v := range pkg.Versions {
+				status := v.Status
+				switch status {
+				case "active":
+					status = ui.Success.Render(status)
+				case "deprecated":
+					status = ui.Warning.Render(status)
+				case "unpublished", "yanked":
+					status = ui.Error.Render(status)
+				}
+				rows = append(rows, ui.TableRow{
+					v.Version,
+					status,
+					v.Manifest.Transport,
+					v.Manifest.Runtime,
+					formatDate(v.CreatedAt),
+				})
+			}
+			fmt.Print(ui.RenderTable(cols, rows))
+		}
+
+		// Dist-tags at the bottom
+		if len(pkg.DistTags) > 0 {
+			var tags []string
+			for k, v := range pkg.DistTags {
+				tags = append(tags, k+":"+v)
+			}
+			sort.Strings(tags)
+			fmt.Println()
 			fmt.Printf("%s  %s\n", ui.Label.Render("Dist-tags:"), strings.Join(tags, ", "))
 		}
-		fmt.Printf("%s  %s\n", ui.Label.Render("Created:"), pkg.CreatedAt)
 	},
 }
 
 func init() {
 	infoCmd.Flags().BoolVar(&jsonFlag, "json", false, "output as JSON")
 	rootCmd.AddCommand(infoCmd)
+}
+
+// formatDate extracts the date portion (YYYY-MM-DD) from an ISO 8601
+// timestamp. If the string is shorter than 10 characters or empty,
+// it returns the input unchanged.
+func formatDate(ts string) string {
+	if len(ts) >= 10 {
+		return ts[:10]
+	}
+	return ts
 }

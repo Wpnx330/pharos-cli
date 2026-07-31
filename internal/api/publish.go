@@ -103,7 +103,7 @@ func (c *Client) Publish(name string, req *PublishRequest) error {
 	if err != nil {
 		return err
 	}
-	_, _, err = c.do(http.MethodPut, fmt.Sprintf("/v1/packages/%s", encodeQuery(name)), bytes.NewReader(body))
+	_, _, err = c.do(http.MethodPut, "/v1/packages/"+packagePath(name), bytes.NewReader(body))
 	return err
 }
 
@@ -142,7 +142,7 @@ func (c *Client) SetVersionStatus(name, version, status string) error {
 		return err
 	}
 	_, _, err = c.do(http.MethodPatch,
-		fmt.Sprintf("/v1/packages/%s/versions/%s/status", encodeQuery(name), encodeQuery(version)),
+		"/v1/packages/"+packagePath(name)+"/versions/"+encodeQuery(version)+"/status",
 		bytes.NewReader(body))
 	return err
 }

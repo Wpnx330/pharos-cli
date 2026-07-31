@@ -18,7 +18,7 @@ type Advisory struct {
 
 // GetAdvisories fetches security advisories for the named package.
 func (c *Client) GetAdvisories(name string) ([]Advisory, error) {
-	data, err := c.get("/v1/advisories/" + encodeQuery(name))
+	data, err := c.get("/v1/advisories/" + packagePath(name))
 	if err != nil {
 		return nil, err
 	}

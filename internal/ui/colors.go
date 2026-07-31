@@ -27,6 +27,11 @@ var (
 			Foreground(lipgloss.Color("#EF5350")).
 			Bold(true)
 
+	// Warning styles cautionary messages in yellow/amber.
+	Warning = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFB300")).
+			Bold(true)
+
 	// Label styles informational labels in bright cyan for readability
 	// on dark terminal backgrounds. Navy (#0A1A3F) is nearly invisible
 	// on black, so we use a lighter accent that preserves the brand feel.

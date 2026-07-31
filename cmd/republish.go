@@ -35,7 +35,10 @@ Example:
 		_, client := loadConfig()
 
 		if err := client.SetVersionStatus(name, republishVersion, "active"); err != nil {
-			fmt.Fprintln(os.Stderr, ui.Error.Render("Failed to republish:"), err)
+			// For deleted/purged versions, the registry returns 410 Gone.
+			// We show "not found" — purge is irreversible, and the version
+			// should appear as if it never existed from the user's perspective.
+			fmt.Fprintln(os.Stderr, ui.Error.Render("Error:"), fmt.Sprintf("version %s@%s not found", name, republishVersion))
 			return
 		}
 

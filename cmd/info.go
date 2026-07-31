@@ -106,7 +106,7 @@ var infoCmd = &cobra.Command{
 		// latest version's manifest if the packages table has no value.
 		repo := pkg.RepoURL
 		if repo == "" && latestManifest != nil {
-			repo = latestManifest.Repository
+			repo = string(latestManifest.Repository)
 		}
 		if repo == "" {
 			repo = ui.Muted.Render("Not specified")

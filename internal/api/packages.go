@@ -35,6 +35,30 @@ type VersionDetail struct {
 	CreatedAt   string   `json:"created_at"`
 }
 
+// Repository is the git repo URL. It can be a plain string or an npm-style
+// object { "url": "...", "type": "git" } from synced registries. When it's
+// an object, we extract the URL.
+type Repository string
+
+// UnmarshalJSON handles both string and object forms of the repository field.
+func (r *Repository) UnmarshalJSON(data []byte) error {
+	// Try string first.
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		*r = Repository(s)
+		return nil
+	}
+	// Try object form: { "url": "...", ... }
+	var obj struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return err
+	}
+	*r = Repository(obj.URL)
+	return nil
+}
+
 // Manifest is the package manifest embedded in each version.
 type Manifest struct {
 	Name         string            `json:"name"`
@@ -42,7 +66,7 @@ type Manifest struct {
 	Transport    string            `json:"transport"`
 	Description  string            `json:"description"`
 	License      string            `json:"license,omitempty"`
-	Repository   string            `json:"repository,omitempty"`
+	Repository   Repository        `json:"repository,omitempty"`
 	Capabilities []string          `json:"capabilities"`
 	// Runtime hint for stdio servers: "npx", "uvx", "docker", "binary".
 	Runtime string `json:"runtime,omitempty"`

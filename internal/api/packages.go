@@ -20,6 +20,7 @@ type PackageDetail struct {
 	RepoURL      string            `json:"repo_url"`
 	RepoSource   string            `json:"repo_source"`
 	ReadmeURL    string            `json:"readme_url"`
+	GitHubStars  *int              `json:"github_stars,omitempty"`
 	CreatedAt    string            `json:"created_at"`
 	ModifiedAt   string            `json:"modified_at"`
 	LastSyncedAt string            `json:"last_synced_at"`
@@ -33,6 +34,7 @@ type VersionDetail struct {
 	Manifest    Manifest `json:"manifest"`
 	Deprecated  bool     `json:"deprecated"`
 	Status      string   `json:"status"`
+	Downloads   int64    `json:"downloads"`
 	CreatedAt   string   `json:"created_at"`
 }
 

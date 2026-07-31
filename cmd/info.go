@@ -111,7 +111,15 @@ var infoCmd = &cobra.Command{
 		if repo == "" {
 			repo = ui.Muted.Render("Not specified")
 		}
-		printMeta("Git Repo", repo)
+		// Append GitHub star count after the repo URL when known.
+		// nil means we don't know (not a GitHub repo or fetch failed);
+		// 0 means zero stars — both are valid but only non-nil shows.
+		if pkg.GitHubStars != nil {
+			stars := fmt.Sprintf("★ %d", *pkg.GitHubStars)
+			printMeta("Git Repo", repo+"  "+ui.Warning.Render(stars))
+		} else {
+			printMeta("Git Repo", repo)
+		}
 
 		// Dates — show Created/Modified for native packages,
 		// Last Sync for synced packages (created/modified are
@@ -136,6 +144,7 @@ var infoCmd = &cobra.Command{
 				{Title: "Status", Width: 10, MaxWidth: 10},
 				{Title: "Transport", Width: 12, MaxWidth: 12},
 				{Title: "Runtime", Width: 10, MaxWidth: 10},
+				{Title: "Downloads", Width: 10, MaxWidth: 10},
 				{Title: "Created", Width: 12, MaxWidth: 12},
 			}
 			var rows []ui.TableRow
@@ -154,6 +163,7 @@ var infoCmd = &cobra.Command{
 					status,
 					v.Manifest.Transport,
 					v.Manifest.Runtime,
+					fmt.Sprintf("%d", v.Downloads),
 					formatDate(v.CreatedAt),
 				})
 			}

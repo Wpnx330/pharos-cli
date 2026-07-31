@@ -164,7 +164,7 @@ func TestIsRunning_CurrentProcess(t *testing.T) {
 func TestIsRunning_LikelyDeadPID(t *testing.T) {
 	// A very high PID is extremely unlikely to exist on a fresh test process.
 	if IsRunning(999999) {
-		t.Logf("IsRunning(999999) = true (pid may have been recycled); ignoring on this run")
+		t.Errorf("IsRunning(999999) = true; expected false for likely-dead PID")
 	}
 }
 
@@ -530,9 +530,14 @@ func TestIsPortOpen_OpenPort(t *testing.T) {
 }
 
 func TestIsPortOpen_ClosedPort(t *testing.T) {
-	// 1 is a privileged port that is essentially never open in tests.
-	if isPortOpen(1) {
-		t.Log("isPortOpen(1) = true (unexpected but possible in some envs); ignoring")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+	if isPortOpen(port) {
+		t.Errorf("isPortOpen(%d) = true; expected false for closed port", port)
 	}
 }
 
@@ -821,8 +826,10 @@ func TestStart_ForegroundFailureReturnsError(t *testing.T) {
 	}
 }
 
-// Ensure exec.LookPath sanity for the commands we rely on.
-func TestHelpersAvailable(t *testing.T) {
+// skipIfHelpersMissing skips the test if any of the external helper commands
+// (sleep, true, false) required by the runtime tests are not on PATH.
+func skipIfHelpersMissing(t *testing.T) {
+	t.Helper()
 	for _, cmd := range []string{"sleep", "true", "false"} {
 		if _, err := exec.LookPath(cmd); err != nil {
 			t.Skipf("required helper %q not on PATH: %v", cmd, err)

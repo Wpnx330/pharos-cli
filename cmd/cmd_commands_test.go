@@ -110,31 +110,6 @@ func TestListCmdAliases(t *testing.T) {
 	}
 }
 
-// TestListSortFieldValidation verifies that the sort field values
-// referenced in list.go's sort.Slice correspond to known options.
-func TestListSortFieldValidation(t *testing.T) {
-	validSorts := []string{"name", "size", "port", "memory", "uptime"}
-	for _, s := range validSorts {
-		// Each should be a recognized sort key in the list command
-		found := false
-		for _, line := range []string{
-			"case \"size\":",
-			"case \"port\":",
-			"case \"memory\":",
-			"case \"uptime\":",
-			"default: // \"name\"",
-		} {
-			if strings.Contains(line, "\""+s+"\"") || (s == "name" && strings.Contains(line, "name")) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("sort key %q not recognized", s)
-		}
-	}
-}
-
 // =============================================================
 // list.go / start.go — install.Manager.List tests
 // =============================================================
@@ -159,13 +134,11 @@ func TestInstallManagerListWithPackages(t *testing.T) {
 	dir := t.TempDir()
 	mgr := install.NewManager(filepath.Join(dir, "store"))
 
-	// Install a fake package using InstallHTTP (no download required)
-	result, err := mgr.InstallHTTP("test-server", "1.0.0")
-	if err != nil {
-		t.Fatalf("InstallHTTP() error: %v", err)
-	}
-	if result.Name != "test-server" {
-		t.Errorf("InstallHTTP name = %s, want test-server", result.Name)
+	// Install a fake package using InstallHTTP (no download required).
+	// This is setup for the List() assertions below; we don't assert on
+	// the InstallHTTP return value here — that belongs in a dedicated test.
+	if _, err := mgr.InstallHTTP("test-server", "1.0.0"); err != nil {
+		t.Fatalf("InstallHTTP() setup error: %v", err)
 	}
 
 	pkgs, err := mgr.List()
@@ -232,9 +205,9 @@ func TestInstallManagerIsInstalled(t *testing.T) {
 // start.go — manifest.Parse and RunCommand tests
 // =============================================================
 
-// TestManifestParseAndRunCommand verifies that a manifest with a "command"
-// field is parsed correctly and RunCommand returns the command.
-func TestManifestParseAndRunCommand(t *testing.T) {
+// TestManifestParse_ValidJSON verifies that a manifest with a "command"
+// field is parsed correctly.
+func TestManifestParse_ValidJSON(t *testing.T) {
 	data := []byte(`{
 		"name": "test-server",
 		"version": "1.0.0",
@@ -250,6 +223,21 @@ func TestManifestParseAndRunCommand(t *testing.T) {
 	}
 	if m.Transport != "stdio" {
 		t.Errorf("transport = %s, want stdio", m.Transport)
+	}
+}
+
+// TestManifestRunCommand_CommandField verifies that RunCommand returns
+// the command field from a parsed manifest.
+func TestManifestRunCommand_CommandField(t *testing.T) {
+	data := []byte(`{
+		"name": "test-server",
+		"version": "1.0.0",
+		"transport": "stdio",
+		"command": "python server.py --port 8080"
+	}`)
+	m, err := manifest.Parse(data)
+	if err != nil {
+		t.Fatalf("Parse() error: %v", err)
 	}
 	got := m.RunCommand()
 	if got != "python server.py --port 8080" {
@@ -360,6 +348,7 @@ func TestExtractPort(t *testing.T) {
 
 // TestPIDFileAndReadPID verifies writing a PID file and reading it back.
 func TestPIDFileAndReadPID(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	// PIDFile uses os.UserHomeDir() which is the real home. We test
 	// that ReadPID returns 0 for a non-existent PID file (no server
 	// running with that name).
@@ -375,6 +364,7 @@ func TestPIDFileAndReadPID(t *testing.T) {
 // TestPIDFilePathConstruction verifies that PIDFile returns a path
 // ending in .pid under the .pharos/run directory.
 func TestPIDFilePathConstruction(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	pidPath, err := runtime.PIDFile("my-server")
 	if err != nil {
 		t.Fatalf("PIDFile() error: %v", err)
@@ -428,6 +418,7 @@ func TestIsRunningCurrentProcess(t *testing.T) {
 // TestStopNotRunning verifies that stopping a server without a PID file
 // returns an appropriate error.
 func TestStopNotRunning(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	err := runtime.Stop(runtime.StopOptions{
 		Name:    "definitely-not-running-server-xyz",
 		Force:   false,
@@ -444,6 +435,7 @@ func TestStopNotRunning(t *testing.T) {
 // TestStopAllEmpty verifies that StopAll returns empty list when no
 // servers are running.
 func TestStopAllEmpty(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	stopped, err := runtime.StopAll(false, 1)
 	if err != nil {
 		t.Fatalf("StopAll() error: %v", err)
@@ -474,10 +466,11 @@ func TestStopCmdFlags(t *testing.T) {
 
 // TestStopCmdMaxArgs verifies that stop accepts at most 1 arg.
 func TestStopCmdMaxArgs(t *testing.T) {
-	// MaximumNArgs(1) is set on the command. We verify the position
-	// args validator is in place by checking the Args field is non-nil.
-	if stopCmd.Args == nil {
-		t.Error("stop command should have Args validator set")
+	if err := stopCmd.Args(stopCmd, []string{"a"}); err != nil {
+		t.Errorf("stopCmd.Args with 1 arg: unexpected error: %v", err)
+	}
+	if err := stopCmd.Args(stopCmd, []string{"a", "b"}); err == nil {
+		t.Error("stopCmd.Args with 2 args: expected error, got nil")
 	}
 }
 
@@ -507,8 +500,14 @@ func TestStartCmdFlags(t *testing.T) {
 
 // TestStartCmdExactArgs verifies that start requires exactly 1 arg.
 func TestStartCmdExactArgs(t *testing.T) {
-	if startCmd.Args == nil {
-		t.Error("start command should have Args validator set")
+	if err := startCmd.Args(startCmd, []string{"a"}); err != nil {
+		t.Errorf("startCmd.Args with 1 arg: unexpected error: %v", err)
+	}
+	if err := startCmd.Args(startCmd, []string{}); err == nil {
+		t.Error("startCmd.Args with 0 args: expected error, got nil")
+	}
+	if err := startCmd.Args(startCmd, []string{"a", "b"}); err == nil {
+		t.Error("startCmd.Args with 2 args: expected error, got nil")
 	}
 }
 
@@ -544,8 +543,14 @@ func TestUnpublishCmdFlags(t *testing.T) {
 
 // TestUnpublishCmdExactArgs verifies unpublish requires exactly 1 arg.
 func TestUnpublishCmdExactArgs(t *testing.T) {
-	if unpublishCmd.Args == nil {
-		t.Error("unpublish command should have Args validator set")
+	if err := unpublishCmd.Args(unpublishCmd, []string{"a"}); err != nil {
+		t.Errorf("unpublishCmd.Args with 1 arg: unexpected error: %v", err)
+	}
+	if err := unpublishCmd.Args(unpublishCmd, []string{}); err == nil {
+		t.Error("unpublishCmd.Args with 0 args: expected error, got nil")
+	}
+	if err := unpublishCmd.Args(unpublishCmd, []string{"a", "b"}); err == nil {
+		t.Error("unpublishCmd.Args with 2 args: expected error, got nil")
 	}
 }
 
@@ -575,8 +580,14 @@ func TestPurgeCmdFlags(t *testing.T) {
 
 // TestPurgeCmdExactArgs verifies purge requires exactly 1 arg.
 func TestPurgeCmdExactArgs(t *testing.T) {
-	if purgeCmd.Args == nil {
-		t.Error("purge command should have Args validator set")
+	if err := purgeCmd.Args(purgeCmd, []string{"a"}); err != nil {
+		t.Errorf("purgeCmd.Args with 1 arg: unexpected error: %v", err)
+	}
+	if err := purgeCmd.Args(purgeCmd, []string{}); err == nil {
+		t.Error("purgeCmd.Args with 0 args: expected error, got nil")
+	}
+	if err := purgeCmd.Args(purgeCmd, []string{"a", "b"}); err == nil {
+		t.Error("purgeCmd.Args with 2 args: expected error, got nil")
 	}
 }
 
@@ -597,8 +608,14 @@ func TestRepublishCmdFlags(t *testing.T) {
 
 // TestRepublishCmdExactArgs verifies republish requires exactly 1 arg.
 func TestRepublishCmdExactArgs(t *testing.T) {
-	if republishCmd.Args == nil {
-		t.Error("republish command should have Args validator set")
+	if err := republishCmd.Args(republishCmd, []string{"a"}); err != nil {
+		t.Errorf("republishCmd.Args with 1 arg: unexpected error: %v", err)
+	}
+	if err := republishCmd.Args(republishCmd, []string{}); err == nil {
+		t.Error("republishCmd.Args with 0 args: expected error, got nil")
+	}
+	if err := republishCmd.Args(republishCmd, []string{"a", "b"}); err == nil {
+		t.Error("republishCmd.Args with 2 args: expected error, got nil")
 	}
 }
 
@@ -680,38 +697,8 @@ func TestPackageDetailFindVersion(t *testing.T) {
 }
 
 // =============================================================
-// unpublish/purge/republish — API SetVersionStatus URL construction
+// unpublish/purge/republish — API URL construction tests
 // =============================================================
-
-// TestSetVersionStatusURLConstruction verifies that the API client
-// constructs the correct endpoint path for status changes. We do this
-// by checking the TarballURL method as a proxy for path construction
-// patterns, and verifying the status strings used by the commands.
-func TestVersionStatusStrings(t *testing.T) {
-	// The commands use these exact status strings in SetVersionStatus calls:
-	// - unpublish: "unpublished"
-	// - purge: "deleted"
-	// - republish: "active"
-	tests := []struct {
-		command string
-		status  string
-	}{
-		{"unpublish", "unpublished"},
-		{"purge", "deleted"},
-		{"republish", "active"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.command, func(t *testing.T) {
-			// Verify the status string is non-empty and lowercase
-			if tt.status == "" {
-				t.Errorf("status for %s is empty", tt.command)
-			}
-			if tt.status != strings.ToLower(tt.status) {
-				t.Errorf("status for %s = %q, should be lowercase", tt.command, tt.status)
-			}
-		})
-	}
-}
 
 // TestTarballURLConstruction verifies the API client builds correct
 // tarball URLs (same path construction pattern as SetVersionStatus).
@@ -740,79 +727,13 @@ func TestAPIClientBaseURLTrimming(t *testing.T) {
 // TestProbeStatusNotRunning verifies that ProbeStatus returns a
 // non-running status for a server with no PID file.
 func TestProbeStatusNotRunning(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	status := runtime.ProbeStatus("definitely-not-running-server-xyz", 0)
 	if status.Running {
 		t.Error("ProbeStatus() should report not running for nonexistent server")
 	}
 	if status.PID != 0 {
 		t.Errorf("ProbeStatus().PID = %d, want 0", status.PID)
-	}
-}
-
-// TestProcessStatusStruct verifies the ProcessStatus struct fields
-// are accessible and have correct zero values.
-func TestProcessStatusStruct(t *testing.T) {
-	var ps runtime.ProcessStatus
-	if ps.Running {
-		t.Error("zero ProcessStatus should have Running = false")
-	}
-	if ps.PID != 0 {
-		t.Error("zero ProcessStatus should have PID = 0")
-	}
-	if ps.Port != 0 {
-		t.Error("zero ProcessStatus should have Port = 0")
-	}
-	if ps.Memory != 0 {
-		t.Error("zero ProcessStatus should have Memory = 0")
-	}
-	if ps.Uptime != "" {
-		t.Error("zero ProcessStatus should have Uptime = empty")
-	}
-}
-
-// =============================================================
-// start.go / stop.go — runtime.Start/StopOptions struct tests
-// =============================================================
-
-// TestStartOptionsFields verifies StartOptions struct fields.
-func TestStartOptionsFields(t *testing.T) {
-	opts := runtime.StartOptions{
-		Name:       "test-server",
-		Command:    "python server.py",
-		WorkDir:    "/tmp/test",
-		Env:        []string{"API_KEY=secret"},
-		Port:       8080,
-		Foreground: false,
-	}
-	if opts.Name != "test-server" {
-		t.Errorf("Name = %s", opts.Name)
-	}
-	if opts.Command != "python server.py" {
-		t.Errorf("Command = %s", opts.Command)
-	}
-	if len(opts.Env) != 1 || opts.Env[0] != "API_KEY=secret" {
-		t.Errorf("Env = %v", opts.Env)
-	}
-	if opts.Port != 8080 {
-		t.Errorf("Port = %d", opts.Port)
-	}
-}
-
-// TestStopOptionsFields verifies StopOptions struct fields.
-func TestStopOptionsFields(t *testing.T) {
-	opts := runtime.StopOptions{
-		Name:    "test-server",
-		Force:   true,
-		Timeout: 10,
-	}
-	if opts.Name != "test-server" {
-		t.Errorf("Name = %s", opts.Name)
-	}
-	if !opts.Force {
-		t.Error("Force should be true")
-	}
-	if opts.Timeout != 10 {
-		t.Errorf("Timeout = %d, want 10", opts.Timeout)
 	}
 }
 

@@ -91,15 +91,23 @@ var infoCmd = &cobra.Command{
 			printMeta("Verified", ui.Muted.Render("No"))
 		}
 
-		// License — show "Not specified" when empty
+		// License — show "Not specified" when empty; fall back to the
+		// latest version's manifest if the packages table has no value.
 		license := pkg.License
+		if license == "" && latestManifest != nil {
+			license = latestManifest.License
+		}
 		if license == "" {
 			license = ui.Muted.Render("Not specified")
 		}
 		printMeta("License", license)
 
-		// Repository — show "Not specified" when empty
+		// Repository — show "Not specified" when empty; fall back to the
+		// latest version's manifest if the packages table has no value.
 		repo := pkg.RepoURL
+		if repo == "" && latestManifest != nil {
+			repo = latestManifest.Repository
+		}
 		if repo == "" {
 			repo = ui.Muted.Render("Not specified")
 		}

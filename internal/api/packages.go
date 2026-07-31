@@ -41,6 +41,8 @@ type Manifest struct {
 	Version      string            `json:"version"`
 	Transport    string            `json:"transport"`
 	Description  string            `json:"description"`
+	License      string            `json:"license,omitempty"`
+	Repository   string            `json:"repository,omitempty"`
 	Capabilities []string          `json:"capabilities"`
 	// Runtime hint for stdio servers: "npx", "uvx", "docker", "binary".
 	Runtime string `json:"runtime,omitempty"`

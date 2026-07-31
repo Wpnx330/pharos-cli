@@ -111,7 +111,7 @@ var infoCmd = &cobra.Command{
 		if repo == "" {
 			repo = ui.Muted.Render("Not specified")
 		}
-		printMeta("Repository", repo)
+		printMeta("Git Repo", repo)
 
 		// Dates — format ISO timestamps to YYYY-MM-DD
 		printMeta("Created", formatDate(pkg.CreatedAt))

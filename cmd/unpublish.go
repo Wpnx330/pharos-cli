@@ -83,7 +83,7 @@ Requires --version <v> or --all.`,
 			os.Exit(1)
 		}
 
-		fmt.Printf("\n%s Package hidden from search. Use 'pharos publish' to re-activate.\n",
+		fmt.Printf("\n%s Package hidden from search. Use 'pharos republish' to re-activate.\n",
 			ui.Muted.Render("ℹ"))
 	},
 }

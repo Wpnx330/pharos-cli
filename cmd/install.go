@@ -135,14 +135,34 @@ func runInstall(cmd *cobra.Command, args []string) {
 			}
 		}
 	} else {
-		// http/sse: no download.
-		fmt.Printf("%s  %s@%s (%s)\n", ui.Label.Render("Installing remote server..."), name, resolvedVersion, transport)
-		result, err = mgr.InstallHTTP(name, resolvedVersion)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, ui.Error.Render("Install failed:"), err)
-			return
+		// http/sse: check if the package has a local command (bin/command field).
+		// If so, download the tarball so the server files are present for `pharos start`.
+		// If not (pure remote, endpoint-only), skip the download.
+		if manifest.Bin != "" {
+			resolvedURL = client.TarballURL(name, resolvedVersion)
+			fmt.Printf("%s  %s@%s (%s)\n", ui.Label.Render("Downloading..."), name, resolvedVersion, transport)
+			if mgr.IsInstalled(name, resolvedVersion) {
+				fmt.Printf("%s  %s\n", ui.Muted.Render("Already installed:"), fmt.Sprintf("%s@%s", name, resolvedVersion))
+			} else {
+				result, err = mgr.InstallStdio(name, resolvedVersion, resolvedURL, manifest.Integrity)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, ui.Error.Render("Install failed:"), err)
+					return
+				}
+				// Override transport in the metadata to reflect the actual transport
+				result.Transport = transport
+				// Also fix the installed package metadata
+				mgr.UpdateTransport(name, resolvedVersion, transport)
+			}
+		} else {
+			fmt.Printf("%s  %s@%s (%s)\n", ui.Label.Render("Installing remote server..."), name, resolvedVersion, transport)
+			result, err = mgr.InstallHTTP(name, resolvedVersion)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, ui.Error.Render("Install failed:"), err)
+				return
+			}
+			resolvedURL = manifest.Endpoint
 		}
-		resolvedURL = manifest.Endpoint
 	}
 
 	// If result is nil because already installed, construct it.

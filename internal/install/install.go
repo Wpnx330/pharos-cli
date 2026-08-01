@@ -370,6 +370,24 @@ func (m *Manager) saveMetadata(name, version string, pkg *InstalledPackage) erro
 	return os.WriteFile(path, data, 0o644)
 }
 
+// UpdateTransport updates the transport field in the installed package
+// metadata. This is used when an http/sse package is installed via the
+// tarball download path (InstallStdio) but needs the actual transport
+// recorded correctly.
+func (m *Manager) UpdateTransport(name, version, transport string) error {
+	metaPath := m.metadataPath(name, version)
+	data, err := os.ReadFile(metaPath)
+	if err != nil {
+		return err
+	}
+	var pkg InstalledPackage
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return err
+	}
+	pkg.Transport = transport
+	return m.saveMetadata(name, version, &pkg)
+}
+
 // List returns all locally installed packages.
 func (m *Manager) List() ([]InstalledPackage, error) {
 	entries, err := os.ReadDir(m.StoreDir)

@@ -13,6 +13,12 @@ import (
 	"github.com/Wpnx330/pharos-cli/internal/ui"
 )
 
+// startManifest holds the manifest and working directory for a started server.
+type startManifest struct {
+	manifest *manifest.Manifest
+	workDir  string
+}
+
 var (
 	startForeground bool
 	startEnv        []string
@@ -53,18 +59,16 @@ var startCmd = &cobra.Command{
 			return
 		}
 
-		// Read the manifest from the install location
-		manifestPath := filepath.Join(pkg.Location, "pharos.json")
-		manifestData, err := os.ReadFile(manifestPath)
+		// Load the manifest. For stdio installs, pkg.Location points to the
+		// extracted tarball directory and pharos.json lives there. For http/sse
+		// installs, Location is empty — there's no local tarball — so we fetch
+		// the manifest from the registry instead.
+		sm, err := loadStartManifest(pkg)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, ui.Error.Render("Cannot read manifest:"), err)
+			fmt.Fprintln(os.Stderr, ui.Error.Render("Cannot load manifest:"), err)
 			return
 		}
-		m, err := manifest.Parse(manifestData)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, ui.Error.Render("Cannot parse manifest:"), err)
-			return
-		}
+		m := sm.manifest
 
 		// Determine the command to run
 		runCmd := m.RunCommand()
@@ -84,7 +88,7 @@ var startCmd = &cobra.Command{
 		result, err := runtime.Start(runtime.StartOptions{
 			Name:       name,
 			Command:    runCmd,
-			WorkDir:    pkg.Location,
+			WorkDir:    sm.workDir,
 			Env:        startEnv,
 			Port:       port,
 			Foreground: startForeground,
@@ -112,9 +116,64 @@ var startCmd = &cobra.Command{
 		}
 
 		// Show log file location
-		logFile := filepath.Join(filepath.Dir(pkg.Location), name+".log")
+		logDir := filepath.Dir(sm.workDir)
+		if logDir == "." {
+			logDir = filepath.Join(os.Getenv("HOME"), ".pharos", "store")
+		}
+		logFile := filepath.Join(logDir, name+".log")
 		fmt.Printf("%s Logs: %s\n", ui.Muted.Render(" "), logFile)
 	},
+}
+
+// loadStartManifest resolves the manifest for an installed package.
+// For stdio installs (pkg.Location non-empty), it reads pharos.json from
+// the extracted tarball directory. For http/sse installs (pkg.Location
+// empty), it fetches the manifest from the registry.
+func loadStartManifest(pkg *install.InstalledPackage) (*startManifest, error) {
+	// stdio install: read local pharos.json
+	if pkg.Location != "" {
+		manifestPath := filepath.Join(pkg.Location, "pharos.json")
+		manifestData, err := os.ReadFile(manifestPath)
+		if err != nil {
+			return nil, fmt.Errorf("read manifest: %w", err)
+		}
+		m, err := manifest.Parse(manifestData)
+		if err != nil {
+			return nil, fmt.Errorf("parse manifest: %w", err)
+		}
+		return &startManifest{manifest: m, workDir: pkg.Location}, nil
+	}
+
+	// http/sse install: fetch manifest from registry
+	_, client := loadConfig()
+	vd, err := client.GetVersionManifest(pkg.Name, pkg.Version)
+	if err != nil {
+		return nil, fmt.Errorf("fetch manifest from registry: %w", err)
+	}
+
+	// Convert api.Manifest to manifest.Manifest
+	m := &manifest.Manifest{
+		Name:         vd.Manifest.Name,
+		Version:      vd.Manifest.Version,
+		Description:  vd.Manifest.Description,
+		Transport:    vd.Manifest.Transport,
+		Runtime:      vd.Manifest.Runtime,
+		License:      vd.Manifest.License,
+		Bin:          vd.Manifest.Bin,
+		Capabilities: vd.Manifest.Capabilities,
+	}
+
+	// For http/sse servers with a command/bin, use a temp work dir since
+	// there's no local tarball. For pure remote servers (endpoint only, no
+	// command), workDir is empty — the server runs elsewhere.
+	workDir := ""
+	if m.RunCommand() != "" {
+		// Server has a local command — use the store directory as workDir
+		home, _ := os.UserHomeDir()
+		workDir = filepath.Join(home, ".pharos", "store", pkg.Name, pkg.Version)
+	}
+
+	return &startManifest{manifest: m, workDir: workDir}, nil
 }
 
 func init() {

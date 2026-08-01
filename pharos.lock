@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "servers": {
+    "test-echo-server": {
+      "version": "0.2.0",
+      "integrity": "sha512-GFdYFFvHb2T6Dvmgk/IrKX3ekjz4uqcyA4Pcwx+FnDw+B1EL+mH8ry9HGvbCJYSG8MT0mcjz5+ygFYfcBMl2yA==",
+      "transport": "http-sse",
+      "resolved": "https://getpharos.dev/v1/tarballs/test-echo-server/0.2.0",
+      "installedAt": "2026-08-01T05:08:12.305392926Z"
+    }
+  }
+}

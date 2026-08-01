@@ -12,8 +12,17 @@ import (
 
 // Config is the on-disk configuration model.
 type Config struct {
-	Registry string `json:"registry"`
-	Token    string `json:"token,omitempty"`
+	Registry      string         `json:"registry"`
+	Token         string         `json:"token,omitempty"`
+	CustomClients []CustomClient `json:"custom_clients,omitempty"`
+}
+
+// CustomClient represents a user-registered MCP client that is not
+// auto-detected by the built-in detection logic.
+type CustomClient struct {
+	ID     string `json:"id"`
+	Path   string `json:"path"`
+	Format string `json:"format"`
 }
 
 // DefaultRegistry is the default PHAROS registry base URL.
@@ -102,4 +111,54 @@ func (c *Config) Set(key, value string) error {
 	default:
 		return fmt.Errorf("unknown config key: %q", key)
 	}
+}
+
+// AddCustomClient registers a custom MCP client. If a client with the
+// same ID already exists, it is replaced. Format defaults to "mcpServers"
+// when empty.
+func (c *Config) AddCustomClient(id, path, format string) error {
+	if id == "" {
+		return fmt.Errorf("client id cannot be empty")
+	}
+	if path == "" {
+		return fmt.Errorf("client path cannot be empty")
+	}
+	if format == "" {
+		format = "mcpServers"
+	}
+	if format != "mcpServers" && format != "array" {
+		return fmt.Errorf("unknown format %q: must be \"mcpServers\" or \"array\"", format)
+	}
+	cc := CustomClient{ID: id, Path: path, Format: format}
+	for i, existing := range c.CustomClients {
+		if existing.ID == id {
+			c.CustomClients[i] = cc
+			return nil
+		}
+	}
+	c.CustomClients = append(c.CustomClients, cc)
+	return nil
+}
+
+// RemoveCustomClient removes a custom client by ID. Returns true if the
+// client was found and removed.
+func (c *Config) RemoveCustomClient(id string) bool {
+	for i, cc := range c.CustomClients {
+		if cc.ID == id {
+			c.CustomClients = append(c.CustomClients[:i], c.CustomClients[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+// GetCustomClient returns a pointer to the custom client with the given
+// ID, or nil if not found.
+func (c *Config) GetCustomClient(id string) *CustomClient {
+	for i := range c.CustomClients {
+		if c.CustomClients[i].ID == id {
+			return &c.CustomClients[i]
+		}
+	}
+	return nil
 }

@@ -175,6 +175,14 @@ func runInstall(cmd *cobra.Command, args []string) {
 		fmt.Printf("%s  %s\n", ui.Muted.Render("Lockfile updated:"), lockPath)
 	}
 
+	// Report install telemetry for http/sse packages. stdio packages are
+	// counted server-side via the tarball redirect increment, so we only
+	// send an explicit install-event for remote transports. This is
+	// best-effort: failures are silently ignored.
+	if transport != "stdio" {
+		_ = client.ReportInstallEvent(name, resolvedVersion)
+	}
+
 	// Success summary.
 	fmt.Printf("\n%s  %s\n", ui.Success.Render("✓ Installed:"), fmt.Sprintf("%s@%s (%s)", name, resolvedVersion, transport))
 	fmt.Printf("%s    %s\n", ui.Muted.Render("Usage:"), fmt.Sprintf("pharos info %s", name))

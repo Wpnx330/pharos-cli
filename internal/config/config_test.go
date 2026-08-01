@@ -100,3 +100,116 @@ func TestSaveCreatesDir(t *testing.T) {
 		t.Fatalf("config file not created: %v", err)
 	}
 }
+
+// TestAddCustomClient verifies that a custom client is added and
+// persisted through Save/Load.
+func TestAddCustomClient(t *testing.T) {
+	setupHome(t)
+	cfg := Default()
+	if err := cfg.AddCustomClient("my-editor", "/home/user/.config/my-editor/mcp.json", "mcpServers"); err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.CustomClients) != 1 {
+		t.Fatalf("expected 1 custom client, got %d", len(cfg.CustomClients))
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.CustomClients) != 1 {
+		t.Fatalf("expected 1 custom client after load, got %d", len(loaded.CustomClients))
+	}
+	cc := loaded.CustomClients[0]
+	if cc.ID != "my-editor" {
+		t.Errorf("id = %s", cc.ID)
+	}
+	if cc.Path != "/home/user/.config/my-editor/mcp.json" {
+		t.Errorf("path = %s", cc.Path)
+	}
+	if cc.Format != "mcpServers" {
+		t.Errorf("format = %s", cc.Format)
+	}
+}
+
+// TestAddCustomClientDefaultFormat verifies that an empty format
+// defaults to "mcpServers".
+func TestAddCustomClientDefaultFormat(t *testing.T) {
+	cfg := Default()
+	if err := cfg.AddCustomClient("ed", "/tmp/x.json", ""); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CustomClients[0].Format != "mcpServers" {
+		t.Errorf("format = %s, want mcpServers", cfg.CustomClients[0].Format)
+	}
+}
+
+// TestAddCustomClientInvalidFormat verifies that an unknown format is
+// rejected.
+func TestAddCustomClientInvalidFormat(t *testing.T) {
+	cfg := Default()
+	err := cfg.AddCustomClient("ed", "/tmp/x.json", "xml")
+	if err == nil {
+		t.Fatal("expected error for invalid format")
+	}
+}
+
+// TestAddCustomClientReplacesExisting verifies that re-adding with the
+// same ID replaces the entry rather than duplicating.
+func TestAddCustomClientReplacesExisting(t *testing.T) {
+	cfg := Default()
+	cfg.AddCustomClient("ed", "/tmp/a.json", "mcpServers")
+	cfg.AddCustomClient("ed", "/tmp/b.json", "array")
+	if len(cfg.CustomClients) != 1 {
+		t.Fatalf("expected 1 entry after replace, got %d", len(cfg.CustomClients))
+	}
+	if cfg.CustomClients[0].Path != "/tmp/b.json" {
+		t.Errorf("path = %s, want /tmp/b.json", cfg.CustomClients[0].Path)
+	}
+	if cfg.CustomClients[0].Format != "array" {
+		t.Errorf("format = %s, want array", cfg.CustomClients[0].Format)
+	}
+}
+
+// TestRemoveCustomClient verifies removal.
+func TestRemoveCustomClient(t *testing.T) {
+	cfg := Default()
+	cfg.AddCustomClient("a", "/tmp/a.json", "mcpServers")
+	cfg.AddCustomClient("b", "/tmp/b.json", "array")
+	if !cfg.RemoveCustomClient("a") {
+		t.Fatal("expected RemoveCustomClient to return true for existing id")
+	}
+	if len(cfg.CustomClients) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(cfg.CustomClients))
+	}
+	if cfg.CustomClients[0].ID != "b" {
+		t.Errorf("remaining id = %s, want b", cfg.CustomClients[0].ID)
+	}
+}
+
+// TestRemoveCustomClientNotFound verifies false is returned for a
+// missing id.
+func TestRemoveCustomClientNotFound(t *testing.T) {
+	cfg := Default()
+	if cfg.RemoveCustomClient("nope") {
+		t.Fatal("expected false for non-existent id")
+	}
+}
+
+// TestGetCustomClient verifies lookup.
+func TestGetCustomClient(t *testing.T) {
+	cfg := Default()
+	cfg.AddCustomClient("ed", "/tmp/ed.json", "array")
+	cc := cfg.GetCustomClient("ed")
+	if cc == nil {
+		t.Fatal("expected non-nil for existing id")
+	}
+	if cc.Path != "/tmp/ed.json" {
+		t.Errorf("path = %s", cc.Path)
+	}
+	if cfg.GetCustomClient("missing") != nil {
+		t.Error("expected nil for missing id")
+	}
+}

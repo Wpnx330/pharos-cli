@@ -9,7 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
+
+	"github.com/Wpnx330/pharos-cli/internal/config"
 )
 
 // ClientID identifies a known MCP client.
@@ -21,12 +24,22 @@ const (
 	ClientGeneric       ClientID = "generic"
 )
 
+// FormatMcpServers is the {"mcpServers": {...}} format used by Claude
+// Desktop and Cursor.
+const FormatMcpServers = "mcpServers"
+
+// FormatArray is a flat JSON array of server entries, each identified by
+// a "name" field.
+const FormatArray = "array"
+
 // Client describes a detected MCP client and its config file path.
 type Client struct {
 	ID       ClientID
 	Name     string
 	Path     string
-	Existing bool // true if the config file already exists
+	Format   string // "mcpServers" (default) or "array"
+	Existing bool   // true if the config file already exists
+	Custom   bool   // true if this is a user-registered custom client
 }
 
 // ServerConfig is the MCP server entry written into client config files.
@@ -49,6 +62,9 @@ type configFile struct {
 // Detect probes well-known paths and returns every client whose config
 // directory or file is present. A client is "detected" if its config
 // file exists OR its parent application directory exists.
+//
+// Custom clients registered via `pharos config add-client` are also
+// included: a custom client is "detected" if its config file exists.
 func Detect() []Client {
 	var clients []Client
 	for _, c := range candidatePaths() {
@@ -66,6 +82,10 @@ func Detect() []Client {
 		c.Existing = existing
 		clients = append(clients, c)
 	}
+
+	// Append custom clients from config.json.
+	clients = append(clients, detectCustom()...)
+
 	return clients
 }
 
@@ -87,9 +107,10 @@ func candidatePaths() []Client {
 	switch runtime.GOOS {
 	case "darwin":
 		clients = append(clients, Client{
-			ID:   ClientClaudeDesktop,
-			Name: "Claude Desktop",
-			Path: filepath.Join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json"),
+			ID:     ClientClaudeDesktop,
+			Name:   "Claude Desktop",
+			Path:   filepath.Join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json"),
+			Format: FormatMcpServers,
 		})
 	case "windows":
 		appdata := os.Getenv("APPDATA")
@@ -97,34 +118,86 @@ func candidatePaths() []Client {
 			appdata = filepath.Join(home, "AppData", "Roaming")
 		}
 		clients = append(clients, Client{
-			ID:   ClientClaudeDesktop,
-			Name: "Claude Desktop",
-			Path: filepath.Join(appdata, "Claude", "claude_desktop_config.json"),
+			ID:     ClientClaudeDesktop,
+			Name:   "Claude Desktop",
+			Path:   filepath.Join(appdata, "Claude", "claude_desktop_config.json"),
+			Format: FormatMcpServers,
 		})
 	default:
 		// Linux: some users run Claude via electron; check XDG config.
 		clients = append(clients, Client{
-			ID:   ClientClaudeDesktop,
-			Name: "Claude Desktop",
-			Path: filepath.Join(home, ".config", "Claude", "claude_desktop_config.json"),
+			ID:     ClientClaudeDesktop,
+			Name:   "Claude Desktop",
+			Path:   filepath.Join(home, ".config", "Claude", "claude_desktop_config.json"),
+			Format: FormatMcpServers,
 		})
 	}
 
 	// Cursor: ~/.cursor/mcp.json
 	clients = append(clients, Client{
-		ID:   ClientCursor,
-		Name: "Cursor",
-		Path: filepath.Join(home, ".cursor", "mcp.json"),
+		ID:     ClientCursor,
+		Name:   "Cursor",
+		Path:   filepath.Join(home, ".cursor", "mcp.json"),
+		Format: FormatMcpServers,
 	})
 
 	// Generic: ~/.config/mcp/mcp.json
 	clients = append(clients, Client{
-		ID:   ClientGeneric,
-		Name: "Generic MCP",
-		Path: filepath.Join(home, ".config", "mcp", "mcp.json"),
+		ID:     ClientGeneric,
+		Name:   "Generic MCP",
+		Path:   filepath.Join(home, ".config", "mcp", "mcp.json"),
+		Format: FormatMcpServers,
 	})
 
 	return clients
+}
+
+// detectCustom loads custom clients from ~/.pharos/config.json and
+// returns the ones whose config file exists on disk (i.e. "detected").
+// Custom clients with a missing config file are excluded so that
+// `pharos install` does not attempt to write to them, matching the
+// behaviour of built-in clients whose app directory is absent.
+func detectCustom() []Client {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil
+	}
+	// Sort custom clients by ID for deterministic ordering.
+	sorted := make([]config.CustomClient, len(cfg.CustomClients))
+	copy(sorted, cfg.CustomClients)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
+
+	var clients []Client
+	for _, cc := range sorted {
+		format := cc.Format
+		if format == "" {
+			format = FormatMcpServers
+		}
+		c := Client{
+			ID:     ClientID(cc.ID),
+			Name:   cc.ID,
+			Path:   cc.Path,
+			Format: format,
+			Custom: true,
+		}
+		if _, err := os.Stat(cc.Path); err == nil {
+			c.Existing = true
+			clients = append(clients, c)
+		} else if dirExists(filepath.Dir(cc.Path)) {
+			// Config doesn't exist yet but parent dir does.
+			clients = append(clients, c)
+		}
+		// If neither the file nor its parent dir exists, skip — same
+		// rule as built-in clients.
+	}
+	return clients
+}
+
+// CandidatePaths returns the built-in client candidates (with detection
+// status NOT resolved). It is used by list-clients to show every
+// built-in client even when not detected.
+func CandidatePaths() []Client {
+	return candidatePaths()
 }
 
 func dirExists(path string) bool {
@@ -135,7 +208,20 @@ func dirExists(path string) bool {
 // MergeServer reads the client config at c.Path, adds or replaces the
 // server entry under `name`, and writes it back. Existing servers are
 // preserved. If the config file doesn't exist it is created.
+//
+// The JSON structure written depends on c.Format:
+//   - "mcpServers" (default): {"mcpServers": {...}}
+//   - "array": a flat JSON array of objects, each with a "name" field
 func MergeServer(c Client, name string, server ServerConfig) error {
+	format := c.Format
+	if format == "" {
+		format = FormatMcpServers
+	}
+
+	if format == FormatArray {
+		return mergeArray(c, name, server)
+	}
+
 	cfg := configFile{
 		McpServers: make(map[string]json.RawMessage),
 	}
@@ -163,6 +249,73 @@ func MergeServer(c Client, name string, server ServerConfig) error {
 	cfg.McpServers[name] = entry
 
 	return writeConfig(c.Path, &cfg)
+}
+
+// arrayEntry is a single server entry in the "array" config format.
+type arrayEntry struct {
+	Name    string            `json:"name"`
+	Command string            `json:"command,omitempty"`
+	Args    []string          `json:"args,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+	URL     string            `json:"url,omitempty"`
+	Type    string            `json:"type,omitempty"`
+}
+
+// mergeArray handles MergeServer for the "array" config format: a flat
+// JSON array of objects, each carrying a "name" field.
+func mergeArray(c Client, name string, server ServerConfig) error {
+	var entries []arrayEntry
+
+	if c.Existing {
+		data, err := os.ReadFile(c.Path)
+		if err != nil {
+			return fmt.Errorf("read config %s: %w", c.Path, err)
+		}
+		if len(strings.TrimSpace(string(data))) > 0 {
+			if err := json.Unmarshal(data, &entries); err != nil {
+				return fmt.Errorf("parse config %s: %w", c.Path, err)
+			}
+		}
+	}
+
+	entry := arrayEntry{
+		Name:    name,
+		Command: server.Command,
+		Args:    server.Args,
+		Env:     server.Env,
+		URL:     server.URL,
+		Type:    server.Type,
+	}
+
+	found := false
+	for i := range entries {
+		if entries[i].Name == name {
+			entries[i] = entry
+			found = true
+			break
+		}
+	}
+	if !found {
+		entries = append(entries, entry)
+	}
+
+	return writeArrayConfig(c.Path, entries)
+}
+
+// writeArrayConfig marshals and writes an array-format config file.
+func writeArrayConfig(path string, entries []arrayEntry) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create config dir: %w", err)
+	}
+	data, err := json.MarshalIndent(entries, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("write config %s: %w", path, err)
+	}
+	return nil
 }
 
 // writeConfig marshals and writes the config file, creating dirs.
@@ -229,13 +382,27 @@ func buildEntry(id ClientID, server ServerConfig) (json.RawMessage, error) {
 
 // ReadServers reads the config file and returns the map of server names
 // to raw JSON entries. Returns an empty map if the file doesn't exist.
+//
+// This assumes the {"mcpServers": {...}} format. For the "array" format
+// use ReadServersFormat.
 func ReadServers(path string) (map[string]json.RawMessage, error) {
+	return ReadServersFormat(path, FormatMcpServers)
+}
+
+// ReadServersFormat reads a config file and returns the server entries
+// as a name→raw-JSON map. For the "array" format, each array element's
+// "name" field is used as the key. Returns an empty map if the file
+// doesn't exist.
+func ReadServersFormat(path, format string) (map[string]json.RawMessage, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return make(map[string]json.RawMessage), nil
 		}
 		return nil, err
+	}
+	if format == FormatArray {
+		return readArrayServers(data)
 	}
 	var cfg configFile
 	if err := json.Unmarshal(data, &cfg); err != nil {
@@ -245,6 +412,27 @@ func ReadServers(path string) (map[string]json.RawMessage, error) {
 		cfg.McpServers = make(map[string]json.RawMessage)
 	}
 	return cfg.McpServers, nil
+}
+
+// readArrayServers parses an array-format config into a name→raw map.
+func readArrayServers(data []byte) (map[string]json.RawMessage, error) {
+	var entries []arrayEntry
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return make(map[string]json.RawMessage), nil
+	}
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	out := make(map[string]json.RawMessage, len(entries))
+	for _, e := range entries {
+		// Re-marshal the entry without the "name" field so the value
+		// matches the shape produced by the mcpServers format.
+		clone := e
+		clone.Name = ""
+		raw, _ := json.Marshal(clone)
+		out[e.Name] = raw
+	}
+	return out, nil
 }
 
 // AllClients returns the list of all known client IDs regardless of
@@ -315,7 +503,13 @@ func Load(id ClientID) (*ClientConfig, error) {
 	if path == "" {
 		return nil, fmt.Errorf("unknown client ID: %s", id)
 	}
-	raw, err := ReadServers(path)
+	return loadFromPath(id, path, FormatMcpServers)
+}
+
+// loadFromPath reads a config file at the given path using the given
+// format and parses it into a ClientConfig.
+func loadFromPath(id ClientID, path, format string) (*ClientConfig, error) {
+	raw, err := ReadServersFormat(path, format)
 	if err != nil {
 		return nil, err
 	}
@@ -359,7 +553,7 @@ func Load(id ClientID) (*ClientConfig, error) {
 func LoadAll() ([]*ClientConfig, error) {
 	var configs []*ClientConfig
 	for _, c := range Detect() {
-		cc, err := Load(c.ID)
+		cc, err := loadFromPath(c.ID, c.Path, c.Format)
 		if err != nil {
 			continue
 		}

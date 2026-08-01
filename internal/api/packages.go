@@ -1,6 +1,9 @@
 package api
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"net/http"
+)
 
 // VersionInfo describes a single published version of a package.
 type VersionInfo struct {
@@ -30,12 +33,13 @@ type PackageDetail struct {
 
 // VersionDetail is a version entry embedded in PackageDetail.
 type VersionDetail struct {
-	Version     string   `json:"version"`
-	Manifest    Manifest `json:"manifest"`
-	Deprecated  bool     `json:"deprecated"`
-	Status      string   `json:"status"`
-	Downloads   int64    `json:"downloads"`
-	CreatedAt   string   `json:"created_at"`
+	Version      string   `json:"version"`
+	Manifest     Manifest `json:"manifest"`
+	Deprecated   bool     `json:"deprecated"`
+	Status       string   `json:"status"`
+	Downloads    int64    `json:"downloads"`
+	ArtifactSize *int64   `json:"artifact_size,omitempty"`
+	CreatedAt    string   `json:"created_at"`
 }
 
 // Repository is the git repo URL. It can be a plain string or an npm-style
@@ -164,4 +168,16 @@ func (pd *PackageDetail) FindVersion(version string) *VersionDetail {
 // TarballURL constructs the registry tarball URL for a name@version.
 func (c *Client) TarballURL(name, version string) string {
 	return c.BaseURL + "/v1/tarballs/" + packagePath(name) + "/" + version
+}
+
+// ReportInstallEvent POSTs an install-event telemetry ping to the registry
+// for the named package+version. It is used for http/sse packages that do
+// not download a tarball (stdio packages are counted via the tarball
+// redirect increment on the server). The call is best-effort: any error
+// (network failure, non-2xx, 404) is returned but the caller is expected
+// to ignore it so telemetry never fails an install.
+func (c *Client) ReportInstallEvent(name, version string) error {
+	path := "/v1/packages/" + packagePath(name) + "/versions/" + encodeQuery(version) + "/install-event"
+	_, _, err := c.do(http.MethodPost, path, nil)
+	return err
 }

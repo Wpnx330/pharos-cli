@@ -111,7 +111,7 @@ func collectServersForAudit() []serverInfo {
 	var servers []serverInfo
 	clients := clientconfig.Detect()
 	for _, c := range clients {
-		rawServers, err := clientconfig.ReadServers(c.Path)
+		rawServers, err := clientconfig.ReadServersFormat(c.Path, c.Format)
 		if err != nil {
 			continue
 		}

@@ -62,7 +62,7 @@ Use --as-unmanaged to track unresolved servers without dropping them.`,
 
 		for _, c := range clients {
 			fmt.Printf("%s  %s (%s)\n", ui.Label.Render("Scanning:"), c.Name, c.Path)
-			rawServers, err := clientconfig.ReadServers(c.Path)
+			rawServers, err := clientconfig.ReadServersFormat(c.Path, c.Format)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "  %s  %v\n", ui.Error.Render("read error:"), err)
 				continue

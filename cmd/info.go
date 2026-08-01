@@ -145,6 +145,7 @@ var infoCmd = &cobra.Command{
 				{Title: "Transport", Width: 12, MaxWidth: 12},
 				{Title: "Runtime", Width: 10, MaxWidth: 10},
 				{Title: "Downloads", Width: 10, MaxWidth: 10},
+				{Title: "PKG SIZE", Width: 10, MaxWidth: 10},
 				{Title: "Created", Width: 12, MaxWidth: 12},
 			}
 			var rows []ui.TableRow
@@ -158,12 +159,17 @@ var infoCmd = &cobra.Command{
 				case "unpublished", "yanked":
 					status = ui.Error.Render(status)
 				}
+				size := ui.Muted.Render("—")
+				if v.ArtifactSize != nil {
+					size = ui.FormatBytes(*v.ArtifactSize)
+				}
 				rows = append(rows, ui.TableRow{
 					v.Version,
 					status,
 					v.Manifest.Transport,
 					v.Manifest.Runtime,
 					fmt.Sprintf("%d", v.Downloads),
+					size,
 					formatDate(v.CreatedAt),
 				})
 			}

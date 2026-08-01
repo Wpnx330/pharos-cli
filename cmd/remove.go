@@ -41,16 +41,16 @@ var removeCmd = &cobra.Command{
 			if !c.Existing {
 				continue
 			}
-			rawServers, err := clientconfig.ReadServers(c.Path)
+			rawServers, err := clientconfig.ReadServersFormat(c.Path, c.Format)
 			if err != nil {
 				continue
 			}
 			if _, exists := rawServers[name]; !exists {
 				continue
 			}
-			// Delete the entry and rewrite
+			// Delete the entry and rewrite using the client's format.
 			delete(rawServers, name)
-			if err := rewriteClientConfig(c.Path, rawServers); err != nil {
+			if err := rewriteClientConfigFormat(c.Path, c.Format, rawServers); err != nil {
 				fmt.Fprintf(os.Stderr, "%s  %s: %v\n", ui.Error.Render("Failed to update config:"), c.Name, err)
 				continue
 			}
@@ -83,12 +83,73 @@ var removeCmd = &cobra.Command{
 }
 
 // rewriteClientConfig rewrites a client config file with the given server map.
+// Deprecated: use rewriteClientConfigFormat for format-aware writing.
 func rewriteClientConfig(path string, servers map[string]json.RawMessage) error {
+	return rewriteClientConfigFormat(path, "mcpServers", servers)
+}
+
+// rewriteClientConfigFormat rewrites a client config file with the given
+// server map, using the specified format ("mcpServers" or "array").
+func rewriteClientConfigFormat(path, format string, servers map[string]json.RawMessage) error {
+	if format == "array" {
+		return rewriteArrayConfig(path, servers)
+	}
 	type configFile struct {
 		McpServers map[string]json.RawMessage `json:"mcpServers"`
 	}
 	cfg := configFile{McpServers: servers}
 	out, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	out = append(out, '\n')
+	return os.WriteFile(path, out, 0o644)
+}
+
+// rewriteArrayConfig writes the servers map as a flat JSON array, each
+// entry carrying a "name" field.
+func rewriteArrayConfig(path string, servers map[string]json.RawMessage) error {
+	type entry struct {
+		Name    string          `json:"name"`
+		Command string          `json:"command,omitempty"`
+		Args    []string        `json:"args,omitempty"`
+		Env     map[string]string `json:"env,omitempty"`
+		URL     string          `json:"url,omitempty"`
+		Type    string          `json:"type,omitempty"`
+	}
+	var entries []entry
+	for name, raw := range servers {
+		var m map[string]any
+		e := entry{Name: name}
+		if json.Unmarshal(raw, &m) == nil {
+			if v, ok := m["command"].(string); ok {
+				e.Command = v
+			}
+			if v, ok := m["url"].(string); ok {
+				e.URL = v
+			}
+			if v, ok := m["type"].(string); ok {
+				e.Type = v
+			}
+			if args, ok := m["args"].([]any); ok {
+				for _, a := range args {
+					if s, ok := a.(string); ok {
+						e.Args = append(e.Args, s)
+					}
+				}
+			}
+			if env, ok := m["env"].(map[string]any); ok {
+				e.Env = make(map[string]string)
+				for k, v := range env {
+					if s, ok := v.(string); ok {
+						e.Env[k] = s
+					}
+				}
+			}
+		}
+		entries = append(entries, e)
+	}
+	out, err := json.MarshalIndent(entries, "", "  ")
 	if err != nil {
 		return err
 	}

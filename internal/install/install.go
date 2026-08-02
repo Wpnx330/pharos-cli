@@ -302,19 +302,43 @@ func normalizeTransport(t string) string {
 // WriteClientConfigs detects installed MCP clients and writes the server
 // config entry to each. If clientID is non-empty, only that client is
 // written. Returns the list of clients that were updated.
-func WriteClientConfigs(name string, serverCfg clientconfig.ServerConfig, clientID string) ([]clientconfig.Client, error) {
+// WriteClientConfigs writes the server config to the specified MCP clients.
+// If clientIDs is empty, writes to all detected clients (auto mode).
+// If clientIDs is non-empty, writes only to the specified clients (must be
+// detected or be known candidate paths).
+func WriteClientConfigs(name string, serverCfg clientconfig.ServerConfig, clientIDs []string) ([]clientconfig.Client, error) {
 	var targets []clientconfig.Client
 
-	if clientID != "" {
-		c := clientconfig.DetectByID(clientconfig.ClientID(clientID))
-		if c == nil {
-			return nil, fmt.Errorf("client %q not detected on this system", clientID)
+	if len(clientIDs) > 0 {
+		// Explicit list — resolve each ID.
+		for _, id := range clientIDs {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				continue
+			}
+			// First try detected clients (includes custom clients).
+			if c := clientconfig.DetectByID(clientconfig.ClientID(id)); c != nil {
+				targets = append(targets, *c)
+				continue
+			}
+			// Then try candidate paths (client may exist but not be detected yet).
+			found := false
+			for _, c := range clientconfig.CandidatePaths() {
+				if string(c.ID) == id {
+					targets = append(targets, c)
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil, fmt.Errorf("client %q not recognized; use 'pharos config list-clients' to see available clients", id)
+			}
 		}
-		targets = append(targets, *c)
 	} else {
+		// Auto mode — all detected clients.
 		targets = clientconfig.Detect()
 		if len(targets) == 0 {
-			return nil, fmt.Errorf("no MCP clients detected; use --client to specify one")
+			return nil, fmt.Errorf("no MCP clients detected; use --client to specify one or --select-clients to pick")
 		}
 	}
 

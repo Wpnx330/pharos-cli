@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Wpnx330/pharos-cli/internal/api"
+	"github.com/Wpnx330/pharos-cli/internal/clientconfig"
 	"github.com/Wpnx330/pharos-cli/internal/install"
 	"github.com/Wpnx330/pharos-cli/internal/lockfile"
 	"github.com/Wpnx330/pharos-cli/internal/runtime"
@@ -17,10 +18,11 @@ import (
 )
 
 var (
-	installVersion string
-	installGlobal  bool
-	installClient  string
-	installFrozen  bool
+	installVersion      string
+	installGlobal       bool
+	installClient       string
+	installSelectClients bool
+	installFrozen       bool
 )
 
 var installCmd = &cobra.Command{
@@ -39,6 +41,8 @@ Examples:
   pharos install mcp-git-server@~1.2.0      # tilde range
   pharos install mcp-git-server --version 1.2.0
   pharos install mcp-git-server --client cursor
+  pharos install mcp-git-server --client cursor,claude-desktop  # multi-select
+  pharos install mcp-git-server --select-clients  # interactive picker
   pharos install --frozen                   # install from lockfile only`,
 	Args: cobra.ExactArgs(1),
 	Run:  runInstall,
@@ -47,7 +51,8 @@ Examples:
 func init() {
 	installCmd.Flags().StringVarP(&installVersion, "version", "v", "", "version or range to install (e.g. 1.2.0, ^1.0.0, latest)")
 	installCmd.Flags().BoolVarP(&installGlobal, "global", "g", false, "install system-wide")
-	installCmd.Flags().StringVarP(&installClient, "client", "c", "", "write config only to this client (claude-desktop, cursor, generic)")
+	installCmd.Flags().StringVarP(&installClient, "client", "c", "", "write config only to these clients (comma-separated: cursor,claude-desktop,generic)")
+	installCmd.Flags().BoolVar(&installSelectClients, "select-clients", false, "interactively pick which MCP clients to configure")
 	installCmd.Flags().BoolVar(&installFrozen, "frozen", false, "install strictly from lockfile; refuse if missing or mismatched")
 	rootCmd.AddCommand(installCmd)
 }
@@ -71,7 +76,7 @@ func runInstall(cmd *cobra.Command, args []string) {
 
 	// --frozen mode: resolve from lockfile only.
 	if installFrozen {
-		installFromLockfile(name, versionSpec, lockPath, installClient)
+		installFromLockfile(name, versionSpec, lockPath, resolveClientSelection())
 		return
 	}
 
@@ -189,9 +194,12 @@ func runInstall(cmd *cobra.Command, args []string) {
 	// Build client config.
 	serverCfg := install.BuildServerConfig(manifest, storeDir)
 
-	// Write to detected MCP clients.
+	// Resolve which clients to write to.
+	clientIDs := resolveClientSelection()
+
+	// Write to selected MCP clients.
 	fmt.Printf("%s\n", ui.Label.Render("Writing MCP client configs..."))
-	updated, err := install.WriteClientConfigs(name, serverCfg, installClient)
+	updated, err := install.WriteClientConfigs(name, serverCfg, clientIDs)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, ui.Error.Render("Config write failed:"), err)
 		// Don't return — still update lockfile.
@@ -221,7 +229,7 @@ func runInstall(cmd *cobra.Command, args []string) {
 }
 
 // installFromLockfile installs strictly from the lockfile.
-func installFromLockfile(name, versionSpec, lockPath, clientID string) {
+func installFromLockfile(name, versionSpec, lockPath string, clientIDs []string) {
 	lf, err := lockfile.Load(lockPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, ui.Error.Render("Cannot read lockfile:"), err)
@@ -266,7 +274,7 @@ func installFromLockfile(name, versionSpec, lockPath, clientID string) {
 
 	// Write client config.
 	serverCfg := install.BuildServerConfig(vd.Manifest, storeDir)
-	updated, err := install.WriteClientConfigs(name, serverCfg, clientID)
+	updated, err := install.WriteClientConfigs(name, serverCfg, clientIDs)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, ui.Error.Render("Config write failed:"), err)
 	} else {
@@ -327,4 +335,69 @@ func checkRuntimeRequirement(m api.Manifest, transport string) string {
 		return fmt.Sprintf("this package requires %q which is not on $PATH", exe)
 	}
 	return ""
+}
+
+// resolveClientSelection determines which MCP clients to write configs to.
+// Three modes:
+//   - auto: no --client and no --select-clients → write to all detected clients
+//   - explicit: --client cursor,claude-desktop → write only to those (must be detected)
+//   - interactive: --select-clients → show a checkbox picker of all known clients
+//     (detected + undetected), let the user pick, then write to selected ones
+//
+// Returns a list of ClientID strings to target. Empty list means "auto" (all detected).
+func resolveClientSelection() []string {
+	// Mode 1: explicit comma-separated list
+	if installClient != "" {
+		return strings.Split(installClient, ",")
+	}
+
+	// Mode 2: interactive picker
+	if installSelectClients {
+		// Build the list of ALL known clients with detection status.
+		candidates := clientconfig.CandidatePaths()
+		// Also include custom clients
+		allClients := clientconfig.Detect()
+		// Build display labels: "Name (detected)" or "Name (not detected)"
+		detectedIDs := make(map[string]bool)
+		for _, c := range allClients {
+			detectedIDs[string(c.ID)] = true
+		}
+
+		var labels []string
+		labelToID := make(map[string]string)
+		var defaults []string
+
+		for _, c := range candidates {
+			label := c.Name
+			if detectedIDs[string(c.ID)] {
+				label += " (detected)"
+				defaults = append(defaults, label)
+			} else {
+				label += " (not detected)"
+			}
+			labels = append(labels, label)
+			labelToID[label] = string(c.ID)
+		}
+		// Add custom clients to the picker
+		for _, c := range allClients {
+			if c.Custom {
+				label := c.Name + " (detected)"
+				if _, exists := labelToID[label]; !exists {
+					labels = append(labels, label)
+					labelToID[label] = string(c.ID)
+					defaults = append(defaults, label)
+				}
+			}
+		}
+
+		selected := multiSelectPrompt("Select MCP clients to configure", labels, defaults)
+		var ids []string
+		for _, label := range selected {
+			ids = append(ids, labelToID[label])
+		}
+		return ids
+	}
+
+	// Mode 3: auto — empty list signals "all detected"
+	return nil
 }

@@ -289,7 +289,7 @@ func TestWriteClientConfigsWithMockClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := clientconfig.ServerConfig{Command: "npx", Args: []string{"-y", "pkg"}}
-	updated, err := WriteClientConfigs("test-server", server, "generic")
+	updated, err := WriteClientConfigs("test-server", server, []string{"generic"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +303,7 @@ func TestWriteClientConfigsSpecificClient(t *testing.T) {
 	t.Setenv("HOME", home)
 	os.MkdirAll(filepath.Join(home, ".cursor"), 0o755)
 	server := clientconfig.ServerConfig{Command: "npx", Args: []string{"-y", "pkg"}}
-	updated, err := WriteClientConfigs("test-server", server, "cursor")
+	updated, err := WriteClientConfigs("test-server", server, []string{"cursor"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,8 +314,32 @@ func TestWriteClientConfigsSpecificClient(t *testing.T) {
 
 func TestWriteClientConfigsNoneDetected(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	_, err := WriteClientConfigs("test", clientconfig.ServerConfig{}, "")
+	_, err := WriteClientConfigs("test", clientconfig.ServerConfig{}, nil)
 	if err == nil {
 		t.Fatal("expected error when no clients detected")
+	}
+}
+
+func TestWriteClientConfigsMultiSelect(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// Set up both cursor and generic so both are detected.
+	os.MkdirAll(filepath.Join(home, ".cursor"), 0o755)
+	os.MkdirAll(filepath.Join(home, ".config", "mcp"), 0o755)
+	server := clientconfig.ServerConfig{Command: "npx", Args: []string{"-y", "pkg"}}
+	updated, err := WriteClientConfigs("test-server", server, []string{"cursor", "generic"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updated) != 2 {
+		t.Fatalf("expected 2 clients updated, got %d", len(updated))
+	}
+	// Verify both IDs are present
+	ids := map[string]bool{}
+	for _, c := range updated {
+		ids[string(c.ID)] = true
+	}
+	if !ids["cursor"] || !ids["generic"] {
+		t.Errorf("expected cursor+generic, got %v", ids)
 	}
 }

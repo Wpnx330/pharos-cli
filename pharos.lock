@@ -6,7 +6,7 @@
       "integrity": "sha512-GFdYFFvHb2T6Dvmgk/IrKX3ekjz4uqcyA4Pcwx+FnDw+B1EL+mH8ry9HGvbCJYSG8MT0mcjz5+ygFYfcBMl2yA==",
       "transport": "http-sse",
       "resolved": "https://getpharos.dev/v1/tarballs/test-echo-server/0.2.0",
-      "installedAt": "2026-08-02T14:04:52.235426224Z"
+      "installedAt": "2026-08-02T14:09:11.50340681Z"
     }
   }
 }

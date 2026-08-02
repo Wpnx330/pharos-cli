@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
 
 	"github.com/Wpnx330/pharos-cli/internal/clientconfig"
 	"github.com/Wpnx330/pharos-cli/internal/lockfile"
+	"github.com/Wpnx330/pharos-cli/internal/runtime"
 	"github.com/Wpnx330/pharos-cli/internal/ui"
 )
 
@@ -77,6 +79,24 @@ Reports any issues found.`,
 			}
 			checks = append(checks, runCheck(fmt.Sprintf("Config: %s", c.Name), func() (string, error) {
 				return validateConfigJSON(c.Path)
+			}))
+		}
+
+		// 5. Runtime executables — check which common MCP server runtimes
+		// are available on PATH. These are advisory: a missing runtime
+		// only matters if you install a package that needs it.
+		for _, rt := range []string{"python", "node", "npx", "uv", "uvx", "docker"} {
+			rt := rt // capture for closure
+			checks = append(checks, runCheck(fmt.Sprintf("Runtime: %s", rt), func() (string, error) {
+				path, err := exec.LookPath(rt)
+				if err != nil {
+					hint := runtime.ExecutableHint(rt)
+					if hint != "" {
+						return "", fmt.Errorf("not found — %s", hint)
+					}
+					return "", fmt.Errorf("not found in $PATH")
+				}
+				return path, nil
 			}))
 		}
 

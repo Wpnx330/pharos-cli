@@ -429,9 +429,10 @@ func WritePIDFileJSON(name string, pid int) error {
 	return os.WriteFile(jsonPath, raw, 0o644)
 }
 
-// executableHint returns a user-facing hint for common missing executables,
+// ExecutableHint returns a user-facing hint for common missing executables,
 // suggesting the package to install. This does NOT silently substitute —
-// it only produces a helpful error message.
+// it only produces a helpful error message. Exported so cmd packages can
+// use it for pre-install checks.
 var executableHints = map[string]string{
 	"python": "install python-is-python3 (Ubuntu/Debian: sudo apt install python-is-python3)",
 	"node":   "install Node.js (Ubuntu/Debian: sudo apt install nodejs npm)",
@@ -442,6 +443,11 @@ var executableHints = map[string]string{
 	"docker": "install Docker (see https://docs.docker.com/engine/install/)",
 }
 
-func executableHint(name string) string {
+func ExecutableHint(name string) string {
 	return executableHints[name]
+}
+
+// executableHint is an unexported alias for use within the runtime package.
+func executableHint(name string) string {
+	return ExecutableHint(name)
 }

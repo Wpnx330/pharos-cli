@@ -3,12 +3,15 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/Wpnx330/pharos-cli/internal/api"
 	"github.com/Wpnx330/pharos-cli/internal/install"
 	"github.com/Wpnx330/pharos-cli/internal/lockfile"
+	"github.com/Wpnx330/pharos-cli/internal/runtime"
 	"github.com/Wpnx330/pharos-cli/internal/semver"
 	"github.com/Wpnx330/pharos-cli/internal/ui"
 )
@@ -103,6 +106,15 @@ func runInstall(cmd *cobra.Command, args []string) {
 	transport := strings.ToLower(strings.TrimSpace(manifest.Transport))
 	if transport == "" {
 		transport = "stdio"
+	}
+
+	// Pre-install check: warn if the runtime executable is missing.
+	// We extract the binary name from the manifest's bin/command field
+	// and check if it's on PATH. This is advisory — we proceed anyway
+	// since the user might be installing on a different machine than
+	// the one they'll run on.
+	if missing := checkRuntimeRequirement(manifest, transport); missing != "" {
+		fmt.Fprintf(os.Stderr, "%s  %s\n", ui.Error.Render("Warning:"), missing)
 	}
 
 	// Determine store directory.
@@ -283,4 +295,36 @@ func parseNameVersion(input string) (name, version string) {
 		return input[:idx], input[idx+1:]
 	}
 	return input, ""
+}
+
+// checkRuntimeRequirement checks if the executable needed to run the
+// package is on PATH. Returns a warning message if missing, empty string
+// if all good. For pure remote http/sse packages (no bin/command), no
+// check is needed.
+func checkRuntimeRequirement(m api.Manifest, transport string) string {
+	// For pure remote servers (http/sse with endpoint only, no bin), no
+	// local runtime is needed.
+	if transport != "stdio" && m.Bin == "" {
+		return ""
+	}
+
+	// Extract the executable from bin field.
+	cmdStr := m.Bin
+	if cmdStr == "" {
+		return ""
+	}
+	parts := strings.Fields(cmdStr)
+	if len(parts) == 0 {
+		return ""
+	}
+	exe := parts[0]
+
+	if _, err := exec.LookPath(exe); err != nil {
+		hint := runtime.ExecutableHint(exe)
+		if hint != "" {
+			return fmt.Sprintf("this package requires %q which is not on $PATH: %s", exe, hint)
+		}
+		return fmt.Sprintf("this package requires %q which is not on $PATH", exe)
+	}
+	return ""
 }

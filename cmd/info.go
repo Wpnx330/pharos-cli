@@ -186,6 +186,18 @@ var infoCmd = &cobra.Command{
 			fmt.Println()
 			fmt.Printf("%s  %s\n", ui.Label.Render("Dist-tags:"), strings.Join(tags, ", "))
 		}
+
+		// Runtime requirement check — show whether the executable needed
+		// to run this package is available on this machine.
+		if latestManifest != nil {
+			transport := strings.ToLower(strings.TrimSpace(latestManifest.Transport))
+			if transport == "" {
+				transport = "stdio"
+			}
+			if warning := checkRuntimeRequirement(*latestManifest, transport); warning != "" {
+				fmt.Printf("\n%s  %s\n", ui.Error.Render("⚠ Requirement not met:"), warning)
+			}
+		}
 	},
 }
 

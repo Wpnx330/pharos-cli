@@ -87,7 +87,7 @@ Reports any issues found.`,
 		// 5. Runtime executables — check which common MCP server runtimes
 		// are available on PATH. These are advisory: a missing runtime
 		// only matters if you install a package that needs it.
-		for _, rt := range []string{"python", "node", "npx", "uv", "uvx", "docker"} {
+		for _, rt := range []string{"python", "pip", "node", "npx", "uv", "uvx", "docker"} {
 			rt := rt // capture for closure
 			checks = append(checks, runCheck(fmt.Sprintf("Runtime: %s", rt), func() (string, error) {
 				path, err := exec.LookPath(rt)

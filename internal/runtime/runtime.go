@@ -99,7 +99,18 @@ func Start(opts StartOptions) (*StartResult, error) {
 		return nil, fmt.Errorf("no command specified in manifest")
 	}
 
-	cmd := exec.Command(parts[0], parts[1:]...)
+	// Verify the executable exists on PATH. If not, produce a clear error
+	// message that tells the user what's missing and what to install.
+	exe := parts[0]
+	if _, err := exec.LookPath(exe); err != nil {
+		hint := executableHint(exe)
+		if hint != "" {
+			return nil, fmt.Errorf("executable %q not found in $PATH: %s", exe, hint)
+		}
+		return nil, fmt.Errorf("executable %q not found in $PATH", exe)
+	}
+
+	cmd := exec.Command(exe, parts[1:]...)
 	cmd.Dir = opts.WorkDir
 
 	// Inherit current env + add extra vars
@@ -416,4 +427,21 @@ func WritePIDFileJSON(name string, pid int) error {
 	}
 	jsonPath := pidPath + ".json"
 	return os.WriteFile(jsonPath, raw, 0o644)
+}
+
+// executableHint returns a user-facing hint for common missing executables,
+// suggesting the package to install. This does NOT silently substitute —
+// it only produces a helpful error message.
+var executableHints = map[string]string{
+	"python": "install python-is-python3 (Ubuntu/Debian: sudo apt install python-is-python3)",
+	"node":   "install Node.js (Ubuntu/Debian: sudo apt install nodejs npm)",
+	"npm":    "install npm (Ubuntu/Debian: sudo apt install npm)",
+	"npx":    "install npx (Ubuntu/Debian: sudo apt install npm)",
+	"uv":     "install uv (curl -LsSf https://astral.sh/uv/install.sh | sh)",
+	"uvx":    "install uv (curl -LsSf https://astral.sh/uv/install.sh | sh)",
+	"docker": "install Docker (see https://docs.docker.com/engine/install/)",
+}
+
+func executableHint(name string) string {
+	return executableHints[name]
 }

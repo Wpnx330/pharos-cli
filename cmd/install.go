@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/Wpnx330/pharos-cli/internal/api"
+	"github.com/Wpnx330/pharos-cli/internal/canonical"
 	"github.com/Wpnx330/pharos-cli/internal/clientconfig"
 	"github.com/Wpnx330/pharos-cli/internal/install"
 	"github.com/Wpnx330/pharos-cli/internal/lockfile"
@@ -197,6 +199,35 @@ func runInstall(cmd *cobra.Command, args []string) {
 	// Resolve which clients to write to.
 	clientIDs := resolveClientSelection()
 
+	// Write to the canonical Pharos config first (~/.pharos/mcp.json).
+	// This is the single source of truth; client configs are synced from it.
+	canonSrv := canonical.Server{
+		Transport: transport,
+		Enabled:   true,
+		Package: canonical.PackageInfo{
+			Name:      name,
+			Version:   resolvedVersion,
+			Integrity: manifest.Integrity,
+			Source:    "pharos",
+		},
+	}
+	// Populate command/args/env/url/cwd from the server config
+	if serverCfg.URL != "" {
+		canonSrv.URL = serverCfg.URL
+	} else {
+		canonSrv.Command = serverCfg.Command
+		canonSrv.Args = serverCfg.Args
+	}
+	if len(serverCfg.Env) > 0 {
+		canonSrv.Env = serverCfg.Env
+	}
+	if storeDir != "" {
+		canonSrv.Cwd = filepath.Join(storeDir, name, resolvedVersion)
+	}
+	if err := canonical.AddServer(name, canonSrv); err != nil {
+		fmt.Fprintf(os.Stderr, "%s  %v\n", ui.Error.Render("Warning: failed to write canonical config:"), err)
+	}
+
 	// Write to selected MCP clients.
 	fmt.Printf("%s\n", ui.Label.Render("Writing MCP client configs..."))
 	updated, err := install.WriteClientConfigs(name, serverCfg, clientIDs)
@@ -272,8 +303,41 @@ func installFromLockfile(name, versionSpec, lockPath string, clientIDs []string)
 		}
 	}
 
-	// Write client config.
+	// Build client config.
 	serverCfg := install.BuildServerConfig(vd.Manifest, storeDir)
+
+	// Write to canonical config.
+	transport := strings.ToLower(strings.TrimSpace(vd.Manifest.Transport))
+	if transport == "" {
+		transport = "stdio"
+	}
+	canonSrv := canonical.Server{
+		Transport: transport,
+		Enabled:   true,
+		Package: canonical.PackageInfo{
+			Name:      name,
+			Version:   entry.Version,
+			Integrity: entry.Integrity,
+			Source:    "pharos",
+		},
+	}
+	if serverCfg.URL != "" {
+		canonSrv.URL = serverCfg.URL
+	} else {
+		canonSrv.Command = serverCfg.Command
+		canonSrv.Args = serverCfg.Args
+	}
+	if len(serverCfg.Env) > 0 {
+		canonSrv.Env = serverCfg.Env
+	}
+	if storeDir != "" {
+		canonSrv.Cwd = filepath.Join(storeDir, name, entry.Version)
+	}
+	if err := canonical.AddServer(name, canonSrv); err != nil {
+		fmt.Fprintf(os.Stderr, "%s  %v\n", ui.Error.Render("Warning: failed to write canonical config:"), err)
+	}
+
+	// Write client config.
 	updated, err := install.WriteClientConfigs(name, serverCfg, clientIDs)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, ui.Error.Render("Config write failed:"), err)

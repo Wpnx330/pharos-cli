@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Wpnx330/pharos-cli/internal/canonical"
 	"github.com/Wpnx330/pharos-cli/internal/clientconfig"
 	"github.com/Wpnx330/pharos-cli/internal/lockfile"
 	"github.com/Wpnx330/pharos-cli/internal/ui"
@@ -36,7 +37,15 @@ var removeCmd = &cobra.Command{
 			}
 		}
 
-		// 2. Remove from all detected client configs
+		// 2. Remove from canonical config (~/.pharos/mcp.json)
+		if canonRemoved, err := canonical.RemoveServer(name); err != nil {
+			fmt.Fprintf(os.Stderr, "%s  %v\n", ui.Error.Render("Warning: failed to update canonical config:"), err)
+		} else if canonRemoved {
+			removed = true
+			fmt.Printf("%s\n", ui.Success.Render("✓ Removed from canonical config"))
+		}
+
+		// 3. Remove from all detected client configs
 		for _, c := range clientconfig.Detect() {
 			if !c.Existing {
 				continue
@@ -58,7 +67,7 @@ var removeCmd = &cobra.Command{
 			fmt.Printf("%s  %s (%s)\n", ui.Success.Render("✓ Removed from config:"), name, c.Name)
 		}
 
-		// 3. Remove from lockfile
+		// 4. Remove from lockfile
 		lockPath, err := lockfile.DefaultPath()
 		if err == nil {
 			lf, err := lockfile.Load(lockPath)

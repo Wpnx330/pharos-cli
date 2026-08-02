@@ -351,12 +351,15 @@ func TestDetectCustomClientMissingFile(t *testing.T) {
 }
 
 // TestCandidatePathsExported verifies CandidatePaths returns built-ins
-// with Format set.
+// with Format set to a known format.
 func TestCandidatePathsExported(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	for _, c := range CandidatePaths() {
-		if c.Format != FormatMcpServers {
-			t.Errorf("client %s format = %s, want mcpServers", c.Name, c.Format)
+		switch c.Format {
+		case FormatMcpServers, FormatArray, FormatOpenCode, FormatHermes:
+			// valid format
+		default:
+			t.Errorf("client %s format = %s, unknown format", c.Name, c.Format)
 		}
 	}
 }

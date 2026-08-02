@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/Wpnx330/pharos-cli/internal/clientconfig"
 	"github.com/Wpnx330/pharos-cli/internal/lockfile"
@@ -77,8 +78,9 @@ Reports any issues found.`,
 			if !c.Existing {
 				continue
 			}
+			c := c // capture for closure
 			checks = append(checks, runCheck(fmt.Sprintf("Config: %s", c.Name), func() (string, error) {
-				return validateConfigJSON(c.Path)
+				return validateConfig(c)
 			}))
 		}
 
@@ -161,12 +163,22 @@ func runCheck(name string, fn func() (string, error)) doctorCheck {
 	return c
 }
 
-// validateConfigJSON reads a file and verifies it's valid JSON.
-func validateConfigJSON(path string) (string, error) {
-	data, err := os.ReadFile(path)
+// validateConfig reads a client config file and verifies it's valid
+// for the client's format (JSON for mcpServers/array/opencode, YAML for
+// hermes).
+func validateConfig(c clientconfig.Client) (string, error) {
+	data, err := os.ReadFile(c.Path)
 	if err != nil {
 		return "", err
 	}
+	if c.Format == clientconfig.FormatHermes {
+		var v any
+		if err := yaml.Unmarshal(data, &v); err != nil {
+			return "", fmt.Errorf("invalid YAML: %w", err)
+		}
+		return "valid", nil
+	}
+	// All other formats are JSON-based.
 	var v any
 	if err := json.Unmarshal(data, &v); err != nil {
 		return "", fmt.Errorf("invalid JSON: %w", err)

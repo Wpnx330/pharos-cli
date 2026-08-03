@@ -24,6 +24,7 @@ type Manifest struct {
 	Entrypoint   string   `json:"entrypoint,omitempty"`
 	Files        []string `json:"files,omitempty"`
 	Capabilities []string `json:"capabilities,omitempty"`
+	ToolsCount   int      `json:"tools_count,omitempty"`
 }
 
 // Load reads and parses a pharos.json file from the given directory.

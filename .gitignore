@@ -3,3 +3,4 @@ pharos
 *.exe
 *.tgz
 dist/
+pharos-cli

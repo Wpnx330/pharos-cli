@@ -14,6 +14,7 @@ import (
 	"github.com/Wpnx330/pharos-cli/internal/clientconfig"
 	"github.com/Wpnx330/pharos-cli/internal/install"
 	"github.com/Wpnx330/pharos-cli/internal/lockfile"
+	"github.com/Wpnx330/pharos-cli/internal/resolver"
 	"github.com/Wpnx330/pharos-cli/internal/runtime"
 	"github.com/Wpnx330/pharos-cli/internal/semver"
 	"github.com/Wpnx330/pharos-cli/internal/ui"
@@ -252,6 +253,78 @@ func runInstall(cmd *cobra.Command, args []string) {
 	// best-effort: failures are silently ignored.
 	if transport != "stdio" {
 		_ = client.ReportInstallEvent(name, resolvedVersion)
+	}
+
+	// --- Dependency resolution ---
+	// After the primary package is installed, check if it declares
+	// dependencies. If so, resolve and install them recursively.
+	if len(manifest.Dependencies) > 0 {
+		fmt.Printf("\n%s\n", ui.Label.Render("Resolving dependencies..."))
+		r := resolver.New(client)
+		depResult, err := r.ResolveAll(manifest.Dependencies)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s  %v\n", ui.Error.Render("Dependency resolution failed:"), err)
+		} else {
+			// Report conflicts and circular deps as warnings.
+			for _, c := range depResult.Conflicts {
+				fmt.Fprintf(os.Stderr, "%s  %s: %s vs %s → %s (higher)\n",
+					ui.Error.Render("Warning: version conflict"),
+					c.Name, c.Existing, c.Requested, c.Resolution)
+			}
+			for _, cyc := range depResult.Circular {
+				fmt.Fprintf(os.Stderr, "%s  circular dependency detected: %s (skipped)\n",
+					ui.Error.Render("Warning:"), cyc)
+			}
+
+			// Install each resolved dependency that isn't already installed.
+			installed := 0
+			skipped := 0
+			for depName, depVersion := range depResult.Flat {
+				// Skip the primary package itself.
+				if depName == name {
+					continue
+				}
+				if mgr.IsInstalled(depName, depVersion) {
+					fmt.Printf("  %s  %s\n", ui.Muted.Render("Already installed:"), fmt.Sprintf("%s@%s", depName, depVersion))
+					skipped++
+					continue
+				}
+				// Install the dependency.
+				depPkg, err := client.GetPackage(depName)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "%s  failed to fetch %s: %v\n", ui.Error.Render("Warning:"), depName, err)
+					continue
+				}
+				depVD := depPkg.FindVersion(depVersion)
+				if depVD == nil {
+					fmt.Fprintf(os.Stderr, "%s  %s@%s not found in registry\n", ui.Error.Render("Warning:"), depName, depVersion)
+					continue
+				}
+				depTransport := strings.ToLower(strings.TrimSpace(depVD.Manifest.Transport))
+				if depTransport == "" {
+					depTransport = "stdio"
+				}
+				depURL := client.TarballURL(depName, depVersion)
+				_, err = mgr.InstallStdio(depName, depVersion, depURL, depVD.Manifest.Integrity)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "%s  failed to install %s@%s: %v\n", ui.Error.Render("Warning:"), depName, depVersion, err)
+					continue
+				}
+				// Write client config for the dependency.
+				depCfg := install.BuildServerConfig(depVD.Manifest, storeDir)
+				_, _ = install.WriteClientConfigs(depName, depCfg, clientIDs)
+				// Update lockfile for the dependency.
+				_ = install.UpdateLockfile(lockPath, &install.InstallResult{
+					Name: depName, Version: depVersion, Transport: depTransport,
+				}, depURL)
+				fmt.Printf("  %s  %s@%s\n", ui.Success.Render("✓"), depName, depVersion)
+				installed++
+			}
+			if installed > 0 || skipped > 0 {
+				fmt.Printf("%s  %d installed, %d already present\n",
+					ui.Muted.Render("Dependencies:"), installed, skipped)
+			}
+		}
 	}
 
 	// Success summary.

@@ -66,6 +66,14 @@ func (r *Repository) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// Dependency declares a dependency on another Pharos package. The
+// Version field is a semver constraint like "^1.0.0", "~2.1.0", "1.x",
+// or "latest" — the same syntax accepted by the semver package.
+type Dependency struct {
+	Name    string `json:"name"`
+	Version string `json:"version"` // semver constraint like "^1.0.0"
+}
+
 // Manifest is the package manifest embedded in each version.
 type Manifest struct {
 	Name         string            `json:"name"`
@@ -91,6 +99,9 @@ type Manifest struct {
 	Integrity string `json:"integrity,omitempty"`
 	// Args are extra arguments appended after the package name.
 	Args []string `json:"args,omitempty"`
+	// Dependencies lists other Pharos packages required by this package.
+	// Each entry's Version is a semver constraint resolved at install time.
+	Dependencies []Dependency `json:"dependencies,omitempty"`
 }
 
 // GetPackage fetches full details for the named package.

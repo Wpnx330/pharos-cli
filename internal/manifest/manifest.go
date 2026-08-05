@@ -25,6 +25,15 @@ type Manifest struct {
 	Files        []string `json:"files,omitempty"`
 	Capabilities []string `json:"capabilities,omitempty"`
 	ToolsCount   int      `json:"tools_count,omitempty"`
+	// Dependencies lists other Pharos packages required by this package.
+	// Each entry's Version is a semver constraint resolved at install time.
+	Dependencies []Dependency `json:"dependencies,omitempty"`
+}
+
+// Dependency declares a dependency on another Pharos package.
+type Dependency struct {
+	Name    string `json:"name"`
+	Version string `json:"version"` // semver constraint like "^1.0.0"
 }
 
 // Load reads and parses a pharos.json file from the given directory.

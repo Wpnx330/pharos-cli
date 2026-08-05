@@ -28,8 +28,9 @@ pharos package [dir]           # Package a directory into a tarball (like npm pa
 pharos publish [dir]           # Package + upload + publish to the registry
 
 # Local management
-pharos install <name>          # Download and install a package
+pharos install <name>          # Download and install a package (with recursive dependency resolution)
 pharos list                    # List locally installed packages
+pharos lock                    # Resolve dependencies in pharos.json and print the tree
 
 # Auth
 pharos login                   # GitHub OAuth login (opens browser)
@@ -97,6 +98,7 @@ Credentials are stored at `~/.pharos/credentials.json` after `pharos login`.
 | `files` | no | Explicit file list to package (auto-detected if omitted) |
 | `homepage` | no | Homepage URL |
 | `repository` | no | Repository URL |
+| `dependencies` | no | Array of `{name, version}` — semver constraints for recursive install |
 
 ## Publishing
 
@@ -124,3 +126,53 @@ go test ./... -v -count=1
 go vet ./...
 go build .
 ```
+
+## Dependency Resolution
+
+The CLI supports recursive dependency resolution. When you install a package that declares
+dependencies, the CLI resolves them to concrete versions and installs them automatically.
+
+### Declaring dependencies in `pharos.json`
+
+```json
+{
+  "name": "my-server",
+  "version": "1.0.0",
+  "transport": "stdio",
+  "runtime": "python",
+  "command": "python server.py",
+  "dependencies": [
+    {"name": "other-server", "version": ">=1.0.0"},
+    {"name": "utils-lib", "version": "^2.0.0"}
+  ]
+}
+```
+
+### How it works
+
+1. `pharos install <name>` installs the primary package first
+2. If the manifest has a `dependencies` array, the CLI prints "Resolving dependencies..."
+3. Each dependency is resolved recursively (transitive deps included)
+4. Already-installed dependencies at the resolved version are skipped
+5. Version conflicts are resolved by choosing the higher version
+6. Circular dependencies are detected and warned about (install continues)
+7. Each installed dependency gets a client config entry + lockfile entry
+
+### `pharos lock`
+
+```bash
+pharos lock    # Resolve all deps in pharos.json, print the tree
+```
+
+Resolves dependencies and prints the concrete versions. Lockfile writing is planned but
+not yet implemented — for now, resolved versions are printed to stdout.
+
+### Version constraints
+
+| Constraint | Meaning |
+|------------|---------|
+| `1.0.0` | Exact version |
+| `>=1.0.0` | Minimum version |
+| `^1.0.0` | Compatible (same major) |
+| `~1.0.0` | Approximately (same minor) |
+| `*` | Any version |

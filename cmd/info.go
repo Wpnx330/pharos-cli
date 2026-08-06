@@ -87,9 +87,18 @@ var infoCmd = &cobra.Command{
 			}
 			printMeta("Source", source)
 
+			// Dependencies — show declared dependency constraints
+			if len(latestManifest.Dependencies) > 0 {
+				var deps []string
+				for _, dep := range latestManifest.Dependencies {
+					deps = append(deps, dep.Name+"@"+dep.Version)
+				}
+				printMeta("Dependencies", strings.Join(deps, ", "))
+			}
+
 			// Verified — always show
 			printMeta("Verified", ui.Muted.Render("No"))
-		}
+			}
 
 		// License — show "Not specified" when empty; fall back to the
 		// latest version's manifest if the packages table has no value.

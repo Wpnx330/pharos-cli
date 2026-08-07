@@ -22,15 +22,18 @@ pharos search <query>          # Search the registry
 pharos info <name>             # Show package details
 
 # Package lifecycle
-pharos init                    # Scaffold a new pharos.json (arrow-key TUI selectors)
+pharos init                    # Scaffold a new pharos.json (interactive, includes dependency prompts)
 pharos init --yes              # Non-interactive (use defaults)
 pharos package [dir]           # Package a directory into a tarball (like npm pack)
 pharos publish [dir]           # Package + upload + publish to the registry
 
 # Local management
 pharos install <name>          # Download and install a package (with recursive dependency resolution)
+pharos install <name> --no-dep-config  # Install without writing MCP client configs for dependencies
 pharos list                    # List locally installed packages
-pharos lock                    # Resolve dependencies in pharos.json and print the tree
+pharos lock                    # Resolve dependencies and write ./pharos.lock
+pharos remove <name>           # Remove a locally installed package
+pharos remove <name> --force   # Remove even if other packages depend on it
 
 # Auth
 pharos login                   # GitHub OAuth login (opens browser)
@@ -52,6 +55,9 @@ pharos version                 # Print CLI version
 - `--token` / `-t` — Auth token for publishing
 - `--dry-run` — Validate manifest without publishing
 - `--yes` — Skip interactive prompts (init)
+- `--no-dep-config` — Don't write MCP client configs for dependencies (install)
+- `--force` — Remove a package even if other packages depend on it (remove)
+- `--frozen` — Install strictly from lockfile; refuse if missing or mismatched (install)
 
 ## Configuration
 
@@ -155,17 +161,52 @@ dependencies, the CLI resolves them to concrete versions and installs them autom
 3. Each dependency is resolved recursively (transitive deps included)
 4. Already-installed dependencies at the resolved version are skipped
 5. Version conflicts are resolved by choosing the higher version
-6. Circular dependencies are detected and warned about (install continues)
-7. Each installed dependency gets a client config entry + lockfile entry
+6. Circular dependencies are detected at **publish time** — the registry rejects the publish with an error. At install time, the CLI also detects cycles and skips them
+7. Each installed dependency gets a client config entry + lockfile entry (unless `--no-dep-config` is passed)
+
+### `pharos init` dependency prompts
+
+During `pharos init`, after selecting a license, the CLI prompts for dependencies.
+Enter each dependency in one of these formats:
+
+| Input | Stored as |
+|-------|-----------|
+| `name` | `*` (any version) |
+| `name@latest` | `latest` |
+| `name>=0.1.0` | `>=0.1.0` |
+| `name=0.1.0` | `=0.1.0` |
+| `name<=0.1.0` | `<=0.1.0` |
+| `name^1.0.0` | `^1.0.0` |
+
+An empty line finishes dependency entry.
 
 ### `pharos lock`
 
 ```bash
-pharos lock    # Resolve all deps in pharos.json, print the tree
+pharos lock    # Resolve all deps in pharos.json, write ./pharos.lock
 ```
 
-Resolves dependencies and prints the concrete versions. Lockfile writing is planned but
-not yet implemented — for now, resolved versions are printed to stdout.
+Resolves dependencies and writes a lockfile at `./pharos.lock` (per-project, like
+`package-lock.json`). The lockfile records the concrete version, transport, and registry
+URL for each resolved package.
+
+### `pharos remove` dependency protection
+
+```bash
+pharos remove <name>           # Remove a package (blocked if other packages depend on it)
+pharos remove <name> --force   # Remove even if other packages depend on it
+```
+
+When you try to remove a package that is a required dependency of another installed
+package, the CLI blocks the removal and lists the dependent packages. Use `--force`
+to override.
+
+### Circular dependency detection at publish time
+
+The registry rejects publishes that would create circular dependencies. If package A
+depends on B and package B depends on A, publishing the second package will be rejected
+with a `CIRCULAR_DEPENDENCY` error showing the cycle path. Forward references (dependencies
+not yet in the registry) are allowed — the cycle is caught on the second publish.
 
 ### Version constraints
 

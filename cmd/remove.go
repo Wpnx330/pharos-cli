@@ -194,21 +194,34 @@ type installedMeta struct {
 }
 
 // findDependents returns the sorted names of installed packages that
-// declare target as a dependency. It scans the lockfile for every
-// installed package and reads each package's dependency list from the
-// store (checking both .pharos-installed.json and pharos.json).
+// declare target as a dependency. It scans the store directory directly
+// (not the lockfile) so it catches packages even if the lockfile is stale
+// or missing. For each package directory it reads the version
+// subdirectories and checks both .pharos-installed.json and pharos.json.
 func findDependents(storeDir, lockPath, target string) ([]string, error) {
-	lf, err := lockfile.Load(lockPath)
+	entries, err := os.ReadDir(storeDir)
 	if err != nil {
-		return nil, fmt.Errorf("load lockfile: %w", err)
+		return nil, err
 	}
 	var dependents []string
-	for pkgName, entry := range lf.Servers {
-		if pkgName == target {
+	for _, entry := range entries {
+		if !entry.IsDir() || entry.Name() == target {
 			continue
 		}
-		if packageDependsOn(storeDir, pkgName, entry.Version, target) {
-			dependents = append(dependents, pkgName)
+		// Check all version subdirectories of this package.
+		pkgPath := filepath.Join(storeDir, entry.Name())
+		versions, err := os.ReadDir(pkgPath)
+		if err != nil {
+			continue
+		}
+		for _, v := range versions {
+			if !v.IsDir() {
+				continue
+			}
+			if packageDependsOn(storeDir, entry.Name(), v.Name(), target) {
+				dependents = append(dependents, entry.Name())
+				break // one version match is enough
+			}
 		}
 	}
 	sort.Strings(dependents)

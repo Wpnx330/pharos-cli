@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/Wpnx330/pharos-cli/internal/canonical"
 	"github.com/Wpnx330/pharos-cli/internal/clientconfig"
@@ -117,10 +118,14 @@ func rewriteClientConfig(path string, servers map[string]json.RawMessage) error 
 }
 
 // rewriteClientConfigFormat rewrites a client config file with the given
-// server map, using the specified format ("mcpServers" or "array").
+// server map, using the specified format ("mcpServers", "array", or
+// "hermes-yaml").
 func rewriteClientConfigFormat(path, format string, servers map[string]json.RawMessage) error {
 	if format == "array" {
 		return rewriteArrayConfig(path, servers)
+	}
+	if format == "hermes-yaml" {
+		return rewriteHermesConfig(path, servers)
 	}
 	type configFile struct {
 		McpServers map[string]json.RawMessage `json:"mcpServers"`
@@ -131,6 +136,42 @@ func rewriteClientConfigFormat(path, format string, servers map[string]json.RawM
 		return err
 	}
 	out = append(out, '\n')
+	return os.WriteFile(path, out, 0o644)
+}
+
+// rewriteHermesConfig writes the servers map back to a Hermes config.yaml
+// in YAML format with a top-level mcp_servers: key. All existing
+// top-level keys (provider settings, etc.) are preserved.
+func rewriteHermesConfig(path string, servers map[string]json.RawMessage) error {
+	// Read existing config to preserve non-mcp_servers keys.
+	var root map[string]any
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read config %s: %w", path, err)
+	}
+	if len(data) > 0 {
+		if err := yaml.Unmarshal(data, &root); err != nil {
+			return fmt.Errorf("parse config %s: %w", path, err)
+		}
+	}
+	if root == nil {
+		root = make(map[string]any)
+	}
+
+	// Build the mcp_servers map from the raw JSON entries.
+	yamlServers := make(map[string]any)
+	for name, raw := range servers {
+		var m map[string]any
+		if json.Unmarshal(raw, &m) == nil {
+			yamlServers[name] = m
+		}
+	}
+	root["mcp_servers"] = yamlServers
+
+	out, err := yaml.Marshal(root)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
 	return os.WriteFile(path, out, 0o644)
 }
 

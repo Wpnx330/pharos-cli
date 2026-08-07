@@ -116,6 +116,7 @@ var listCmd = &cobra.Command{
 			transport := e.pkg.Transport
 
 			var statusStr, portStr, memStr, uptimeStr string
+			isStdio := e.pkg.Transport == "stdio" || e.pkg.Transport == ""
 			if e.status.Running {
 				statusStr = ui.Success.Render("running")
 				if e.status.Port > 0 {
@@ -125,6 +126,11 @@ var listCmd = &cobra.Command{
 					memStr = ui.FormatBytes(e.status.Memory)
 				}
 				uptimeStr = e.status.Uptime
+			} else if isStdio {
+				// stdio servers don't have a standalone lifecycle — they're
+				// spawned by MCP clients on demand. "idle" communicates that
+				// the package is installed and ready, not broken or stopped.
+				statusStr = ui.Muted.Render("idle")
 			} else {
 				statusStr = ui.Muted.Render("stopped")
 			}

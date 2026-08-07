@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -69,6 +70,26 @@ var startCmd = &cobra.Command{
 			return
 		}
 		m := sm.manifest
+
+		// stdio servers communicate over stdin/stdout — they're meant to be
+		// spawned by MCP clients (Cursor, Claude Desktop, etc.) as child
+		// processes with piped I/O. Starting one in background mode makes no
+		// sense: the process would have no stdin to read from and would exit
+		// immediately. Only allow --foreground (useful for debugging) or
+		// refuse with an informative message.
+		transport := strings.ToLower(strings.TrimSpace(m.Transport))
+		if transport == "" {
+			transport = "stdio"
+		}
+		if transport == "stdio" && !startForeground {
+			fmt.Printf("%s %s is a stdio server — it launches automatically when an\n",
+				ui.Label.Render("ℹ"), ui.PackageName.Render(name))
+			fmt.Printf("%s MCP client (Cursor, Claude Desktop, etc.) connects. No need to start it manually.\n",
+				ui.Muted.Render(" "))
+			fmt.Printf("%s To run in foreground for debugging: pharos start %s --foreground\n",
+				ui.Muted.Render(" "), name)
+			return
+		}
 
 		// Determine the command to run
 		runCmd := m.RunCommand()

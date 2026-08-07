@@ -3,10 +3,14 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"sort"
+	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/Wpnx330/pharos-cli/internal/api"
+	"github.com/Wpnx330/pharos-cli/internal/lockfile"
 	"github.com/Wpnx330/pharos-cli/internal/manifest"
 	"github.com/Wpnx330/pharos-cli/internal/resolver"
 	"github.com/Wpnx330/pharos-cli/internal/ui"
@@ -43,12 +47,26 @@ func runLock(cmd *cobra.Command, args []string) {
 		return
 	}
 
+	cfg, client := loadConfig()
+
 	if len(m.Dependencies) == 0 {
-		fmt.Printf("%s\n", ui.Muted.Render("No dependencies declared in pharos.json. Nothing to lock."))
+		// Even with no dependencies we still write a lockfile containing
+		// the primary (root) package so downstream `pharos install --frozen`
+		// has something to work from.
+		lf := lockfile.New()
+		lf.Set(m.Name, lockfile.ServerEntry{
+			Version:     m.Version,
+			Transport:   normalizeLockTransport(m.Transport),
+			Resolved:    cfg.Registry,
+			InstalledAt: time.Now().UTC(),
+		})
+		if err := writeLock(lf); err != nil {
+			fmt.Fprintln(os.Stderr, ui.Error.Render("Failed to write lockfile:"), err)
+			return
+		}
+		fmt.Printf("%s\n", ui.Muted.Render("No dependencies declared in pharos.json; wrote lockfile for primary package only."))
 		return
 	}
-
-	_, client := loadConfig()
 
 	fmt.Printf("%s\n", ui.Label.Render("Resolving dependencies..."))
 	r := resolver.New(client)
@@ -86,9 +104,107 @@ func runLock(cmd *cobra.Command, args []string) {
 		fmt.Printf("  %s\n", ui.Muted.Render(entry))
 	}
 
-	// TODO: Write the resolved versions to pharos.lock using the lockfile package.
-	// This requires extending lockfile.LockEntry to support dependencies or
-	// adding a "dependencies" section to the lockfile format.
-	fmt.Printf("\n%s  Lockfile update not yet implemented. Resolved versions printed above.\n",
-		ui.Muted.Render("Note:"))
+	// Build the lockfile from the resolver output.
+	lf := buildLockfile(result, m, cfg.Registry)
+
+	// Always include the primary (root) package itself.
+	if m.Name != "" {
+		lf.Set(m.Name, lockfile.ServerEntry{
+			Version:     m.Version,
+			Transport:   normalizeLockTransport(m.Transport),
+			Resolved:    cfg.Registry,
+			InstalledAt: time.Now().UTC(),
+		})
+	}
+
+	if err := writeLock(lf); err != nil {
+		fmt.Fprintln(os.Stderr, ui.Error.Render("Failed to write lockfile:"), err)
+		return
+	}
+
+	fmt.Printf("\n%s  Lockfile written: %s  (%d packages)\n",
+		ui.Label.Render("Done"), lockPathOf(lf), len(lf.Servers))
+}
+
+// lockPathOf is a small helper that resolves the lockfile path. It is
+// only used for the confirmation message so the printed path matches
+// what writeLock actually persisted to.
+func lockPathOf(_ *lockfile.Lockfile) string {
+	p, err := lockfile.DefaultPath()
+	if err != nil {
+		return "pharos.lock"
+	}
+	return p
+}
+
+// writeLock resolves the default lockfile path and persists the given
+// lockfile there, overwriting any existing lockfile.
+func writeLock(lf *lockfile.Lockfile) error {
+	path, err := lockfile.DefaultPath()
+	if err != nil {
+		return fmt.Errorf("resolve lockfile path: %w", err)
+	}
+	return lf.Save(path)
+}
+
+// normalizeLockTransport coerces a manifest transport value into the
+// canonical form stored in the lockfile ("stdio", "http", "http-sse",
+// "sse"). Empty input defaults to "stdio".
+func normalizeLockTransport(t string) string {
+	t = strings.ToLower(strings.TrimSpace(t))
+	switch t {
+	case "":
+		return "stdio"
+	case "http-sse", "sse", "https":
+		return "http-sse"
+	case "http":
+		return "http"
+	default:
+		return t
+	}
+}
+
+// buildLockfile converts a resolver.Result into a lockfile.Lockfile.
+// For every resolved package it records the concrete version, the
+// transport (looked up from the manifest dependency list when
+// available, otherwise defaulting to "stdio"), and the registry URL
+// the package was resolved from.
+//
+// The flat map is iterated in sorted order so the resulting lockfile
+// is deterministic across runs.
+func buildLockfile(result *resolver.Result, m *manifest.Manifest, registryURL string) *lockfile.Lockfile {
+	lf := lockfile.New()
+
+	// Index manifest dependencies by name so we can recover the
+	// transport hint (if the manifest declared one) for top-level deps.
+	manifestTransports := make(map[string]string, len(m.Dependencies))
+	for _, d := range m.Dependencies {
+		// manifest.Dependency only carries Name + Version constraint,
+		// not transport — but we keep this map for future extension
+		// and to mark which packages are top-level.
+		manifestTransports[d.Name] = ""
+	}
+
+	// Sort package names for deterministic lockfile output.
+	names := make([]string, 0, len(result.Flat))
+	for name := range result.Flat {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		version := result.Flat[name]
+		transport := "stdio"
+		if t, ok := manifestTransports[name]; ok && t != "" {
+			transport = normalizeLockTransport(t)
+		}
+		lf.Set(name, lockfile.ServerEntry{
+			Version:     version,
+			Transport:   transport,
+			Resolved:    registryURL,
+			InstalledAt: time.Now().UTC(),
+		})
+	}
+
+	return lf
 }

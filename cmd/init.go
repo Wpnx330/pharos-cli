@@ -84,6 +84,9 @@ func buildManifestInteractive() *manifest.Manifest {
 		"MIT", "Apache-2.0", "GPL-3.0", "BSD-3-Clause", "ISC", "Unlicense",
 	}, "MIT")
 
+	// Dependencies — freeform, repeat until empty line
+	m.Dependencies = dependenciesPrompt()
+
 	m.Homepage = textPrompt("Homepage", "")
 
 	return m
@@ -317,6 +320,107 @@ func multiSelectPrompt(label string, options []string, defaults []string) []stri
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+// dependenciesPrompt interactively collects dependency entries until the user
+// submits an empty line. Each line is parsed by parseDependencyInput.
+func dependenciesPrompt() []manifest.Dependency {
+	fmt.Printf("%s\n", ui.Label.Render("Dependencies (empty line to finish):"))
+	var deps []manifest.Dependency
+	for {
+		fmt.Print(ui.Muted.Render("  dep> "))
+		line, _ := stdinReader.ReadString('\n')
+		input := strings.TrimSpace(line)
+		if input == "" {
+			break
+		}
+		name, version, err := parseDependencyInput(input)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  %s %s\n", ui.Error.Render("✗"), err.Error())
+			continue
+		}
+		deps = append(deps, manifest.Dependency{Name: name, Version: version})
+		fmt.Printf("  %s %s@%s\n", ui.Success.Render("✓ added"), name, version)
+	}
+	return deps
+}
+
+// parseDependencyInput parses a single dependency entry typed by the user.
+// Supported formats:
+//
+//	name            → version "*"  (any)
+//	name@latest     → version "latest"
+//	name>=0.1.0     → version ">=0.1.0"
+//	name=0.1.0      → version "=0.1.0"
+//	name<=0.1.0     → version "<=0.1.0"
+//	name^1.0.0      → version "^1.0.0"
+//
+// The name must be non-empty and contain only alphanumerics, dots, hyphens,
+// underscores, or forward slashes (scope names).
+func parseDependencyInput(input string) (name, version string, err error) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return "", "", fmt.Errorf("empty input")
+	}
+
+	// Handle @latest first — but be careful: scoped names like @scope/pkg
+	// can start with '@'. We treat '@' as a separator only when it appears
+	// after at least one name character. name@latest → latest.
+	if idx := strings.Index(input, "@"); idx > 0 {
+		name = input[:idx]
+		version = strings.TrimSpace(input[idx+1:])
+		if version == "" {
+			return "", "", fmt.Errorf("missing version after @")
+		}
+		if version != "latest" {
+			// Unknown @version form: treat the whole thing as a version string
+			// (preserves whatever the user typed after the '@')
+		}
+		return validateDepName(name, version)
+	}
+
+	// Semver constraint operators: >=, <=, =, ^ (and > / <)
+	for _, op := range []string{">=", "<=", "==", ">", "<", "=", "^", "~"} {
+		if idx := strings.Index(input, op); idx > 0 {
+			name = strings.TrimSpace(input[:idx])
+			rawVersion := strings.TrimSpace(input[idx:])
+			// Normalize "==X" → "=X" per our supported forms
+			if strings.HasPrefix(rawVersion, "==") {
+				rawVersion = rawVersion[1:]
+			}
+			// Reject a bare operator with no actual version (e.g. "lodash=")
+			rest := strings.TrimLeft(rawVersion, "><=^~")
+			if strings.TrimSpace(rest) == "" {
+				return "", "", fmt.Errorf("missing version after %q", op)
+			}
+			return validateDepName(name, rawVersion)
+		}
+	}
+
+	// Bare name → any version
+	name = input
+	version = "*"
+	return validateDepName(name, version)
+}
+
+// validateDepName checks that the dependency name is non-empty and contains
+// only allowed characters before returning the (name, version, nil) tuple.
+func validateDepName(name, version string) (string, string, error) {
+	if name == "" {
+		return "", "", fmt.Errorf("dependency name is required")
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '.', r == '-', r == '_', r == '/', r == '@':
+			// allowed
+		default:
+			return "", "", fmt.Errorf("invalid character %q in dependency name", r)
+		}
+	}
+	return name, version, nil
+}
 
 // defaultCommand returns a sensible default command for the runtime.
 func defaultCommand(runtime, transport string) string {

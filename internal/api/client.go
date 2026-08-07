@@ -76,15 +76,26 @@ type APIError struct {
 
 // Error implements the error interface.
 func (e *APIError) Error() string {
-	var m struct {
+	// The registry sends errors as {"error": {"code": "...", "message": "..."}}.
+	var nested struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(e.Body, &nested) == nil && nested.Error.Message != "" {
+		return fmt.Sprintf("API error (%d): %s", e.StatusCode, nested.Error.Message)
+	}
+	// Fallback for flat error shapes.
+	var flat struct {
 		Error   string `json:"error"`
 		Message string `json:"message"`
 	}
-	if json.Unmarshal(e.Body, &m) == nil && (m.Error != "" || m.Message != "") {
-		if m.Error != "" {
-			return fmt.Sprintf("API error (%d): %s", e.StatusCode, m.Error)
+	if json.Unmarshal(e.Body, &flat) == nil && (flat.Error != "" || flat.Message != "") {
+		if flat.Error != "" {
+			return fmt.Sprintf("API error (%d): %s", e.StatusCode, flat.Error)
 		}
-		return fmt.Sprintf("API error (%d): %s", e.StatusCode, m.Message)
+		return fmt.Sprintf("API error (%d): %s", e.StatusCode, flat.Message)
 	}
 	return fmt.Sprintf("API error (%d): %s", e.StatusCode, string(e.Body))
 }

@@ -125,6 +125,31 @@ You can also package separately:
 pharos package ./my-mcp-server    # creates my-mcp-server-1.0.0.tgz
 ```
 
+## Safe Config Writes
+
+All MCP client config writes (install and remove) go through a safe write pattern:
+
+1. **Write to temp file** — changes go to `<config>.pharos-tmp`, never the original directly
+2. **Validate** — the temp file is read back and checked:
+   - Non-empty (0 bytes = abort)
+   - Parseable as the expected format (YAML for Hermes, JSON for others)
+   - Size check: if the original was >200 bytes and the new file is <25% of it, abort (catches truncation/corruption)
+3. **Atomic swap** — `rename` temp over original (atomic on most filesystems)
+4. **Cleanup** — if any step fails, the temp file is deleted and the original is left untouched
+
+This means a buggy write can never corrupt an existing config — the original is only replaced after the new version passes validation.
+
+### Supported client formats
+
+| Client | Config path | Format |
+|--------|------------|--------|
+| Hermes Agent | `~/.hermes/config.yaml` | YAML (`mcp_servers:`) |
+| Claude Desktop | `~/AppData/Roaming/Claude/claude_desktop_config.json` | JSON (`{"mcpServers": {}}`) |
+| Cursor | `~/.cursor/mcp.json` | JSON (`{"mcpServers": {}}`) |
+| Cline | `~/.../cline_mcp_settings.json` | JSON (`{"mcpServers": {}}`) |
+| OpenCode | `~/.config/opencode/opencode.json` | JSON (`{"mcpServers": {}}`) |
+| Generic MCP | `~/.config/mcp/mcp.json` | JSON (`{"mcpServers": {}}`) |
+
 ## Development
 
 ```bash

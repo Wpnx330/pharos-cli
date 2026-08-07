@@ -305,11 +305,21 @@ func runInstall(cmd *cobra.Command, args []string) {
 					depTransport = "stdio"
 				}
 				depURL := client.TarballURL(depName, depVersion)
-				_, err = mgr.InstallStdio(depName, depVersion, depURL, depVD.Manifest.Integrity)
+
+				// Transport-aware install: http/sse dependencies don't need a
+				// tarball download — they're remote servers. stdio deps get
+				// downloaded and extracted locally.
+				var depResult *install.InstallResult
+				if depTransport == "http" || depTransport == "http-sse" || depTransport == "sse" {
+					depResult, err = mgr.InstallHTTP(depName, depVersion)
+				} else {
+					depResult, err = mgr.InstallStdio(depName, depVersion, depURL, depVD.Manifest.Integrity)
+				}
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "%s  failed to install %s@%s: %v\n", ui.Error.Render("Warning:"), depName, depVersion, err)
 					continue
 				}
+				_ = depResult // used for transport tracking above
 				// Write client config for the dependency.
 				depCfg := install.BuildServerConfig(depVD.Manifest, storeDir)
 				_, _ = install.WriteClientConfigs(depName, depCfg, clientIDs)

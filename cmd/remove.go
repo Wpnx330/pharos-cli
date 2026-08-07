@@ -136,7 +136,7 @@ func rewriteClientConfigFormat(path, format string, servers map[string]json.RawM
 		return err
 	}
 	out = append(out, '\n')
-	return os.WriteFile(path, out, 0o644)
+	return clientconfig.SafeWriteConfig(path, out, "mcpServers")
 }
 
 // rewriteHermesConfig writes the servers map back to a Hermes config.yaml
@@ -172,7 +172,7 @@ func rewriteHermesConfig(path string, servers map[string]json.RawMessage) error 
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
-	return os.WriteFile(path, out, 0o644)
+	return clientconfig.SafeWriteConfig(path, out, "hermes-yaml")
 }
 
 // rewriteArrayConfig writes the servers map as a flat JSON array, each
@@ -223,7 +223,7 @@ func rewriteArrayConfig(path string, servers map[string]json.RawMessage) error {
 		return err
 	}
 	out = append(out, '\n')
-	return os.WriteFile(path, out, 0o644)
+	return clientconfig.SafeWriteConfig(path, out, "mcpServers")
 }
 
 // installedMeta is a local representation of .pharos-installed.json that

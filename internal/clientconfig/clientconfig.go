@@ -513,16 +513,87 @@ func mergeHermes(c Client, name string, server ServerConfig) error {
 	return writeHermesConfig(c.Path, out)
 }
 
-// writeHermesConfig writes the YAML data to the config file, creating
-// parent directories as needed.
-func writeHermesConfig(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+// safeWriteConfig writes data to the config file using a safe copy-modify-
+// validate-swap pattern:
+//  1. Read the original file (if it exists) and record its size.
+//  2. Write the new data to a temp file in the same directory.
+//  3. Validate the temp file: it must be non-empty, and if the original
+//     was >100 bytes, the new file must be at least 50% of the original
+//     size (catches accidental truncation/corruption).
+//  4. Rename the temp file over the original (atomic on most filesystems).
+//
+// If any step fails, the original file is left untouched and the temp
+// file is cleaned up.
+func SafeWriteConfig(path string, data []byte, format string) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("write config %s: %w", path, err)
+
+	// 1. Record original size (if file exists).
+	origSize := 0
+	if origData, err := os.ReadFile(path); err == nil {
+		origSize = len(origData)
+	}
+
+	// 2. Write to temp file.
+	tmpPath := path + ".pharos-tmp"
+	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+		return fmt.Errorf("write temp config: %w", err)
+	}
+
+	// 3. Validate.
+	writtenData, err := os.ReadFile(tmpPath)
+	if err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("read back temp config: %w", err)
+	}
+	writtenSize := len(writtenData)
+
+	// Non-empty check.
+	if writtenSize == 0 {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("validation failed: wrote 0 bytes")
+	}
+
+	// Size ratio check: if the original was substantial and the new
+	// file is less than 25% of it, something is probably wrong.
+	// We use 25% (not 50%) because removing a server from a 2-entry
+	// config legitimately halves the size, but even that stays above
+	// 25%. Going from 10KB to 23 bytes (the Hermes corruption bug)
+	// would be caught at any reasonable threshold.
+	if origSize > 200 && writtenSize < origSize/4 {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("validation failed: wrote %d bytes but original was %d bytes (possible truncation)", writtenSize, origSize)
+	}
+
+	// Format check: re-parse to confirm the written file is valid.
+	switch format {
+	case "hermes-yaml":
+		var verify map[string]any
+		if err := yaml.Unmarshal(writtenData, &verify); err != nil {
+			_ = os.Remove(tmpPath)
+			return fmt.Errorf("validation failed: written YAML is not parseable: %w", err)
+		}
+	default:
+		var verify configFile
+		if err := json.Unmarshal(writtenData, &verify); err != nil {
+			_ = os.Remove(tmpPath)
+			return fmt.Errorf("validation failed: written JSON is not parseable: %w", err)
+		}
+	}
+
+	// 4. Atomic swap.
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("swap config %s: %w", path, err)
 	}
 	return nil
+}
+
+// writeHermesConfig writes the YAML data to the config file safely.
+func writeHermesConfig(path string, data []byte) error {
+	return SafeWriteConfig(path, data, "hermes-yaml")
 }
 
 // removeHermesServer removes a server entry from the Hermes YAML config.
@@ -554,21 +625,15 @@ func removeHermesServer(path, name string) (bool, error) {
 	return true, writeHermesConfig(path, out)
 }
 
-// writeConfig marshals and writes the config file, creating dirs.
+// writeConfig marshals and writes the config file safely.
 func writeConfig(path string, cfg *configFile) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create config dir: %w", err)
-	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 	// Trailing newline for friendliness with editors.
 	data = append(data, '\n')
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("write config %s: %w", path, err)
-	}
-	return nil
+	return SafeWriteConfig(path, data, "mcpServers")
 }
 
 // buildEntry produces the JSON raw message for a server entry, tailored

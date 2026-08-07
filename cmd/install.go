@@ -21,11 +21,12 @@ import (
 )
 
 var (
-	installVersion      string
-	installGlobal       bool
-	installClient       string
+	installVersion       string
+	installGlobal        bool
+	installClient        string
 	installSelectClients bool
-	installFrozen       bool
+	installFrozen        bool
+	installSkipDepConfig bool
 )
 
 var installCmd = &cobra.Command{
@@ -57,6 +58,7 @@ func init() {
 	installCmd.Flags().StringVarP(&installClient, "client", "c", "", "write config only to these clients (comma-separated: cursor,claude-desktop,generic)")
 	installCmd.Flags().BoolVar(&installSelectClients, "select-clients", false, "interactively pick which MCP clients to configure")
 	installCmd.Flags().BoolVar(&installFrozen, "frozen", false, "install strictly from lockfile; refuse if missing or mismatched")
+	installCmd.Flags().BoolVar(&installSkipDepConfig, "no-dep-config", false, "don't write MCP client configs for dependencies")
 	rootCmd.AddCommand(installCmd)
 }
 
@@ -284,12 +286,9 @@ func runInstall(cmd *cobra.Command, args []string) {
 				if depName == name {
 					continue
 				}
-				if mgr.IsInstalled(depName, depVersion) {
-					fmt.Printf("  %s  %s\n", ui.Muted.Render("Already installed:"), fmt.Sprintf("%s@%s", depName, depVersion))
-					skipped++
-					continue
-				}
-				// Install the dependency.
+
+				// Fetch the dependency's manifest — needed for both install
+				// and client config writing (even if already installed).
 				depPkg, err := client.GetPackage(depName)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "%s  failed to fetch %s: %v\n", ui.Error.Render("Warning:"), depName, err)
@@ -306,23 +305,38 @@ func runInstall(cmd *cobra.Command, args []string) {
 				}
 				depURL := client.TarballURL(depName, depVersion)
 
+				if mgr.IsInstalled(depName, depVersion) {
+					fmt.Printf("  %s  %s\n", ui.Muted.Render("Already installed:"), fmt.Sprintf("%s@%s", depName, depVersion))
+					skipped++
+					// Even if already installed, write client configs so the
+					// dependency is accessible to MCP clients. Skip if
+					// --no-dep-config was passed.
+					if !installSkipDepConfig {
+						depCfg := install.BuildServerConfig(depVD.Manifest, storeDir)
+						_, _ = install.WriteClientConfigs(depName, depCfg, clientIDs)
+					}
+					continue
+				}
+
 				// Transport-aware install: http/sse dependencies don't need a
 				// tarball download — they're remote servers. stdio deps get
 				// downloaded and extracted locally.
-				var depResult *install.InstallResult
+				var depInstallResult *install.InstallResult
 				if depTransport == "http" || depTransport == "http-sse" || depTransport == "sse" {
-					depResult, err = mgr.InstallHTTP(depName, depVersion)
+					depInstallResult, err = mgr.InstallHTTP(depName, depVersion)
 				} else {
-					depResult, err = mgr.InstallStdio(depName, depVersion, depURL, depVD.Manifest.Integrity)
+					depInstallResult, err = mgr.InstallStdio(depName, depVersion, depURL, depVD.Manifest.Integrity)
 				}
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "%s  failed to install %s@%s: %v\n", ui.Error.Render("Warning:"), depName, depVersion, err)
 					continue
 				}
-				_ = depResult // used for transport tracking above
-				// Write client config for the dependency.
-				depCfg := install.BuildServerConfig(depVD.Manifest, storeDir)
-				_, _ = install.WriteClientConfigs(depName, depCfg, clientIDs)
+				_ = depInstallResult
+				// Write client config for the dependency (unless --no-dep-config).
+				if !installSkipDepConfig {
+					depCfg := install.BuildServerConfig(depVD.Manifest, storeDir)
+					_, _ = install.WriteClientConfigs(depName, depCfg, clientIDs)
+				}
 				// Update lockfile for the dependency.
 				_ = install.UpdateLockfile(lockPath, &install.InstallResult{
 					Name: depName, Version: depVersion, Transport: depTransport,

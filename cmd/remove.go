@@ -5,14 +5,20 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/Wpnx330/pharos-cli/internal/canonical"
 	"github.com/Wpnx330/pharos-cli/internal/clientconfig"
 	"github.com/Wpnx330/pharos-cli/internal/lockfile"
+	"github.com/Wpnx330/pharos-cli/internal/manifest"
 	"github.com/Wpnx330/pharos-cli/internal/ui"
 )
+
+// removeForce holds the value of the --force flag.
+var removeForce bool
 
 var removeCmd = &cobra.Command{
 	Use:     "remove <name>",
@@ -23,8 +29,21 @@ var removeCmd = &cobra.Command{
 		name := args[0]
 		removed := false
 
-		// 1. Remove from store (~/.pharos/store/{name}/)
+		// 0. Dependency protection — block removal if other installed
+		// packages declare this one as a dependency, unless --force.
 		storeDir, err := os.UserHomeDir()
+		if err == nil {
+			pharosStore := filepath.Join(storeDir, ".pharos", "store")
+			lockPath, lockErr := lockfile.DefaultPath()
+			if lockErr == nil {
+				if err := checkDependencies(pharosStore, lockPath, name, removeForce); err != nil {
+					fmt.Fprintln(os.Stderr, ui.Error.Render("Error:"), err)
+					os.Exit(1)
+				}
+			}
+		}
+
+		// 1. Remove from store (~/.pharos/store/{name}/)
 		if err == nil {
 			pkgDir := filepath.Join(storeDir, ".pharos", "store", name)
 			if _, err := os.Stat(pkgDir); err == nil {
@@ -166,6 +185,102 @@ func rewriteArrayConfig(path string, servers map[string]json.RawMessage) error {
 	return os.WriteFile(path, out, 0o644)
 }
 
+// installedMeta is a local representation of .pharos-installed.json that
+// includes dependency information if the metadata file carries it.
+type installedMeta struct {
+	Name         string                 `json:"name"`
+	Version      string                 `json:"version"`
+	Dependencies []manifest.Dependency  `json:"dependencies,omitempty"`
+}
+
+// findDependents returns the sorted names of installed packages that
+// declare target as a dependency. It scans the lockfile for every
+// installed package and reads each package's dependency list from the
+// store (checking both .pharos-installed.json and pharos.json).
+func findDependents(storeDir, lockPath, target string) ([]string, error) {
+	lf, err := lockfile.Load(lockPath)
+	if err != nil {
+		return nil, fmt.Errorf("load lockfile: %w", err)
+	}
+	var dependents []string
+	for pkgName, entry := range lf.Servers {
+		if pkgName == target {
+			continue
+		}
+		if packageDependsOn(storeDir, pkgName, entry.Version, target) {
+			dependents = append(dependents, pkgName)
+		}
+	}
+	sort.Strings(dependents)
+	return dependents, nil
+}
+
+// packageDependsOn reports whether pkgName@version declares target as a
+// dependency. It checks both the .pharos-installed.json metadata file
+// and the pharos.json manifest in the package's store directory.
+func packageDependsOn(storeDir, pkgName, version, target string) bool {
+	pkgDir := filepath.Join(storeDir, pkgName, version)
+
+	// Check .pharos-installed.json for a dependencies field.
+	if deps := depsFromInstalledMeta(pkgDir); deps != nil {
+		for _, d := range deps {
+			if d.Name == target {
+				return true
+			}
+		}
+	}
+
+	// Check pharos.json manifest (extracted from the tarball at install).
+	if m, err := manifest.Load(pkgDir); err == nil {
+		for _, d := range m.Dependencies {
+			if d.Name == target {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// depsFromInstalledMeta reads the .pharos-installed.json file from pkgDir
+// and returns its dependencies list, or nil if the file is missing or
+// cannot be parsed.
+func depsFromInstalledMeta(pkgDir string) []manifest.Dependency {
+	path := filepath.Join(pkgDir, ".pharos-installed.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var meta installedMeta
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return nil
+	}
+	return meta.Dependencies
+}
+
+// checkDependencies returns an error if removal of target should be
+// blocked because other installed packages depend on it. When force is
+// true the check is bypassed and a warning is printed to stderr instead.
+func checkDependencies(storeDir, lockPath, target string, force bool) error {
+	dependents, err := findDependents(storeDir, lockPath, target)
+	if err != nil {
+		// Don't block removal on lockfile read errors — just proceed.
+		return nil
+	}
+	if len(dependents) == 0 {
+		return nil
+	}
+	if force {
+		fmt.Fprintf(os.Stderr, "%s  %s is a required dependency of %s — removing anyway\n",
+			ui.Warning.Render("⚠"), target, strings.Join(dependents, ", "))
+		return nil
+	}
+	return fmt.Errorf("cannot remove %s: it is a required dependency of %s",
+		target, strings.Join(dependents, ", "))
+}
+
 func init() {
 	rootCmd.AddCommand(removeCmd)
+	removeCmd.Flags().BoolVarP(&removeForce, "force", "f", false,
+		"Force removal even if other packages depend on it")
 }

@@ -12,7 +12,7 @@ import (
 )
 
 var oauthConfigureCmd = &cobra.Command{
-	Use:   "oauth configure <server-name>",
+	Use:   "configure <server-name>",
 	Short: "Configure OAuth for a published MCP server",
 	Long: `Configure OAuth settings for an MCP server you have published to the Pharos registry.
 

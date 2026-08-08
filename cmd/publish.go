@@ -233,6 +233,40 @@ func createTarball(outputPath, srcDir string, files []string) error {
 			return fmt.Errorf("cannot stat %s: %w", file, err)
 		}
 		if info.IsDir() {
+			// Recursively add all files in this directory.
+			err := filepath.Walk(filePath, func(walkPath string, walkInfo os.FileInfo, err error) error {
+				if err != nil {
+					return err
+				}
+				if walkInfo.IsDir() {
+					return nil
+				}
+				relPath, err := filepath.Rel(srcDir, walkPath)
+				if err != nil {
+					return err
+				}
+				// Use forward slashes for cross-platform compatibility.
+				relPath = filepath.ToSlash(relPath)
+				data, err := os.ReadFile(walkPath)
+				if err != nil {
+					return fmt.Errorf("cannot read %s: %w", relPath, err)
+				}
+				header := &tar.Header{
+					Name: relPath,
+					Size: walkInfo.Size(),
+					Mode: int64(walkInfo.Mode()),
+				}
+				if err := tw.WriteHeader(header); err != nil {
+					return err
+				}
+				if _, err := tw.Write(data); err != nil {
+					return err
+				}
+				return nil
+			})
+			if err != nil {
+				return fmt.Errorf("walking directory %s: %w", file, err)
+			}
 			continue
 		}
 

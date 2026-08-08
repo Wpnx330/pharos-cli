@@ -251,6 +251,19 @@ func BuildServerConfig(manifest api.Manifest, storeDir string) clientconfig.Serv
 	cfg := clientconfig.ServerConfig{
 		Env: manifest.Env,
 	}
+
+	// If the manifest has an explicit Command, use it directly.
+	// This handles Python servers ("python -m src.server"), custom binaries, etc.
+	if manifest.Command != "" {
+		parts := strings.Fields(manifest.Command)
+		if len(parts) > 0 {
+			cfg.Command = parts[0]
+			cfg.Args = append(parts[1:], manifest.Args...)
+		}
+		return cfg
+	}
+
+	// Fall back to runtime-based command construction.
 	runtime := manifest.Runtime
 	pkg := manifest.Package
 	if pkg == "" {
@@ -280,6 +293,9 @@ func BuildServerConfig(manifest api.Manifest, storeDir string) clientconfig.Serv
 			cfg.Command = binPath
 		}
 		cfg.Args = manifest.Args
+	case "python":
+		cfg.Command = "python3"
+		cfg.Args = append([]string{pkg}, manifest.Args...)
 	default:
 		// Fallback: assume npx-style.
 		cfg.Command = "npx"

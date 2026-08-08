@@ -2,6 +2,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -65,6 +66,13 @@ func (c *Client) do(method, path string, body io.Reader) ([]byte, int, error) {
 // get is a convenience wrapper for GET requests.
 func (c *Client) get(path string) ([]byte, error) {
 	data, _, err := c.do(http.MethodGet, path, nil)
+	return data, err
+}
+
+// Post is a convenience wrapper for POST requests with a JSON body.
+// It returns the raw response body.
+func (c *Client) Post(path string, body []byte) ([]byte, error) {
+	data, _, err := c.do(http.MethodPost, path, bytes.NewReader(body))
 	return data, err
 }
 

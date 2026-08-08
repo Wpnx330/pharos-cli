@@ -83,11 +83,14 @@ type Manifest struct {
 	License      string            `json:"license,omitempty"`
 	Repository   Repository        `json:"repository,omitempty"`
 	Capabilities []string          `json:"capabilities"`
-	// Runtime hint for stdio servers: "npx", "uvx", "docker", "binary".
+	// Runtime hint for stdio servers: "npx", "uvx", "docker", "binary", "python".
 	Runtime string `json:"runtime,omitempty"`
 	// Package is the npm/pip/docker image name to pass to the runtime.
 	// e.g. "@modelcontextprotocol/server-git" for npx, "mcp-server-git" for uvx.
 	Package string `json:"package,omitempty"`
+	// Command is the explicit launch command for stdio servers (e.g. "python -m src.server").
+	// When set, it overrides the runtime-based command construction.
+	Command string `json:"command,omitempty"`
 	// Bin is the relative path to the executable inside the tarball
 	// (for "binary" runtime). If empty, runtime package is used directly.
 	Bin string `json:"bin,omitempty"`

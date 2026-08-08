@@ -344,37 +344,59 @@ func MergeServer(c Client, name string, server ServerConfig) error {
 		return mergeHermes(c, name, server)
 	case FormatOpenCode:
 		// OpenCode uses the mcpServers JSON root key but a different
-		// env format — fall through to the standard mcpServers path;
+		// env format — fall through to the map-based mcpServers path;
 		// buildEntry handles the env-as-array difference.
+		// Unlike the old configFile struct approach, the map-based
+		// writer below preserves all unknown top-level keys (e.g.
+		// OpenCode's "model", "theme" settings).
 	}
 
-	cfg := configFile{
-		McpServers: make(map[string]json.RawMessage),
-	}
-
+	// Use a generic map to preserve unknown top-level keys (e.g. OpenCode
+	// settings like "model", "theme") that would be silently dropped by a
+	// typed struct.
+	root := map[string]json.RawMessage{}
 	if c.Existing {
 		data, err := os.ReadFile(c.Path)
 		if err != nil {
 			return fmt.Errorf("read config %s: %w", c.Path, err)
 		}
-		// The file may be empty.
 		if len(strings.TrimSpace(string(data))) > 0 {
-			if err := json.Unmarshal(data, &cfg); err != nil {
+			if err := json.Unmarshal(data, &root); err != nil {
 				return fmt.Errorf("parse config %s: %w", c.Path, err)
 			}
-			if cfg.McpServers == nil {
-				cfg.McpServers = make(map[string]json.RawMessage)
-			}
 		}
+	}
+
+	// Get or create the mcpServers object.
+	var servers map[string]json.RawMessage
+	if existing, ok := root["mcpServers"]; ok {
+		if err := json.Unmarshal(existing, &servers); err != nil {
+			return fmt.Errorf("parse mcpServers: %w", err)
+		}
+	}
+	if servers == nil {
+		servers = make(map[string]json.RawMessage)
 	}
 
 	entry, err := buildEntry(c.ID, server)
 	if err != nil {
 		return err
 	}
-	cfg.McpServers[name] = entry
+	servers[name] = entry
 
-	return writeConfig(c.Path, &cfg)
+	serversJSON, err := json.Marshal(servers)
+	if err != nil {
+		return err
+	}
+	root["mcpServers"] = serversJSON
+
+	// Marshal the full root, preserving all unknown keys.
+	output, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	output = append(output, '\n')
+	return SafeWriteConfig(c.Path, output, "mcpServers")
 }
 
 // arrayEntry is a single server entry in the "array" config format.

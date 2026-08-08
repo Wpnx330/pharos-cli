@@ -23,6 +23,8 @@ type Manifest struct {
 	Command      string   `json:"command,omitempty"`
 	Entrypoint   string   `json:"entrypoint,omitempty"`
 	Files        []string `json:"files,omitempty"`
+	Env          map[string]string `json:"env,omitempty"`
+	Args         []string          `json:"args,omitempty"`
 	Capabilities []string `json:"capabilities,omitempty"`
 	ToolsCount   int      `json:"tools_count,omitempty"`
 	// Dependencies lists other Pharos packages required by this package.

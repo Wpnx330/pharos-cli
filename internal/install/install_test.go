@@ -262,6 +262,56 @@ func TestBuildServerConfigDefaultFallback(t *testing.T) {
 	}
 }
 
+func TestBuildServerConfigCommand(t *testing.T) {
+	m := api.Manifest{
+		Transport: "stdio",
+		Command:   "python -m src.server",
+		Args:      []string{"--debug"},
+		Env:       map[string]string{"API_KEY": "xxx"},
+	}
+	cfg := BuildServerConfig(m, "/store")
+	if cfg.Command != "python" {
+		t.Errorf("command = %s, want python", cfg.Command)
+	}
+	// Args should be ["-m", "src.server", "--debug"]
+	if len(cfg.Args) != 3 || cfg.Args[0] != "-m" || cfg.Args[1] != "src.server" || cfg.Args[2] != "--debug" {
+		t.Errorf("args = %v, want [-m src.server --debug]", cfg.Args)
+	}
+	if cfg.Env["API_KEY"] != "xxx" {
+		t.Errorf("env not set")
+	}
+}
+
+func TestBuildServerConfigCommandNoArgs(t *testing.T) {
+	m := api.Manifest{
+		Transport: "stdio",
+		Command:   "my-binary",
+	}
+	cfg := BuildServerConfig(m, "/store")
+	if cfg.Command != "my-binary" {
+		t.Errorf("command = %s, want my-binary", cfg.Command)
+	}
+	if len(cfg.Args) != 0 {
+		t.Errorf("args = %v, want empty", cfg.Args)
+	}
+}
+
+func TestBuildServerConfigPython(t *testing.T) {
+	m := api.Manifest{
+		Transport: "stdio",
+		Runtime:   "python",
+		Package:   "src.server",
+		Args:      []string{"--port", "8080"},
+	}
+	cfg := BuildServerConfig(m, "/store")
+	if cfg.Command != "python3" {
+		t.Errorf("command = %s, want python3", cfg.Command)
+	}
+	if len(cfg.Args) != 3 || cfg.Args[0] != "src.server" || cfg.Args[1] != "--port" || cfg.Args[2] != "8080" {
+		t.Errorf("args = %v, want [src.server --port 8080]", cfg.Args)
+	}
+}
+
 func TestNormalizeTransport(t *testing.T) {
 	tests := []struct{ in, want string }{
 		{"stdio", "stdio"},

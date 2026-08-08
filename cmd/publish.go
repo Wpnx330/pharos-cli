@@ -228,6 +228,14 @@ func createTarball(outputPath, srcDir string, files []string) error {
 
 	for _, file := range files {
 		filePath := filepath.Join(srcDir, file)
+
+		// Security: prevent path traversal — resolved path must stay within srcDir.
+		cleanSrc, _ := filepath.Abs(srcDir)
+		cleanFile, _ := filepath.Abs(filePath)
+		if !strings.HasPrefix(cleanFile, cleanSrc+string(os.PathSeparator)) && cleanFile != cleanSrc {
+			return fmt.Errorf("security: file path %q escapes source directory", file)
+		}
+
 		info, err := os.Stat(filePath)
 		if err != nil {
 			return fmt.Errorf("cannot stat %s: %w", file, err)

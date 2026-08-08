@@ -39,6 +39,11 @@ pharos remove <name> --force   # Remove even if other packages depend on it
 pharos login                   # GitHub OAuth login (opens browser)
 pharos whoami                  # Show current authenticated user
 
+# OAuth configuration
+pharos oauth configure <name>  # Configure OAuth for a published MCP server
+pharos oauth configure <name> \ # With all options
+  --auth-url <url> --client-id <id> --scopes <scopes> --pkce
+
 # System
 pharos config <key> [value]    # Get or set configuration
 pharos health                  # Check registry health
@@ -97,11 +102,11 @@ Credentials are stored at `~/.pharos/credentials.json` after `pharos login`.
 | `description` | no | Short description shown in search results |
 | `license` | no | SPDX license identifier |
 | `transport` | yes | `stdio`, `http-sse`, or `http` |
-| `runtime` | yes | `python`, `node`, `docker` |
-| `command` | yes | Run command (e.g. `python server.py`, `node server.js`) |
+| `runtime` | no | Runtime hint: `npx`, `uvx`, `docker`, `binary`, `python` (auto-detected from command if omitted) |
+| `command` | no | Explicit launch command (e.g. `python -m src.server`). Overrides runtime-based construction. Falls back to `bin` field for backwards compat |
 | `entrypoint` | no | Alternative to `command` (Docker entrypoint) |
 | `capabilities` | yes | MCP capability types: `tools`, `resources`, `prompts`, `logging` |
-| `files` | no | Explicit file list to package (auto-detected if omitted) |
+| `files` | no | Explicit file list to package (auto-detected if omitted). Directory entries (e.g. `"src/"`) are packed recursively |
 | `homepage` | no | Homepage URL |
 | `repository` | no | Repository URL |
 | `dependencies` | no | Array of `{name, version}` — semver constraints for recursive install |
@@ -138,6 +143,8 @@ All MCP client config writes (install and remove) go through a safe write patter
 4. **Cleanup** — if any step fails, the temp file is deleted and the original is left untouched
 
 This means a buggy write can never corrupt an existing config — the original is only replaced after the new version passes validation.
+
+**Unknown key preservation**: For JSON-based clients (OpenCode, Cursor, Claude Desktop, Cline, Generic MCP), Pharos uses a map-based reader/writer that preserves all existing top-level keys. If your OpenCode config has `model`, `theme`, or `tab_size` settings, they survive Pharos installs and removes untouched.
 
 ### Supported client formats
 

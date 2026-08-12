@@ -253,3 +253,11 @@ not yet in the registry) are allowed — the cycle is caught on the second publi
 | `^1.0.0` | Compatible (same major) |
 | `~1.0.0` | Approximately (same minor) |
 | `*` | Any version |
+
+## Author
+
+Built by [Chris Wykel](https://chriswykel.com) — reach me at chris@chriswykel.com.
+
+## License
+
+MIT

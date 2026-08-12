@@ -1,5 +1,9 @@
 # Pharos CLI
 
+![Pharos CLI](github-social-preview.png)
+
+![CLI Demo](demo.gif)
+
 A Go CLI tool for the [PHAROS](https://getpharos.dev) MCP server package registry.
 
 ## Install

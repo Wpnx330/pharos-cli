@@ -26,7 +26,7 @@ pharos search <query>          # Search the registry
 pharos info <name>             # Show package details
 
 # Package lifecycle
-pharos init                    # Scaffold a new pharos.json (interactive, includes dependency prompts)
+pharos init                    # Scaffold a new pharos.json (interactive, includes dependency + tag prompts)
 pharos init --yes              # Non-interactive (use defaults)
 pharos package [dir]           # Package a directory into a tarball (like npm pack)
 pharos publish [dir]           # Package + upload + publish to the registry
@@ -93,7 +93,8 @@ Credentials are stored at `~/.pharos/credentials.json` after `pharos login`.
   "capabilities": ["tools"],
   "homepage": "https://github.com/user/repo",
   "repository": "https://github.com/user/repo",
-  "files": ["server.py", "lib/"]
+  "files": ["server.py", "lib/"],
+  "tags": ["weather", "doppler", "humidity"]
 }
 ```
 
@@ -114,6 +115,7 @@ Credentials are stored at `~/.pharos/credentials.json` after `pharos login`.
 | `homepage` | no | Homepage URL |
 | `repository` | no | Repository URL |
 | `dependencies` | no | Array of `{name, version}` — semver constraints for recursive install |
+| `tags` | no | Array of up to 3 text hashtags for discoverability (lowercase, alphanumeric + hyphens, max 20 chars each) |
 
 ## Publishing
 
@@ -253,6 +255,39 @@ not yet in the registry) are allowed — the cycle is caught on the second publi
 | `^1.0.0` | Compatible (same major) |
 | `~1.0.0` | Approximately (same minor) |
 | `*` | Any version |
+
+## Tags
+
+Tags are optional text hashtags that improve package discoverability. A manifest
+can declare up to 3 tags (lowercase, alphanumeric + hyphens, max 20 chars each).
+
+### Adding tags in `pharos.json`
+
+```json
+{
+  "name": "weather-server",
+  "version": "1.0.0",
+  "tags": ["weather", "doppler-radar", "humidity"]
+}
+```
+
+### Adding tags during `pharos init`
+
+After the dependency prompt, `pharos init` prompts for tags:
+
+```
+Tags (up to 3, space or comma separated, Enter to skip):
+  tags> weather doppler-radar humidity
+```
+
+### Searching by tag
+
+The registry search API supports a `?tag=` query parameter to filter packages
+that have a matching tag on any version's capabilities:
+
+```
+GET /v1/search?tag=weather
+```
 
 ## Author
 

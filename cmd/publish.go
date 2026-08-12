@@ -38,6 +38,7 @@ var publishCmd = &cobra.Command{
 			fmt.Fprintln(os.Stderr, ui.Error.Render("Cannot read manifest:"), err)
 			return
 		}
+		m.NormalizeTags()
 		if err := m.Validate(); err != nil {
 			fmt.Fprintln(os.Stderr, ui.Error.Render("Invalid manifest:"), err)
 			return

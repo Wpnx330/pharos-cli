@@ -87,6 +87,9 @@ func buildManifestInteractive() *manifest.Manifest {
 	// Dependencies — freeform, repeat until empty line
 	m.Dependencies = dependenciesPrompt()
 
+	// Tags — up to 3 text hashtags (space or comma separated)
+	m.Tags = tagsPrompt()
+
 	m.Homepage = textPrompt("Homepage", "")
 
 	return m
@@ -344,6 +347,81 @@ func dependenciesPrompt() []manifest.Dependency {
 	return deps
 }
 
+// tagsPrompt collects up to 3 text hashtags from the user. Tags are entered
+// space or comma separated on a single line. Empty input skips tags entirely.
+// Each tag is validated: lowercase, alphanumeric + hyphens, max 20 chars.
+func tagsPrompt() []string {
+	fmt.Printf("%s\n", ui.Label.Render("Tags (up to 3, space or comma separated, Enter to skip):"))
+	fmt.Print(ui.Muted.Render("  tags> "))
+	line, _ := stdinReader.ReadString('\n')
+	input := strings.TrimSpace(line)
+	if input == "" {
+		return nil
+	}
+
+	// Split on both spaces and commas.
+	var raw []string
+	for _, part := range strings.FieldsFunc(input, func(r rune) bool {
+		return r == ' ' || r == ','
+	}) {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			raw = append(raw, part)
+		}
+	}
+
+	// Validate and normalize.
+	seen := make(map[string]bool)
+	var tags []string
+	for _, t := range raw {
+		t = strings.ToLower(t)
+		if len(t) > 20 {
+			fmt.Fprintf(os.Stderr, "  %s tag %q exceeds 20 chars, skipping\n", ui.Error.Render("✗"), t)
+			continue
+		}
+		if !validTagChars(t) {
+			fmt.Fprintf(os.Stderr, "  %s tag %q has invalid chars (use a-z, 0-9, hyphens only), skipping\n", ui.Error.Render("✗"), t)
+			continue
+		}
+		if seen[t] {
+			continue
+		}
+		seen[t] = true
+		tags = append(tags, t)
+		if len(tags) >= 3 {
+			break
+		}
+	}
+
+	if len(tags) == 0 {
+		return nil
+	}
+	if len(raw) > 3 {
+		fmt.Fprintf(os.Stderr, "  %s only 3 tags allowed, extras dropped\n", ui.Muted.Render("ℹ"))
+	}
+	fmt.Printf("  %s %s\n", ui.Success.Render("✓ tags:"), strings.Join(tags, ", "))
+	return tags
+}
+
+// validTagChars returns true if the tag contains only lowercase alphanumeric
+// and hyphen characters.
+func validTagChars(t string) bool {
+	if t == "" {
+		return false
+	}
+	for _, r := range t {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= '0' && r <= '9',
+			r == '-':
+			// allowed
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // parseDependencyInput parses a single dependency entry typed by the user.
 // Supported formats:
 //
@@ -453,6 +531,7 @@ func splitCSV(s string) []string {
 
 // writeManifest marshals and writes pharos.json.
 func writeManifest(m *manifest.Manifest) {
+	m.NormalizeTags()
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, ui.Error.Render("Failed to encode manifest:"), err)

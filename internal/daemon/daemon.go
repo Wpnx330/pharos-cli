@@ -148,7 +148,9 @@ func StopServer(name string) error {
 	if err := os.MkdirAll(stopDir, 0o700); err != nil {
 		return fmt.Errorf("create stop dir: %w", err)
 	}
-	stopFile := filepath.Join(stopDir, name)
+	// Sanitize server name — prevent path traversal
+	safeName := filepath.Base(name)
+	stopFile := filepath.Join(stopDir, safeName)
 	if err := os.WriteFile(stopFile, []byte("stop"), 0o600); err != nil {
 		return fmt.Errorf("write stop file: %w", err)
 	}

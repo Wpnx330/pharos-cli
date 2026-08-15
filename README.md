@@ -34,10 +34,18 @@ pharos publish [dir]           # Package + upload + publish to the registry
 # Local management
 pharos install <name>          # Download and install a package (with recursive dependency resolution)
 pharos install <name> --no-dep-config  # Install without writing MCP client configs for dependencies
+pharos install <name> --idle-timeout 30  # Auto-unload after 30min idle (default: 60)
+pharos install <name> --idle-timeout 0   # Never unload — always on
 pharos list                    # List locally installed packages
+pharos list --running          # Show only running servers (daemon-managed)
 pharos lock                    # Resolve dependencies and write ./pharos.lock
 pharos remove <name>           # Remove a locally installed package
 pharos remove <name> --force   # Remove even if other packages depend on it
+
+# Daemon (MCP server process supervisor)
+pharos daemon start            # Start the daemon (blocks until SIGTERM)
+pharos daemon stop             # Stop daemon + unload all managed servers
+pharos daemon status           # Show daemon health + managed server table
 
 # Auth
 pharos login                   # GitHub OAuth login (opens browser)
@@ -67,6 +75,8 @@ pharos version                 # Print CLI version
 - `--no-dep-config` — Don't write MCP client configs for dependencies (install)
 - `--force` — Remove a package even if other packages depend on it (remove)
 - `--frozen` — Install strictly from lockfile; refuse if missing or mismatched (install)
+- `--idle-timeout` — Minutes of inactivity before auto-unloading HTTP/SSE servers (default: 60, 0 = never unload) (install)
+- `--running` — Show only running daemon-managed servers (list)
 
 ## Configuration
 
@@ -288,6 +298,53 @@ that have a matching tag on any version's capabilities:
 ```
 GET /v1/search?tag=weather
 ```
+
+## Daemon (Process Supervisor)
+
+The Pharos daemon is a background process supervisor for HTTP/SSE/streamable-http MCP servers. It provides **JIT (just-in-time) loading** — servers start on first request and auto-unload after configurable idle time. stdio servers are not managed (MCP clients handle those as child processes).
+
+### How it works
+
+1. `pharos daemon start` launches the daemon, which reads `~/.pharos/mcp.json` and opens a local proxy listener (127.0.0.1) for each HTTP/SSE server.
+2. When a request arrives at a proxy port:
+   - **Server running?** → Proxy it, update last-activity timestamp.
+   - **Server unloaded?** → Start the backing process (JIT load), wait for it to be ready, then proxy.
+3. After `idle_timeout` minutes with no activity, the backing process is killed. The proxy listener stays alive — so the next request JIT-reloads it.
+4. `pharos daemon stop` gracefully terminates all managed servers and the daemon itself.
+
+### Idle timeout
+
+| `--idle-timeout` | JIT loading | Auto-unload | Behavior |
+|------------------|-------------|-------------|----------|
+| `60` (default) | ✅ On | ✅ On | Server unloads after 60min idle, reloads on next request |
+| `30` | ✅ On | ✅ On | Server unloads after 30min idle, reloads on next request |
+| `0` | ❌ Off | ❌ Off | Server is always on (starts immediately, never unloads) |
+
+### Config
+
+Per-server idle timeout is stored in `~/.pharos/mcp.json`:
+
+```json
+{
+  "servers": {
+    "my-http-server": {
+      "command": "node server.js",
+      "transport": "http-sse",
+      "idleTimeout": 60
+    }
+  }
+}
+```
+
+Daemon state (PID, running servers, ports, last activity) is persisted at `~/.pharos/daemon.json`. Logs go to `~/.pharos/daemon.log`.
+
+### SIGHUP hot-reload
+
+Sending `SIGHUP` to the daemon process causes it to re-read `~/.pharos/mcp.json` and reconcile — adding new servers and removing deleted ones without restarting.
+
+### Platform support
+
+The daemon requires Unix process groups (`Setpgid`) and is not available on Windows. stdio servers work cross-platform as before.
 
 ## Author
 

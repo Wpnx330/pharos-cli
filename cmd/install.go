@@ -27,6 +27,7 @@ var (
 	installSelectClients bool
 	installFrozen        bool
 	installSkipDepConfig bool
+	installIdleTimeout   int
 )
 
 var installCmd = &cobra.Command{
@@ -47,6 +48,8 @@ Examples:
   pharos install mcp-git-server --client cursor
   pharos install mcp-git-server --client cursor,claude-desktop  # multi-select
   pharos install mcp-git-server --select-clients  # interactive picker
+  pharos install mcp-git-server --idle-timeout 30  # auto-unload after 30min idle
+  pharos install mcp-git-server --idle-timeout 0   # never unload (always on)
   pharos install --frozen                   # install from lockfile only`,
 	Args: cobra.ExactArgs(1),
 	Run:  runInstall,
@@ -59,6 +62,7 @@ func init() {
 	installCmd.Flags().BoolVar(&installSelectClients, "select-clients", false, "interactively pick which MCP clients to configure")
 	installCmd.Flags().BoolVar(&installFrozen, "frozen", false, "install strictly from lockfile; refuse if missing or mismatched")
 	installCmd.Flags().BoolVar(&installSkipDepConfig, "no-dep-config", false, "don't write MCP client configs for dependencies")
+	installCmd.Flags().IntVar(&installIdleTimeout, "idle-timeout", 60, "idle timeout in minutes before auto-unloading (0 = never unload, always on)")
 	rootCmd.AddCommand(installCmd)
 }
 
@@ -205,8 +209,9 @@ func runInstall(cmd *cobra.Command, args []string) {
 	// Write to the canonical Pharos config first (~/.pharos/mcp.json).
 	// This is the single source of truth; client configs are synced from it.
 	canonSrv := canonical.Server{
-		Transport: transport,
-		Enabled:   true,
+		Transport:   transport,
+		Enabled:     true,
+		IdleTimeout: installIdleTimeout,
 		Package: canonical.PackageInfo{
 			Name:      name,
 			Version:   resolvedVersion,
@@ -409,8 +414,9 @@ func installFromLockfile(name, versionSpec, lockPath string, clientIDs []string)
 		transport = "stdio"
 	}
 	canonSrv := canonical.Server{
-		Transport: transport,
-		Enabled:   true,
+		Transport:   transport,
+		Enabled:     true,
+		IdleTimeout: installIdleTimeout,
 		Package: canonical.PackageInfo{
 			Name:      name,
 			Version:   entry.Version,

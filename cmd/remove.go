@@ -7,12 +7,14 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
 	"github.com/Wpnx330/pharos-cli/internal/canonical"
 	"github.com/Wpnx330/pharos-cli/internal/clientconfig"
+	"github.com/Wpnx330/pharos-cli/internal/daemon"
 	"github.com/Wpnx330/pharos-cli/internal/lockfile"
 	"github.com/Wpnx330/pharos-cli/internal/manifest"
 	"github.com/Wpnx330/pharos-cli/internal/ui"
@@ -42,6 +44,12 @@ var removeCmd = &cobra.Command{
 					os.Exit(1)
 				}
 			}
+		}
+
+		// 0a. If the daemon is running and managing this server,
+		// send SIGHUP so it reconciles (removes the proxy listener).
+		if daemonStatus, derr := daemon.Status(); derr == nil && daemonStatus.Running {
+			_ = syscall.Kill(daemonStatus.PID, syscall.SIGHUP)
 		}
 
 		// 1. Remove from store (~/.pharos/store/{name}/)

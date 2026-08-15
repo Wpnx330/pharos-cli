@@ -42,6 +42,8 @@ type Server struct {
 	Package   PackageInfo    `json:"package"`              // provenance metadata
 	Enabled   bool           `json:"enabled"`              // if false, agents should not start this server
 	InstalledAt string       `json:"installedAt"`          // ISO 8601 timestamp
+	IdleTimeout int          `json:"idleTimeout,omitempty"` // minutes; 0 = never unload (default: 60)
+	DaemonPort  int          `json:"daemonPort,omitempty"`  // port the daemon listens on for this server
 }
 
 // PackageInfo tracks where the server came from and its integrity.

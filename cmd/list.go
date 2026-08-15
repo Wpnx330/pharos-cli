@@ -1,11 +1,13 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -108,7 +110,15 @@ var listCmd = &cobra.Command{
 			{Title: "SIZE", Width: 9, MaxWidth: 9},
 			{Title: "MEMORY", Width: 9, MaxWidth: 9},
 			{Title: "UPTIME", Width: 9, MaxWidth: 9},
+			{Title: "IDLE", Width: 9, MaxWidth: 9},
+			{Title: "LAST ACTIVITY", Width: 14, MaxWidth: 14},
 		}
+		// Load daemon state for idle/last-activity columns.
+		// The daemon writes ~/.pharos/daemon.json with per-server
+		// lastActivity timestamps. If the daemon isn't running or the
+		// file doesn't exist, both columns show "—".
+		daemonState := loadDaemonState()
+
 		var rows []ui.TableRow
 		for _, e := range entries {
 			name := ui.PackageName.Render(e.pkg.Name)
@@ -144,8 +154,27 @@ var listCmd = &cobra.Command{
 				portStr = ui.Muted.Render("—")
 			}
 
+			// Idle time and last activity from daemon state.
+			// Only daemon-managed servers (http/sse/streamable-http
+			// with the daemon running) have this data.
+			// stdio and stopped servers show "—".
+			var idleStr, lastActStr string
+			if ds, ok := daemonState[e.pkg.Name]; ok && ds.LastActivity != "" {
+				if t, err := time.Parse(time.RFC3339, ds.LastActivity); err == nil {
+					idleStr = formatDuration(time.Since(t))
+					lastActStr = formatTimeAgo(t)
+				} else {
+					idleStr = ui.Muted.Render("—")
+					lastActStr = ui.Muted.Render("—")
+				}
+			} else {
+				idleStr = ui.Muted.Render("—")
+				lastActStr = ui.Muted.Render("—")
+			}
+
 			rows = append(rows, ui.TableRow{
 				name, version, transport, statusStr, portStr, sizeStr, memStr, uptimeStr,
+				idleStr, lastActStr,
 			})
 		}
 		fmt.Print(ui.RenderTable(cols, rows))
@@ -175,3 +204,87 @@ func dirSize(path string) int64 {
 
 // Ensure strings import is used (for future filter extensions)
 var _ = strings.TrimSpace
+
+// =============================================================
+// Daemon state helpers
+// =============================================================
+
+// daemonServerState is the per-server entry in ~/.pharos/daemon.json.
+// It mirrors the relevant fields from daemon.ServerStatus but is kept
+// minimal so we can parse just what we need for the list table.
+type daemonServerState struct {
+	Name         string `json:"name"`
+	State        string `json:"state"`
+	Port         int    `json:"port"`
+	LastActivity string `json:"lastActivity"` // RFC 3339 timestamp
+}
+
+// daemonStateFile represents the on-disk structure of ~/.pharos/daemon.json.
+type daemonStateFile struct {
+	Running bool               `json:"running"`
+	PID     int                `json:"pid"`
+	Port    int                `json:"port"`
+	Servers []daemonServerState `json:"servers"`
+}
+
+// loadDaemonState reads ~/.pharos/daemon.json and returns a map of
+// server name → daemon state. If the file doesn't exist or can't be
+// parsed, returns an empty map (all idle/activity columns show "—").
+func loadDaemonState() map[string]daemonServerState {
+	result := make(map[string]daemonServerState)
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return result
+	}
+
+	data, err := os.ReadFile(filepath.Join(home, ".pharos", "daemon.json"))
+	if err != nil {
+		return result
+	}
+
+	var dsf daemonStateFile
+	if err := json.Unmarshal(data, &dsf); err != nil {
+		return result
+	}
+
+	if !dsf.Running {
+		return result
+	}
+
+	for _, s := range dsf.Servers {
+		result[s.Name] = s
+	}
+
+	return result
+}
+
+// formatTimeAgo renders a time as a human-readable relative string
+// (e.g., "just now", "5m ago", "2h ago").
+func formatTimeAgo(t time.Time) string {
+	d := time.Since(t)
+	if d < time.Minute {
+		return "just now"
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	}
+	return fmt.Sprintf("%dh ago", int(d.Hours()))
+}
+
+// formatDuration renders a duration as a compact human-readable string
+// (e.g., "2m", "1h 32m", "3h").
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	hours := int(d.Hours())
+	mins := int(d.Minutes()) - hours*60
+	if mins == 0 {
+		return fmt.Sprintf("%dh", hours)
+	}
+	return fmt.Sprintf("%dh %dm", hours, mins)
+}

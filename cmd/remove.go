@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -47,9 +46,9 @@ var removeCmd = &cobra.Command{
 		}
 
 		// 0a. If the daemon is running and managing this server,
-		// send SIGHUP so it reconciles (removes the proxy listener).
+		// send a reload signal so it reconciles (removes the proxy listener).
 		if daemonStatus, derr := daemon.Status(); derr == nil && daemonStatus.Running {
-			_ = syscall.Kill(daemonStatus.PID, syscall.SIGHUP)
+			_ = daemon.ReloadDaemon(daemonStatus.PID)
 		}
 
 		// 1. Remove from store (~/.pharos/store/{name}/)

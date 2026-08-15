@@ -359,6 +359,11 @@ func runInstall(cmd *cobra.Command, args []string) {
 	// Success summary.
 	fmt.Printf("\n%s  %s\n", ui.Success.Render("✓ Installed:"), fmt.Sprintf("%s@%s (%s)", name, resolvedVersion, transport))
 	fmt.Printf("%s    %s\n", ui.Muted.Render("Usage:"), fmt.Sprintf("pharos info %s", name))
+
+	// Auto-start daemon for HTTP/SSE servers
+	if transport == "http-sse" || transport == "http" || transport == "streamable-http" {
+		ensureDaemonRunning()
+	}
 }
 
 // installFromLockfile installs strictly from the lockfile.
@@ -451,6 +456,11 @@ func installFromLockfile(name, versionSpec, lockPath string, clientIDs []string)
 	}
 
 	fmt.Printf("\n%s  %s\n", ui.Success.Render("✓ Installed (frozen):"), fmt.Sprintf("%s@%s", name, entry.Version))
+
+	// Auto-start daemon for HTTP/SSE servers
+	if transport == "http-sse" || transport == "http" || transport == "streamable-http" {
+		ensureDaemonRunning()
+	}
 }
 
 // parseNameVersion splits "name@version" into parts. Names with scoped

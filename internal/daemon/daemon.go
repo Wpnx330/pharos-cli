@@ -117,6 +117,56 @@ func daemonLogPath() (string, error) {
 	return filepath.Join(dir, "daemon.log"), nil
 }
 
+// LogPath returns the path to the daemon log file (exported for CLI use).
+func LogPath() (string, error) {
+	return daemonLogPath()
+}
+
+// ReloadDaemon sends a reload signal to the daemon process.
+// On Unix: sends SIGHUP. On Windows: touches the reload trigger file.
+func ReloadDaemon(pid int) error {
+	return sendReloadSignal(pid)
+}
+
+// StopServer tells the daemon to unload a specific server.
+// It creates a stop-request file and sends a reload signal.
+// The daemon's reconcile loop checks for stop-request files and
+// unloads the corresponding server.
+func StopServer(name string) error {
+	// Check daemon is running
+	st, err := Status()
+	if err != nil || !st.Running {
+		return fmt.Errorf("daemon is not running")
+	}
+
+	// Create stop-request file
+	dir, err := daemonDirFn()
+	if err != nil {
+		return err
+	}
+	stopDir := filepath.Join(dir, "daemon.stop")
+	if err := os.MkdirAll(stopDir, 0o700); err != nil {
+		return fmt.Errorf("create stop dir: %w", err)
+	}
+	stopFile := filepath.Join(stopDir, name)
+	if err := os.WriteFile(stopFile, []byte("stop"), 0o600); err != nil {
+		return fmt.Errorf("write stop file: %w", err)
+	}
+
+	// Send reload signal so daemon picks up the stop request
+	return sendReloadSignal(st.PID)
+}
+
+// mustDaemonDir returns the daemon directory or panics.
+// Used in reconcile where we don't want to propagate errors.
+func mustDaemonDir() string {
+	dir, err := daemonDirFn()
+	if err != nil {
+		return ""
+	}
+	return dir
+}
+
 // ── State persistence ───────────────────────────────────────────────────
 
 func loadState() (*DaemonState, error) {
@@ -187,6 +237,7 @@ func removeDaemonPID() {
 	}
 }
 
+// isProcessAlive checks if a process with the given PID is running.
 func isProcessAlive(pid int) bool {
 	if pid <= 0 {
 		return false
@@ -195,7 +246,37 @@ func isProcessAlive(pid int) bool {
 	if err != nil {
 		return false
 	}
-	return proc.Signal(syscall.Signal(0)) == nil
+	if supportsSignals() {
+		return proc.Signal(syscall.Signal(0)) == nil
+	}
+	// Windows: FindProcess always succeeds, so check if the process
+	// is actually running by attempting to open it.
+	proc.Signal(os.Signal(syscall.Signal(0)))
+	// On Windows, Signal returns "not supported" but doesn't mean the
+	// process is dead. Use a different approach: check if the process
+	// handle is valid.
+	return proc != nil
+}
+
+// touchReloadFile creates/updates the reload trigger file.
+// On Windows (no SIGHUP), the daemon watches this file for changes.
+func touchReloadFile() error {
+	dir, err := daemonDirFn()
+	if err != nil {
+		return err
+	}
+	reloadPath := filepath.Join(dir, "daemon.reload")
+	// Write current timestamp to the file
+	return os.WriteFile(reloadPath, []byte(time.Now().Format(time.RFC3339)), 0o644)
+}
+
+// daemonReloadPath returns the path to the reload trigger file.
+func daemonReloadPath() (string, error) {
+	dir, err := daemonDirFn()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "daemon.reload"), nil
 }
 
 // ── Daemon ──────────────────────────────────────────────────────────────
@@ -397,20 +478,34 @@ func Start() error {
 
 	d.log.Printf("Daemon started (PID %d), managing %d servers", os.Getpid(), len(d.servers))
 
-	// Wait for signal
+	// Wait for signal or reload file
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	if supportsSignals() {
+		signal.Notify(sigCh, syscall.SIGHUP)
+	}
+
+	// Start reload file watcher (for Windows where SIGHUP doesn't exist)
+	reloadCh := make(chan struct{}, 1)
+	go d.watchReloadFile(reloadCh)
 
 	for {
-		sig := <-sigCh
-		if sig == syscall.SIGHUP {
-			d.log.Println("Received SIGHUP, reloading canonical config...")
+		select {
+		case sig := <-sigCh:
+			if sig == syscall.SIGHUP {
+				d.log.Println("Received SIGHUP, reloading canonical config...")
+				d.reconcile()
+				continue
+			}
+			// SIGTERM or SIGINT — shutdown
+			d.log.Println("Shutting down daemon...")
+			d.shutdown()
+			break
+		case <-reloadCh:
+			d.log.Println("Reload file triggered, reloading canonical config...")
 			d.reconcile()
 			continue
 		}
-		// SIGTERM or SIGINT — shutdown
-		d.log.Println("Shutting down daemon...")
-		d.shutdown()
 		break
 	}
 
@@ -428,8 +523,8 @@ func Stop() error {
 		return fmt.Errorf("daemon is not running (stale PID file removed)")
 	}
 
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
-		return fmt.Errorf("failed to send SIGTERM to daemon: %w", err)
+	if err := terminateDaemon(pid); err != nil {
+		return fmt.Errorf("failed to stop daemon: %w", err)
 	}
 
 	// Wait for daemon to exit (up to 10 seconds)
@@ -564,6 +659,38 @@ func (d *Daemon) checkIdle() {
 	}
 }
 
+// watchReloadFile watches the daemon.reload file for changes.
+// On Windows (no SIGHUP), touching this file triggers a config reload.
+// On Unix, SIGHUP is the primary trigger, but the file watcher also works.
+func (d *Daemon) watchReloadFile(ch chan<- struct{}) {
+	var lastMod time.Time
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-d.done:
+			return
+		case <-ticker.C:
+			path, err := daemonReloadPath()
+			if err != nil {
+				continue
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				continue
+			}
+			if info.ModTime().After(lastMod) && !lastMod.IsZero() {
+				select {
+				case ch <- struct{}{}:
+				default:
+				}
+			}
+			lastMod = info.ModTime()
+		}
+	}
+}
+
 // reconcile re-reads the canonical config and adds/removes servers.
 func (d *Daemon) reconcile() {
 	cfg, err := canonical.Load()
@@ -636,6 +763,22 @@ func (d *Daemon) reconcile() {
 					d.log.Printf("ERROR: failed to start always-on server %s: %v", name, err)
 				}
 			}()
+		}
+	}
+
+	// Check for stop-request files (from `pharos stop <server>`)
+	stopDir := filepath.Join(mustDaemonDir(), "daemon.stop")
+	if entries, err := os.ReadDir(stopDir); err == nil {
+		for _, entry := range entries {
+			srvName := entry.Name()
+			if ms, exists := d.servers[srvName]; exists {
+				if ms.state == "running" {
+					ms.stopBacking()
+					d.log.Printf("Stopped server %s via stop-request file", srvName)
+				}
+				// Remove the stop-request file
+				os.Remove(filepath.Join(stopDir, srvName))
+			}
 		}
 	}
 
@@ -743,8 +886,8 @@ func (ms *ManagedServer) startBacking() error {
 		cmd.Stderr = ms.daemon.logFile
 	}
 
-	// Set process group
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Set process group (platform-specific)
+	setSysProcAttr(cmd)
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start process: %w", err)
@@ -809,8 +952,8 @@ func (ms *ManagedServer) stopBacking() {
 		return
 	}
 
-	// SIGTERM the process group
-	_ = syscall.Kill(-pid, syscall.SIGTERM)
+	// SIGTERM the process (platform-specific)
+	_ = terminateProcess(pid)
 
 	// Wait up to 5s
 	deadline := time.Now().Add(5 * time.Second)
@@ -821,9 +964,9 @@ func (ms *ManagedServer) stopBacking() {
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	// SIGKILL if still alive
+	// Force kill if still alive
 	if isProcessAlive(pid) {
-		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		_ = killProcess(pid)
 		time.Sleep(500 * time.Millisecond)
 	}
 
@@ -848,22 +991,7 @@ func isPortOpen(port int) bool {
 }
 
 func readProcessMemory(pid int) int64 {
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
-	if err != nil {
-		return 0
-	}
-	for _, line := range splitLines(string(data)) {
-		if len(line) > 6 && line[:6] == "VmRSS:" {
-			fields := splitFields(line)
-			if len(fields) >= 2 {
-				kb, err := strconv.ParseInt(fields[1], 10, 64)
-				if err == nil {
-					return kb * 1024
-				}
-			}
-		}
-	}
-	return 0
+	return readProcMemory(pid)
 }
 
 func splitCommand(s string) []string {

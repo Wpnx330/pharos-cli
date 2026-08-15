@@ -43,9 +43,16 @@ pharos remove <name>           # Remove a locally installed package
 pharos remove <name> --force   # Remove even if other packages depend on it
 
 # Daemon (MCP server process supervisor)
-pharos daemon start            # Start the daemon (blocks until SIGTERM)
+pharos daemon start            # Start the daemon (backgrounds by default)
+pharos daemon start --foreground  # Run in foreground (for debugging)
 pharos daemon stop             # Stop daemon + unload all managed servers
+pharos daemon restart          # Stop + start (convenience)
 pharos daemon status           # Show daemon health + managed server table
+pharos daemon log              # Show recent daemon log output (default 50 lines)
+pharos daemon log -n 100       # Show last 100 lines of daemon log
+pharos daemon autostart --on   # Enable autostart on boot
+pharos daemon autostart --off  # Disable autostart on boot
+pharos daemon autostart        # Show current autostart status
 
 # Auth
 pharos login                   # GitHub OAuth login (opens browser)
@@ -75,7 +82,7 @@ pharos version                 # Print CLI version
 - `--no-dep-config` — Don't write MCP client configs for dependencies (install)
 - `--force` — Remove a package even if other packages depend on it (remove)
 - `--frozen` — Install strictly from lockfile; refuse if missing or mismatched (install)
-- `--idle-timeout` — Minutes of inactivity before auto-unloading HTTP/SSE servers (default: 60, 0 = never unload) (install)
+- `--idle-timeout` — **Per-server** minutes of inactivity before auto-unloading that server's HTTP/SSE process (default: 60, 0 = never unload). Set at install time; stored per-server in `~/.pharos/mcp.json` (install)
 - `--running` — Show only running daemon-managed servers (list)
 
 ## Configuration
@@ -305,20 +312,44 @@ The Pharos daemon is a background process supervisor for HTTP/SSE/streamable-htt
 
 ### How it works
 
-1. `pharos daemon start` launches the daemon, which reads `~/.pharos/mcp.json` and opens a local proxy listener (127.0.0.1) for each HTTP/SSE server.
+1. `pharos daemon start` launches the daemon in the **background by default** (the CLI re-execs itself with an internal flag and returns immediately, printing the PID and log path). The daemon reads `~/.pharos/mcp.json` and opens a local proxy listener (127.0.0.1) for each HTTP/SSE server.
 2. When a request arrives at a proxy port:
    - **Server running?** → Proxy it, update last-activity timestamp.
    - **Server unloaded?** → Start the backing process (JIT load), wait for it to be ready, then proxy.
 3. After `idle_timeout` minutes with no activity, the backing process is killed. The proxy listener stays alive — so the next request JIT-reloads it.
 4. `pharos daemon stop` gracefully terminates all managed servers and the daemon itself.
+5. `pharos daemon restart` stops then starts again (convenience — equivalent to `stop` + `start`).
 
-### Idle timeout
+### Foreground mode (debugging)
+
+By default `pharos daemon start` backgrounds and returns you to your shell. To run the daemon in the foreground — useful for debugging or when running under a service manager that expects the process to stay attached — use:
+
+```bash
+pharos daemon start --foreground
+```
+
+In foreground mode the daemon blocks the terminal until stopped (Ctrl-C or `pharos daemon stop`).
+
+### Daemon log
+
+```bash
+pharos daemon log           # Show last 50 lines of daemon log
+pharos daemon log -n 100    # Show last 100 lines
+```
+
+The log file lives at `~/.pharos/daemon.log`. The `-n` flag controls the number of trailing lines shown.
+
+### Idle timeout (per-server)
+
+The idle timeout is a **per-server** setting, not a global daemon setting. Each installed server gets its own `idleTimeout` value recorded at install time. This is intentional: you may want a frequently-used server to stay always-on (`0`) while letting a rarely-used one unload after 30 minutes.
 
 | `--idle-timeout` | JIT loading | Auto-unload | Behavior |
 |------------------|-------------|-------------|----------|
-| `60` (default) | ✅ On | ✅ On | Server unloads after 60min idle, reloads on next request |
-| `30` | ✅ On | ✅ On | Server unloads after 30min idle, reloads on next request |
-| `0` | ❌ Off | ❌ Off | Server is always on (starts immediately, never unloads) |
+| `60` (default) | ✅ On | ✅ On | That server unloads after 60min idle, reloads on next request |
+| `30` | ✅ On | ✅ On | That server unloads after 30min idle, reloads on next request |
+| `0` | ❌ Off | ❌ Off | That server is always on (starts immediately, never unloads) |
+
+Each server's timeout is independent. A server installed with `--idle-timeout 30` is unaffected by another server installed with `--idle-timeout 0`.
 
 ### Config
 
@@ -331,6 +362,11 @@ Per-server idle timeout is stored in `~/.pharos/mcp.json`:
       "command": "node server.js",
       "transport": "http-sse",
       "idleTimeout": 60
+    },
+    "always-on-server": {
+      "command": "python app.py",
+      "transport": "http",
+      "idleTimeout": 0
     }
   }
 }
@@ -338,13 +374,53 @@ Per-server idle timeout is stored in `~/.pharos/mcp.json`:
 
 Daemon state (PID, running servers, ports, last activity) is persisted at `~/.pharos/daemon.json`. Logs go to `~/.pharos/daemon.log`.
 
-### SIGHUP hot-reload
+### Hot-reload (cross-platform)
 
-Sending `SIGHUP` to the daemon process causes it to re-read `~/.pharos/mcp.json` and reconcile — adding new servers and removing deleted ones without restarting.
+The daemon can re-read `~/.pharos/mcp.json` and reconcile — adding new servers and removing deleted ones — without a full restart. The trigger mechanism is platform-dependent:
+
+| Platform | Primary trigger | How |
+|----------|----------------|-----|
+| Linux / macOS | `SIGHUP` | `kill -HUP <pid>` (or `pkill -HUP pharos`) |
+| Windows | File-based | Touch `~/.pharos/daemon.reload` — the daemon polls for this file every 2s |
+
+**All platforms** also support the file trigger (`~/.pharos/daemon.reload`). On Unix it's redundant with SIGHUP but harmless, which means the same reload script works everywhere:
+
+```bash
+touch ~/.pharos/daemon.reload   # works on Linux, macOS, and Windows
+```
+
+### Autostart on boot
+
+The daemon can be configured to start automatically when you log in:
+
+```bash
+pharos daemon autostart --on   # Enable autostart
+pharos daemon autostart --off  # Disable autostart
+pharos daemon autostart        # Show current status
+```
+
+The underlying mechanism is platform-specific:
+
+| Platform | Mechanism | Unit / task |
+|----------|-----------|-------------|
+| Linux | systemd user unit | `~/.config/systemd/user/pharos-daemon.service` |
+| macOS | LaunchAgent plist | `~/Library/LaunchAgents/dev.getpharos.daemon.plist` |
+| Windows | Task Scheduler | `schtasks /create /tn PharosDaemon /sc onlogon` |
+
+On Linux, make sure your user lingering is enabled (`loginctl enable-linger $USER`) if you want the daemon to survive when no session is active. On macOS, the LaunchAgent runs on login. On Windows, the scheduled task triggers at user logon.
 
 ### Platform support
 
-The daemon requires Unix process groups (`Setpgid`) and is not available on Windows. stdio servers work cross-platform as before.
+The daemon runs on **all four primary platforms**:
+
+| Platform | Architecture | Process management | Hot-reload |
+|----------|-------------|--------------------|------------|
+| Linux | amd64 | Unix process groups (`Setpgid`) | SIGHUP + file trigger |
+| macOS | amd64 | Unix process groups (`Setpgid`) | SIGHUP + file trigger |
+| macOS | arm64 | Unix process groups (`Setpgid`) | SIGHUP + file trigger |
+| Windows | amd64 | `CREATE_NEW_PROCESS_GROUP`, `TerminateProcess` | File-based only (no SIGHUP) |
+
+Platform-specific code is isolated via Go build tags. On Windows, `readProcessMemory` returns 0 (there is no `/proc` filesystem) — this only affects memory reporting in `daemon status`, not server management.
 
 ## Author
 

@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Wpnx330/pharos-cli/internal/daemon"
 	"github.com/Wpnx330/pharos-cli/internal/runtime"
 	"github.com/Wpnx330/pharos-cli/internal/ui"
 )
@@ -43,6 +44,20 @@ var stopCmd = &cobra.Command{
 		}
 
 		name := args[0]
+
+		// If the daemon is running, try to stop the server via the daemon
+		// (this unloads it from the daemon's managed set without killing
+		// the proxy listener — the server can be JIT-loaded again on demand).
+		if st, _ := daemon.Status(); st != nil && st.Running {
+			if err := daemon.StopServer(name); err != nil {
+				fmt.Fprintln(os.Stderr, ui.Error.Render("Error:"), err)
+				return
+			}
+			fmt.Printf("%s Stopped %s (via daemon)\n", ui.Success.Render("✓"), ui.PackageName.Render(name))
+			return
+		}
+
+		// Fall back to direct PID kill (no daemon running)
 		err := runtime.Stop(runtime.StopOptions{
 			Name:    name,
 			Force:   stopForce,

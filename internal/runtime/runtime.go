@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -60,13 +59,7 @@ func IsRunning(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	// Send signal 0 to check if process exists
-	err = proc.Signal(syscall.Signal(0))
-	return err == nil
+	return procExists(pid)
 }
 
 // StartOptions configures how a server is started.
@@ -138,7 +131,7 @@ func Start(opts StartOptions) (*StartResult, error) {
 	cmd.Stderr = lf
 
 	// Set process group so we can kill the whole tree
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	setProcGroup(cmd)
 
 	if err := cmd.Start(); err != nil {
 		lf.Close()
@@ -183,7 +176,7 @@ func Stop(opts StopOptions) error {
 	}
 
 	// Send SIGTERM to the process group
-	syscall.Kill(-pid, syscall.SIGTERM)
+	termProc(pid)
 
 	// Wait for it to exit
 	timeout := opts.Timeout
@@ -203,7 +196,7 @@ func Stop(opts StopOptions) error {
 		if !opts.Force {
 			return fmt.Errorf("server %q did not stop within %ds; use --force to SIGKILL", opts.Name, timeout)
 		}
-		syscall.Kill(-pid, syscall.SIGKILL)
+		killProc(pid)
 		// Wait a moment for cleanup
 		time.Sleep(500 * time.Millisecond)
 	}

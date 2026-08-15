@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -434,5 +435,103 @@ func TestStatusNotRunning(t *testing.T) {
 	}
 	if st.Running {
 		t.Error("expected daemon not running")
+	}
+}
+
+// ── StopServer stop-request file tests ──────────────────────────────────
+
+func TestStopServerCreatesRequestFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	orig := daemonDirFn
+	daemonDirFn = func() (string, error) { return tmpDir, nil }
+	defer func() { daemonDirFn = orig }()
+
+	// Start a dummy process that just sleeps, to use as a fake daemon PID
+	dummy := exec.Command("sleep", "10")
+	if err := dummy.Start(); err != nil {
+		t.Fatalf("start dummy: %v", err)
+	}
+	defer dummy.Process.Kill()
+	dummyPID := dummy.Process.Pid
+
+	// Write a PID file pointing to the dummy process
+	pidPath := filepath.Join(tmpDir, "daemon.pid")
+	os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", dummyPID)), 0o600)
+
+	// Write a fake state file
+	st := &DaemonState{
+		PID:       dummyPID,
+		StartedAt: time.Now().UTC(),
+		Servers:   map[string]ServerState{},
+	}
+	stateData, _ := json.Marshal(st)
+	os.WriteFile(filepath.Join(tmpDir, "daemon.json"), stateData, 0o600)
+
+	// Call StopServer — it should create a stop-request file
+	_ = StopServer("test-http-server")
+
+	stopFile := filepath.Join(tmpDir, "daemon.stop", "test-http-server")
+	data, err := os.ReadFile(stopFile)
+	if err != nil {
+		t.Fatalf("stop-request file not created: %v", err)
+	}
+	if string(data) != "stop" {
+		t.Errorf("stop file content = %q, want %q", string(data), "stop")
+	}
+}
+
+func TestStopServerNoDaemon(t *testing.T) {
+	tmpDir := t.TempDir()
+	orig := daemonDirFn
+	daemonDirFn = func() (string, error) { return tmpDir, nil }
+	defer func() { daemonDirFn = orig }()
+
+	// No PID file — daemon not running
+	err := StopServer("test-server")
+	if err == nil {
+		t.Error("expected error when daemon not running")
+	}
+}
+
+// ── Autostart status test (non-destructive) ─────────────────────────────
+
+func TestAutostartStatusNotEnabled(t *testing.T) {
+	// On any system without pharos-daemon.service, this should return false
+	enabled, err := AutostartStatus()
+	if err != nil {
+		// Error is acceptable on systems without systemd/launchd
+		return
+	}
+	// In a test environment, autostart should not be enabled
+	if enabled {
+		t.Log("autostart appears enabled — this may be from a previous test run")
+	}
+}
+
+// ── LogPath test ─────────────────────────────────────────────────────────
+
+func TestLogPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	orig := daemonDirFn
+	daemonDirFn = func() (string, error) { return tmpDir, nil }
+	defer func() { daemonDirFn = orig }()
+
+	path, err := LogPath()
+	if err != nil {
+		t.Fatalf("LogPath: %v", err)
+	}
+	expected := filepath.Join(tmpDir, "daemon.log")
+	if path != expected {
+		t.Errorf("LogPath = %q, want %q", path, expected)
+	}
+}
+
+// ── ReloadDaemon test ────────────────────────────────────────────────────
+
+func TestReloadDaemonInvalidPID(t *testing.T) {
+	// PID 0 should be rejected
+	err := ReloadDaemon(0)
+	if err == nil {
+		t.Error("expected error for PID 0")
 	}
 }

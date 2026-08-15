@@ -19,7 +19,7 @@ import (
 )
 
 // SchemaURL is the published JSON schema for IDE autocomplete.
-const SchemaURL = "https://getpharos.dev/schema/mcp.json"
+const SchemaURL = "https://api.getpharos.dev/schema/mcp.json"
 
 // CurrentVersion is the current canonical config schema version.
 const CurrentVersion = 1

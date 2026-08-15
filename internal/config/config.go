@@ -26,7 +26,7 @@ type CustomClient struct {
 }
 
 // DefaultRegistry is the default PHAROS registry base URL.
-const DefaultRegistry = "https://getpharos.dev"
+const DefaultRegistry = "https://api.getpharos.dev"
 
 // Default returns a Config populated with default values.
 func Default() *Config {

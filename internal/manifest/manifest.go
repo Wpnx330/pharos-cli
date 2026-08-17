@@ -20,6 +20,7 @@ type Manifest struct {
 	License      string   `json:"license"`
 	Homepage     string   `json:"homepage,omitempty"`
 	Repository   string   `json:"repository,omitempty"`
+	Endpoint     string   `json:"endpoint,omitempty"`
 	Bin          string   `json:"bin,omitempty"`
 	Command      string   `json:"command,omitempty"`
 	Entrypoint   string   `json:"entrypoint,omitempty"`

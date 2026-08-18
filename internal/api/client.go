@@ -113,25 +113,38 @@ func encodeQuery(s string) string {
 	return url.QueryEscape(s)
 }
 
-// packagePath normalizes a package name into the URL path segment
-// that the registry's chi router can match, handling both unscoped
-// ("foo-bar") and scoped ("@scope/name" or "scope/name") names.
+// packagePath normalizes a package name into the URL path that the
+// registry's chi router can match, handling both unscoped ("foo-bar")
+// and scoped ("@scope/name" or "scope/name") names.
 // Scoped names are prefixed with "@" so they match the scoped route
 // /@{scope}/{name}.
 //
-// The returned segment is NOT URL-encoded — chi handles the path
-// segments natively. Use encodeQuery only for query parameters, not
-// for package paths. Callers prepend their own resource prefix
-// (e.g. "/v1/packages/" or "/v1/advisories/").
+// Each path segment is escaped with url.PathEscape so spaces and other
+// package-ID characters reach the server. "/" is kept as the scope
+// separator and is never escaped as a single blob — otherwise
+// io.github.j0hanz/filesystem-mcp would miss the scoped route.
+// Callers prepend their own resource prefix (e.g. "/v1/packages/").
 func packagePath(name string) string {
-	if strings.HasPrefix(name, "@") {
-		// Already scoped: @scope/name → @scope/name
-		return name
+	// Title-shaped package IDs contain spaces (and sometimes a slash
+	// inside parentheses). Treat them as one unscoped segment so `/`
+	// is %2F and chi stays on /packages/{name}.
+	if strings.Contains(name, " ") {
+		return url.PathEscape(name)
 	}
-	if idx := strings.Index(name, "/"); idx > 0 {
-		// Unprefixed scope: scope/name → @scope/name
-		return "@" + name
+	if !strings.HasPrefix(name, "@") {
+		if idx := strings.Index(name, "/"); idx > 0 {
+			// Unprefixed scope: scope/name → @scope/name
+			name = "@" + name
+		}
 	}
-	// Unscoped: name → name
-	return name
+	parts := strings.Split(name, "/")
+	for i, part := range parts {
+		// Keep a leading @ literal so the path matches /@{scope}/{name}.
+		if i == 0 && strings.HasPrefix(part, "@") {
+			parts[i] = "@" + url.PathEscape(part[1:])
+			continue
+		}
+		parts[i] = url.PathEscape(part)
+	}
+	return strings.Join(parts, "/")
 }

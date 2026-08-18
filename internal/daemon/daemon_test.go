@@ -3,6 +3,7 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -10,6 +11,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -533,5 +536,379 @@ func TestReloadDaemonInvalidPID(t *testing.T) {
 	err := ReloadDaemon(0)
 	if err == nil {
 		t.Error("expected error for PID 0")
+	}
+}
+
+// ── Backing port assignment ──────────────────────────────────────────────
+
+func TestResolveBackingPort(t *testing.T) {
+	const proxyPort = 8421
+	tests := []struct {
+		name    string
+		command string
+		args    []string
+		url     string
+		want    int
+	}{
+		{
+			name:    "explicit --port in args",
+			command: "python",
+			args:    []string{"server.py", "--port", "9000"},
+			want:    9000,
+		},
+		{
+			name:    "explicit --port in command string",
+			command: "python server.py --port 9001",
+			want:    9001,
+		},
+		{
+			name:    "no declared port defaults to 8765 not proxy",
+			command: "python server.py",
+			want:    8765,
+		},
+		{
+			name:    "numeric arg is declared port",
+			command: "python",
+			args:    []string{"server.py", "9333"},
+			want:    9333,
+		},
+		{
+			name:    "url port used when command has no port",
+			command: "python server.py",
+			url:     "http://127.0.0.1:9444/sse",
+			want:    9444,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveBackingPort(tt.command, tt.args, tt.url, proxyPort)
+			if got != tt.want {
+				t.Errorf("resolveBackingPort(...) = %d, want %d", got, tt.want)
+			}
+			if tt.want == 8765 && got == proxyPort {
+				t.Errorf("backing port must not default to proxy port %d", proxyPort)
+			}
+		})
+	}
+}
+
+func TestResolveBackingPortNeverEqualsProxyWhenUndeclared(t *testing.T) {
+	got := resolveBackingPort("python server.py", nil, "", 8421)
+	if got == 8421 {
+		t.Fatalf("BackingPort defaulted to proxy port 8421; want well-known 8765")
+	}
+	if got != 8765 {
+		t.Fatalf("BackingPort = %d, want 8765", got)
+	}
+}
+
+// ── Kind 1 URL-only is not managed ───────────────────────────────────────
+
+func TestShouldManageServerKind1URLOnlySkipped(t *testing.T) {
+	tests := []struct {
+		name      string
+		transport string
+		command   string
+		url       string
+		want      bool
+	}{
+		{"kind 1 URL-only http-sse", "http-sse", "", "https://example.com/sse", false},
+		{"kind 1 URL-only http", "http", "", "https://example.com/mcp", false},
+		{"kind 1 URL-only streamable-http", "streamable-http", "", "https://example.com/mcp", false},
+		{"kind 2 local http-sse", "http-sse", "python server.py", "", true},
+		{"kind 2 local http", "http", "python server.py", "", true},
+		{"kind 3 stdio", "stdio", "npx some-server", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shouldManageLocalHTTP(tt.transport, tt.command)
+			if got != tt.want {
+				t.Errorf("shouldManageLocalHTTP(%q, %q) = %v, want %v",
+					tt.transport, tt.command, got, tt.want)
+			}
+		})
+	}
+}
+
+// ── Load-after-install helper (no live cluster) ──────────────────────────
+
+func TestLoadServerCreatesRequestFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	orig := daemonDirFn
+	daemonDirFn = func() (string, error) { return tmpDir, nil }
+	defer func() { daemonDirFn = orig }()
+
+	dummy := exec.Command("sleep", "10")
+	if err := dummy.Start(); err != nil {
+		t.Fatalf("start dummy: %v", err)
+	}
+	defer dummy.Process.Kill()
+	dummyPID := dummy.Process.Pid
+
+	if err := os.WriteFile(filepath.Join(tmpDir, "daemon.pid"), []byte(fmt.Sprintf("%d", dummyPID)), 0o600); err != nil {
+		t.Fatalf("write pid: %v", err)
+	}
+	st := &DaemonState{
+		PID:       dummyPID,
+		StartedAt: time.Now().UTC(),
+		Servers:   map[string]ServerState{},
+	}
+	stateData, _ := json.Marshal(st)
+	if err := os.WriteFile(filepath.Join(tmpDir, "daemon.json"), stateData, 0o600); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	if err := LoadServer("test-echo-server"); err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+
+	loadFile := filepath.Join(tmpDir, "daemon.load", "test-echo-server")
+	data, err := os.ReadFile(loadFile)
+	if err != nil {
+		t.Fatalf("load-request file not created: %v", err)
+	}
+	if string(data) != "load" {
+		t.Errorf("load file content = %q, want %q", string(data), "load")
+	}
+}
+
+func TestLoadServerNoDaemon(t *testing.T) {
+	tmpDir := t.TempDir()
+	orig := daemonDirFn
+	daemonDirFn = func() (string, error) { return tmpDir, nil }
+	defer func() { daemonDirFn = orig }()
+
+	err := LoadServer("test-echo-server")
+	if err == nil {
+		t.Fatal("expected error when daemon not running")
+	}
+}
+
+func TestLoadServerSanitizesPathTraversal(t *testing.T) {
+	tmpDir := t.TempDir()
+	orig := daemonDirFn
+	daemonDirFn = func() (string, error) { return tmpDir, nil }
+	defer func() { daemonDirFn = orig }()
+
+	dummy := exec.Command("sleep", "10")
+	if err := dummy.Start(); err != nil {
+		t.Fatalf("start dummy: %v", err)
+	}
+	defer dummy.Process.Kill()
+	dummyPID := dummy.Process.Pid
+	_ = os.WriteFile(filepath.Join(tmpDir, "daemon.pid"), []byte(fmt.Sprintf("%d", dummyPID)), 0o600)
+	st := &DaemonState{PID: dummyPID, Servers: map[string]ServerState{}}
+	stateData, _ := json.Marshal(st)
+	_ = os.WriteFile(filepath.Join(tmpDir, "daemon.json"), stateData, 0o600)
+
+	if err := LoadServer("../escape"); err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(tmpDir, "daemon.load", "escape")); err != nil {
+		t.Fatalf("expected sanitized load file: %v", err)
+	}
+}
+
+func TestConsumeLoadRequests(t *testing.T) {
+	tmpDir := t.TempDir()
+	orig := daemonDirFn
+	daemonDirFn = func() (string, error) { return tmpDir, nil }
+	defer func() { daemonDirFn = orig }()
+
+	loadDir := filepath.Join(tmpDir, "daemon.load")
+	if err := os.MkdirAll(loadDir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(loadDir, "alpha"), []byte("load"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(loadDir, "beta"), []byte("load"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := consumeLoadRequests()
+	if len(got) != 2 {
+		t.Fatalf("consumeLoadRequests = %v, want 2 names", got)
+	}
+	seen := map[string]bool{}
+	for _, n := range got {
+		seen[n] = true
+	}
+	if !seen["alpha"] || !seen["beta"] {
+		t.Errorf("names = %v, want alpha and beta", got)
+	}
+
+	// Files must be consumed (deleted) so a later reconcile does not re-load.
+	if entries, err := os.ReadDir(loadDir); err != nil {
+		t.Fatalf("readdir: %v", err)
+	} else if len(entries) != 0 {
+		t.Errorf("expected load dir empty after consume, got %d entries", len(entries))
+	}
+}
+
+func TestShouldStartBackingAfterInstall(t *testing.T) {
+	// Table / fake: install-time load is independent of idleTimeout.
+	// idleTimeout 0 already starts immediately; idleTimeout 60 must also
+	// start once when a load request is present.
+	tests := []struct {
+		name         string
+		idleTimeout  int
+		loadRequested bool
+		alreadyRunning bool
+		wantStart    bool
+	}{
+		{"idle 60 + load request", 60, true, false, true},
+		{"idle 0 + load request", 0, true, false, true},
+		{"idle 60 no request", 60, false, false, false},
+		{"idle 0 no request (always-on path)", 0, false, false, true},
+		{"already running + load request", 60, true, true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shouldStartBacking(tt.idleTimeout, tt.loadRequested, tt.alreadyRunning)
+			if got != tt.wantStart {
+				t.Errorf("shouldStartBacking(%d, load=%v, running=%v) = %v, want %v",
+					tt.idleTimeout, tt.loadRequested, tt.alreadyRunning, got, tt.wantStart)
+			}
+		})
+	}
+}
+
+// ── startBacking python → python3 ────────────────────────────────────────
+
+const spawnArgLogger = "#!/bin/sh\n{\n  printf 'exe=%s\\n' \"$0\"\n  for a in \"$@\"; do printf 'arg=%s\\n' \"$a\"; done\n} > \"$PHAROS_SPAWN_LOG\"\nexec /bin/sleep 30\n"
+
+func writePathExe(t *testing.T, dir, name, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testDaemon(t *testing.T) *Daemon {
+	t.Helper()
+	tmp := t.TempDir()
+	orig := daemonDirFn
+	daemonDirFn = func() (string, error) { return tmp, nil }
+	t.Cleanup(func() { daemonDirFn = orig })
+
+	origWait := backingReadyWait
+	backingReadyWait = 150 * time.Millisecond
+	t.Cleanup(func() { backingReadyWait = origWait })
+
+	return &Daemon{
+		state: &DaemonState{Servers: map[string]ServerState{}},
+		log:   log.New(io.Discard, "", 0),
+	}
+}
+
+func waitSpawnLog(t *testing.T, path string) string {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		b, err := os.ReadFile(path)
+		if err == nil && len(b) > 0 {
+			return string(b)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("timeout waiting for spawn log %s", path)
+	return ""
+}
+
+func TestStartBacking_PythonMissingUsesPython3KeepsArgs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("PATH exe stubs are POSIX scripts")
+	}
+	d := testDaemon(t)
+	bin := t.TempDir()
+	writePathExe(t, bin, "python3", spawnArgLogger)
+	t.Setenv("PATH", bin)
+
+	work := t.TempDir()
+	logPath := filepath.Join(work, "spawned.txt")
+	ms := &ManagedServer{
+		Name:        "echo",
+		Command:     "python",
+		Args:        []string{"server.py"},
+		WorkDir:     work,
+		Env:         []string{"PHAROS_SPAWN_LOG=" + logPath},
+		BackingPort: 1,
+		daemon:      d,
+	}
+	if err := ms.startBacking(); err != nil {
+		t.Fatalf("startBacking: %v", err)
+	}
+	t.Cleanup(func() { ms.stopBacking() })
+
+	body := waitSpawnLog(t, logPath)
+	if !strings.Contains(body, "exe="+filepath.Join(bin, "python3")) {
+		t.Errorf("spawned exe = %q, want python3", body)
+	}
+	if !strings.Contains(body, "arg=server.py") {
+		t.Errorf("args lost server.py: %q", body)
+	}
+	if strings.Contains(body, "test-echo-server") {
+		t.Errorf("must not rewrite args to package name: %q", body)
+	}
+}
+
+func TestStartBacking_PythonPresentKeepsPython(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("PATH exe stubs are POSIX scripts")
+	}
+	d := testDaemon(t)
+	bin := t.TempDir()
+	writePathExe(t, bin, "python", spawnArgLogger)
+	writePathExe(t, bin, "python3", "#!/bin/sh\necho unexpected-python3 > \"$PHAROS_SPAWN_LOG\"\nexec /bin/sleep 30\n")
+	t.Setenv("PATH", bin)
+
+	work := t.TempDir()
+	logPath := filepath.Join(work, "spawned.txt")
+	ms := &ManagedServer{
+		Name:        "echo",
+		Command:     "python server.py",
+		WorkDir:     work,
+		Env:         []string{"PHAROS_SPAWN_LOG=" + logPath},
+		BackingPort: 1,
+		daemon:      d,
+	}
+	if err := ms.startBacking(); err != nil {
+		t.Fatalf("startBacking: %v", err)
+	}
+	t.Cleanup(func() { ms.stopBacking() })
+
+	body := waitSpawnLog(t, logPath)
+	if !strings.Contains(body, "exe="+filepath.Join(bin, "python")) {
+		t.Errorf("spawned exe = %q, want python", body)
+	}
+	if strings.Contains(body, "unexpected-python3") || strings.Contains(body, filepath.Join(bin, "python3")) {
+		t.Errorf("must not substitute python3 when python is on PATH: %q", body)
+	}
+	if !strings.Contains(body, "arg=server.py") {
+		t.Errorf("args lost server.py: %q", body)
+	}
+}
+
+func TestStartBacking_NeitherPythonErrorsWithoutAptHint(t *testing.T) {
+	d := testDaemon(t)
+	t.Setenv("PATH", t.TempDir())
+	ms := &ManagedServer{
+		Name:    "echo",
+		Command: "python server.py",
+		WorkDir: t.TempDir(),
+		daemon:  d,
+	}
+	err := ms.startBacking()
+	if err == nil {
+		t.Fatal("expected error when neither python nor python3 is on PATH")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "python") {
+		t.Errorf("error should mention python: %v", err)
+	}
+	if strings.Contains(msg, "python-is-python3") || strings.Contains(msg, "apt install") {
+		t.Errorf("must not tell the user to apt-install python-is-python3: %v", err)
 	}
 }

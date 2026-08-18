@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/Wpnx330/pharos-cli/internal/canonical"
+	"github.com/Wpnx330/pharos-cli/internal/runtime"
 )
 
 // ── Public types (used by cmd/daemon.go) ────────────────────────────────
@@ -126,6 +127,30 @@ func LogPath() (string, error) {
 // On Unix: sends SIGHUP. On Windows: touches the reload trigger file.
 func ReloadDaemon(pid int) error {
 	return sendReloadSignal(pid)
+}
+
+// defaultLocalHTTPBackingPort is the well-known local HTTP/SSE listen
+// port used when a managed server's command does not declare --port.
+// It must never be the daemon proxy port (8421+).
+const defaultLocalHTTPBackingPort = 8765
+
+// LoadServer tells a running daemon to JIT-start the backing process for
+// a managed local HTTP server. It writes a load-request file and sends a
+// reload signal. The daemon's reconcile loop starts the process.
+// Kind 1 (URL-only) servers are never managed and will be ignored.
+func LoadServer(name string) error {
+	// Queue first so a just-started daemon can consume the request in Start()
+	// even if this call races ahead of the PID file.
+	if err := writeLoadRequest(name); err != nil {
+		return err
+	}
+
+	st, err := Status()
+	if err != nil || !st.Running {
+		return fmt.Errorf("daemon is not running")
+	}
+
+	return sendReloadSignal(st.PID)
 }
 
 // StopServer tells the daemon to unload a specific server.
@@ -362,9 +387,8 @@ func Start() error {
 	// Build managed servers from canonical config
 	portOffset := 0
 	for name, srv := range cfg.Servers {
-		transport := srv.Transport
-		if transport != "http-sse" && transport != "http" && transport != "streamable-http" {
-			continue // skip stdio servers
+		if !shouldManageLocalHTTP(srv.Transport, srv.Command) {
+			continue // skip stdio and kind-1 URL-only (no local process)
 		}
 
 		// Allocate port: reuse from previous state, else 8421 + offset
@@ -408,34 +432,13 @@ func Start() error {
 			ms.Env = append(ms.Env, k+"="+v)
 		}
 
-		// Determine backing port from command or URL
-		if srv.URL != "" {
-			// Remote URL — parse port
-			if u, err := url.Parse(srv.URL); err == nil {
-				if p, err := strconv.Atoi(u.Port()); err == nil {
-					ms.BackingPort = p
-				}
-			}
-			// For remote servers, there's no local process to manage.
-			// Skip — daemon only manages servers with a local command.
-			if srv.Command == "" {
-				continue
-			}
+		// For remote servers, there's no local process to manage.
+		// Skip — daemon only manages servers with a local command.
+		if srv.Command == "" {
+			continue
 		}
 
-		// Try to extract backing port from command/args
-		if ms.BackingPort == 0 {
-			for _, arg := range ms.Args {
-				if p, err := strconv.Atoi(arg); err == nil && p > 1024 && p < 65536 {
-					ms.BackingPort = p
-					break
-				}
-			}
-		}
-		// Default backing port to proxy port if we can't find one
-		if ms.BackingPort == 0 {
-			ms.BackingPort = port
-		}
+		ms.BackingPort = resolveBackingPort(ms.Command, ms.Args, srv.URL, port)
 
 		// Start proxy listener
 		listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
@@ -455,20 +458,31 @@ func Start() error {
 		}
 		d.mu.Unlock()
 
-		d.log.Printf("Started proxy listener for %s on port %d (idleTimeout=%dm)", name, port, idleTimeout)
-
-		// If idleTimeout == 0 (never unload), start the server immediately
-		if idleTimeout == 0 {
-			go func() {
-				if err := ms.startBacking(); err != nil {
-					d.log.Printf("ERROR: failed to start always-on server %s: %v", name, err)
-				}
-			}()
-		}
+		d.log.Printf("Started proxy listener for %s on port %d (idleTimeout=%dm, backing=%d)", name, port, idleTimeout, ms.BackingPort)
 
 		// Start proxy goroutine
 		go ms.serveProxy()
 	}
+
+	// Start backing processes: idleTimeout 0 (always-on) and any pending
+	// load-after-install requests. idleTimeout 60 stays JIT after this
+	// first load; idleTimeout 0 already started immediately before.
+	pendingLoad := map[string]bool{}
+	for _, n := range consumeLoadRequests() {
+		pendingLoad[n] = true
+	}
+	d.mu.RLock()
+	for name, ms := range d.servers {
+		if !shouldStartBacking(ms.IdleTimeout, pendingLoad[name], false) {
+			continue
+		}
+		go func(name string, ms *ManagedServer) {
+			if err := ms.startBacking(); err != nil {
+				d.log.Printf("ERROR: failed to start server %s: %v", name, err)
+			}
+		}(name, ms)
+	}
+	d.mu.RUnlock()
 
 	// Start idle checker
 	go d.idleChecker()
@@ -701,8 +715,12 @@ func (d *Daemon) reconcile() {
 		return
 	}
 
+	loadRequested := map[string]bool{}
+	for _, n := range consumeLoadRequests() {
+		loadRequested[n] = true
+	}
+
 	d.mu.Lock()
-	defer d.mu.Unlock()
 
 	// Find servers to add
 	maxPort := 8420
@@ -712,13 +730,10 @@ func (d *Daemon) reconcile() {
 		}
 	}
 
+	var toStart []*ManagedServer
 	for name, srv := range cfg.Servers {
-		transport := srv.Transport
-		if transport != "http-sse" && transport != "http" && transport != "streamable-http" {
-			continue
-		}
-		if srv.Command == "" {
-			continue // remote-only, no local process
+		if !shouldManageLocalHTTP(srv.Transport, srv.Command) {
+			continue // stdio or kind-1 URL-only
 		}
 		if _, exists := d.servers[name]; exists {
 			continue // already managed
@@ -735,6 +750,7 @@ func (d *Daemon) reconcile() {
 			Command:     srv.Command,
 			Args:        srv.Args,
 			WorkDir:     srv.Cwd,
+			BackingPort: resolveBackingPort(srv.Command, srv.Args, srv.URL, port),
 			daemon:      d,
 		}
 		for k, v := range srv.Env {
@@ -756,15 +772,34 @@ func (d *Daemon) reconcile() {
 			IdleTimeout: srv.IdleTimeout,
 		}
 
-		d.log.Printf("Added server %s on port %d via SIGHUP reconcile", name, port)
+		d.log.Printf("Added server %s on port %d (backing=%d) via SIGHUP reconcile", name, port, ms.BackingPort)
 		go ms.serveProxy()
 
-		if srv.IdleTimeout == 0 {
-			go func() {
-				if err := ms.startBacking(); err != nil {
-					d.log.Printf("ERROR: failed to start always-on server %s: %v", name, err)
-				}
-			}()
+		// Newly added always-on servers start immediately (same as Start()).
+		if shouldStartBacking(ms.IdleTimeout, loadRequested[name], false) {
+			toStart = append(toStart, ms)
+		}
+	}
+
+	// Load-after-install: start existing managed servers that were requested.
+	seenStart := map[string]bool{}
+	for _, ms := range toStart {
+		seenStart[ms.Name] = true
+	}
+	for name := range loadRequested {
+		if seenStart[name] {
+			continue
+		}
+		ms, exists := d.servers[name]
+		if !exists {
+			continue
+		}
+		// Do not take ms.mu while holding d.mu — startBacking locks
+		// ms.mu then d.mu. A stale "running" read is safe: startBacking
+		// is a no-op if the process is already up.
+		if shouldStartBacking(ms.IdleTimeout, true, ms.state == "running") {
+			toStart = append(toStart, ms)
+			seenStart[name] = true
 		}
 	}
 
@@ -780,6 +815,14 @@ func (d *Daemon) reconcile() {
 				}
 				// Remove the stop-request file
 				os.Remove(filepath.Join(stopDir, srvName))
+				// A stop request wins over a same-cycle load request.
+				filtered := toStart[:0]
+				for _, candidate := range toStart {
+					if candidate.Name != srvName {
+						filtered = append(filtered, candidate)
+					}
+				}
+				toStart = filtered
 			}
 		}
 	}
@@ -801,6 +844,16 @@ func (d *Daemon) reconcile() {
 	}
 
 	_ = saveState(d.state)
+	d.mu.Unlock()
+
+	// startBacking takes ms.mu then d.mu — never call it while holding d.mu.
+	for _, ms := range toStart {
+		go func(ms *ManagedServer) {
+			if err := ms.startBacking(); err != nil {
+				d.log.Printf("ERROR: failed to start server %s: %v", ms.Name, err)
+			}
+		}(ms)
+	}
 }
 
 // ── ManagedServer methods ───────────────────────────────────────────────
@@ -870,10 +923,11 @@ func (ms *ManagedServer) startBacking() error {
 		return fmt.Errorf("empty command for %s", ms.Name)
 	}
 
-	// Check executable
-	exe := parts[0]
-	if _, err := exec.LookPath(exe); err != nil {
-		return fmt.Errorf("executable %q not found: %w", exe, err)
+	// Check executable. Persist may still say "python"; resolve python3
+	// at spawn time only. Remaining args (e.g. server.py) stay as-is.
+	exe, err := runtime.ResolveSpawnExe(parts[0])
+	if err != nil {
+		return err
 	}
 
 	// Build command
@@ -900,8 +954,8 @@ func (ms *ManagedServer) startBacking() error {
 	ms.startedAt = time.Now()
 	ms.lastActivity = time.Now()
 
-	// Wait for port to be ready (up to 10s)
-	deadline := time.Now().Add(10 * time.Second)
+	// Wait for port to be ready (up to backingReadyWait).
+	deadline := time.Now().Add(backingReadyWait)
 	for time.Now().Before(deadline) {
 		if isPortOpen(ms.BackingPort) {
 			break
@@ -980,6 +1034,10 @@ func (ms *ManagedServer) stopBacking() {
 	ms.daemon.log.Printf("Unloaded %s", ms.Name)
 }
 
+// backingReadyWait is how long startBacking waits for the listen port.
+// Tests shorten this so a missing listener does not stall for 10s.
+var backingReadyWait = 10 * time.Second
+
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 func isPortOpen(port int) bool {
@@ -994,6 +1052,131 @@ func isPortOpen(port int) bool {
 
 func readProcessMemory(pid int) int64 {
 	return readProcMemory(pid)
+}
+
+// shouldManageLocalHTTP reports whether the daemon should supervise a
+// local HTTP/SSE process. Kind 1 (URL, no command) is never managed.
+func shouldManageLocalHTTP(transport, command string) bool {
+	switch transport {
+	case "http-sse", "http", "streamable-http":
+		return strings.TrimSpace(command) != ""
+	default:
+		return false
+	}
+}
+
+// shouldStartBacking decides whether to spawn the backing process now.
+// idleTimeout 0 is always-on. A load-after-install request starts even
+// when idleTimeout is 60 (first load); later idle unload still applies.
+func shouldStartBacking(idleTimeout int, loadRequested, alreadyRunning bool) bool {
+	if alreadyRunning {
+		return false
+	}
+	if loadRequested {
+		return true
+	}
+	return idleTimeout == 0
+}
+
+// resolveBackingPort prefers a port declared in command/args/--port or
+// URL. It never defaults to the proxy port — undeclared local HTTP
+// servers use the well-known test-echo port 8765.
+func resolveBackingPort(command string, args []string, rawURL string, proxyPort int) int {
+	if p := parseDeclaredPort(command, args); p > 0 {
+		return p
+	}
+	if rawURL != "" {
+		if u, err := url.Parse(rawURL); err == nil {
+			if p, err := strconv.Atoi(u.Port()); err == nil && isUsablePort(p) {
+				return p
+			}
+		}
+	}
+	_ = proxyPort // never default backing to the proxy listener
+	return defaultLocalHTTPBackingPort
+}
+
+func parseDeclaredPort(command string, args []string) int {
+	tokens := append(splitCommand(command), args...)
+	for i := 0; i < len(tokens); i++ {
+		tok := tokens[i]
+		switch {
+		case tok == "--port" || tok == "-p":
+			if i+1 < len(tokens) {
+				if p := parseUsablePort(tokens[i+1]); p > 0 {
+					return p
+				}
+			}
+		case strings.HasPrefix(tok, "--port="):
+			if p := parseUsablePort(strings.TrimPrefix(tok, "--port=")); p > 0 {
+				return p
+			}
+		}
+	}
+	for _, tok := range tokens {
+		if p := parseUsablePort(tok); p > 1024 {
+			return p
+		}
+	}
+	return 0
+}
+
+func parseUsablePort(s string) int {
+	p, err := strconv.Atoi(s)
+	if err != nil || !isUsablePort(p) {
+		return 0
+	}
+	return p
+}
+
+func isUsablePort(p int) bool {
+	return p > 0 && p < 65536
+}
+
+// consumeLoadRequests returns queued server names and deletes the files.
+func consumeLoadRequests() []string {
+	dir := mustDaemonDir()
+	if dir == "" {
+		return nil
+	}
+	loadDir := filepath.Join(dir, "daemon.load")
+	entries, err := os.ReadDir(loadDir)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := filepath.Base(entry.Name())
+		if name == "" || name == "." {
+			continue
+		}
+		names = append(names, name)
+		_ = os.Remove(filepath.Join(loadDir, name))
+	}
+	return names
+}
+
+func writeLoadRequest(name string) error {
+	dir, err := daemonDirFn()
+	if err != nil {
+		return err
+	}
+	loadDir := filepath.Join(dir, "daemon.load")
+	if err := os.MkdirAll(loadDir, 0o700); err != nil {
+		return fmt.Errorf("create load dir: %w", err)
+	}
+	safeName := filepath.Base(name)
+	if safeName == "" || safeName == "." || safeName == string(filepath.Separator) {
+		return fmt.Errorf("invalid server name")
+	}
+	loadFile := filepath.Join(loadDir, safeName)
+	if err := os.WriteFile(loadFile, []byte("load"), 0o600); err != nil {
+		return fmt.Errorf("write load file: %w", err)
+	}
+	return nil
 }
 
 func splitCommand(s string) []string {

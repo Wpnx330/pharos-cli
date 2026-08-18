@@ -98,3 +98,13 @@ func TestListCmdHasTransportColumn(t *testing.T) {
 		}
 	}
 }
+
+func TestListCmdHasJSONFlag(t *testing.T) {
+	f := listCmd.Flags().Lookup("json")
+	if f == nil {
+		t.Fatal("list command missing --json flag (needed for MCP)")
+	}
+	if f.DefValue != "false" {
+		t.Errorf("list --json default = %s, want false", f.DefValue)
+	}
+}

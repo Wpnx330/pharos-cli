@@ -5,6 +5,7 @@ package clientconfig
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,12 +22,43 @@ type ClientID string
 
 const (
 	ClientClaudeDesktop ClientID = "claude-desktop"
+	ClientClaudeCode    ClientID = "claude-code"
 	ClientCursor        ClientID = "cursor"
 	ClientGeneric       ClientID = "generic"
 	ClientCline         ClientID = "cline"
 	ClientOpenCode      ClientID = "opencode"
 	ClientHermes        ClientID = "hermes"
 )
+
+// SkipClaudeDesktopRemote is the user-facing reason when a remote/HTTP
+// server cannot be written into claude_desktop_config.json. Official
+// Desktop remotes are Settings → Connectors, not JSON.
+const SkipClaudeDesktopRemote = "Claude Desktop remotes are Settings → Connectors, not claude_desktop_config.json"
+
+// SkipError means the client was not configured because Pharos cannot
+// write a shape that client accepts. It is not a write failure.
+type SkipError struct {
+	Reason string
+}
+
+func (e *SkipError) Error() string {
+	if e == nil || e.Reason == "" {
+		return "client skipped"
+	}
+	return e.Reason
+}
+
+// IsSkip reports whether err is a SkipError (client not configurable).
+func IsSkip(err error) bool {
+	var skip *SkipError
+	return errors.As(err, &skip)
+}
+
+// SkippedClient is a detected client that MergeServer refused to write.
+type SkippedClient struct {
+	Client Client
+	Reason string
+}
 
 // FormatMcpServers is the {"mcpServers": {...}} format used by Claude
 // Desktop and Cursor.
@@ -36,9 +68,16 @@ const FormatMcpServers = "mcpServers"
 // a "name" field.
 const FormatArray = "array"
 
-// FormatOpenCode is the {"mcpServers": {...}} JSON format but with env
-// as an array of "KEY=VALUE" strings instead of an object.
+// FormatOpenCode is OpenCode's official JSON shape: top-level "mcp"
+// (never "mcpServers"), with local/remote entries. Env, if present, is
+// an array of "KEY=VALUE" strings inside each mcp entry.
 const FormatOpenCode = "opencode"
+
+// json key names for the two object-based MCP maps.
+const (
+	keyMcpServers = "mcpServers"
+	keyMcp        = "mcp"
+)
 
 // FormatHermes is the YAML format with a top-level mcp_servers: key.
 const FormatHermes = "hermes-yaml"
@@ -82,6 +121,11 @@ func Detect() []Client {
 		existing := false
 		if _, err := os.Stat(c.Path); err == nil {
 			existing = true
+		} else if c.ID == ClientClaudeCode {
+			// User-scope Claude Code is ~/.claude.json. The parent is
+			// $HOME, which always exists — do not create this file
+			// for people who do not use Code.
+			continue
 		} else if dirExists(filepath.Dir(c.Path)) {
 			// Config doesn't exist yet but the app directory does —
 			// we can create it.
@@ -100,14 +144,28 @@ func Detect() []Client {
 	return clients
 }
 
-// DetectByID returns a single client by ID, or nil if not detected.
+// DetectByID returns the first detected client with the given ID, or
+// nil if none. Prefer ClientsByID when a client can exist at more than
+// one home-level path (Linux + Windows via WSL2).
 func DetectByID(id ClientID) *Client {
+	all := ClientsByID(id)
+	if len(all) == 0 {
+		return nil
+	}
+	c := all[0]
+	return &c
+}
+
+// ClientsByID returns every detected client with the given ID. The same
+// ID can appear twice (WSL $HOME and a Windows profile via /mnt/c/Users).
+func ClientsByID(id ClientID) []Client {
+	var out []Client
 	for _, c := range Detect() {
 		if c.ID == id {
-			return &c
+			out = append(out, c)
 		}
 	}
-	return nil
+	return out
 }
 
 // candidatePaths returns the well-known config paths for the current OS.
@@ -153,18 +211,48 @@ func candidatePaths() []Client {
 					Path:   winPath,
 					Format: FormatMcpServers,
 				})
-				break
 			}
 		}
 	}
 
-	// Cursor: ~/.cursor/mcp.json
+	// Cursor: ~/.cursor/mcp.json (Linux/macOS/Windows user home)
 	clients = append(clients, Client{
 		ID:     ClientCursor,
 		Name:   "Cursor",
 		Path:   filepath.Join(home, ".cursor", "mcp.json"),
 		Format: FormatMcpServers,
 	})
+	// WSL2: Cursor on Windows reads %USERPROFILE%\.cursor\mcp.json.
+	if runtime.GOOS == "linux" {
+		for _, wu := range windowsUserDirs() {
+			clients = append(clients, Client{
+				ID:     ClientCursor,
+				Name:   "Cursor (Windows via WSL2)",
+				Path:   filepath.Join(wu, ".cursor", "mcp.json"),
+				Format: FormatMcpServers,
+			})
+		}
+	}
+
+	// Claude Code: ~/.claude.json user-scope (top-level mcpServers).
+	// Detect() requires the file itself — $HOME always exists and must
+	// not cause us to invent a Code config.
+	clients = append(clients, Client{
+		ID:     ClientClaudeCode,
+		Name:   "Claude Code",
+		Path:   filepath.Join(home, ".claude.json"),
+		Format: FormatMcpServers,
+	})
+	if runtime.GOOS == "linux" {
+		for _, wu := range windowsUserDirs() {
+			clients = append(clients, Client{
+				ID:     ClientClaudeCode,
+				Name:   "Claude Code (Windows via WSL2)",
+				Path:   filepath.Join(wu, ".claude.json"),
+				Format: FormatMcpServers,
+			})
+		}
+	}
 
 	// OpenCode: ~/.config/opencode/opencode.json
 	clients = append(clients, Client{
@@ -197,6 +285,16 @@ func candidatePaths() []Client {
 	return clients
 }
 
+// windowsUsersRoot is the directory whose children are Windows user
+// profiles. Tests may override via PHAROS_WINDOWS_USERS_ROOT so Detect
+// never walks the live /mnt/c/Users tree.
+func windowsUsersRoot() string {
+	if override := strings.TrimSpace(os.Getenv("PHAROS_WINDOWS_USERS_ROOT")); override != "" {
+		return override
+	}
+	return "/mnt/c/Users"
+}
+
 // windowsUserDirs returns likely Windows user home directories under
 // /mnt/c/Users/ on WSL2. Returns empty on non-WSL2 systems.
 func windowsUserDirs() []string {
@@ -204,7 +302,8 @@ func windowsUserDirs() []string {
 	if runtime.GOOS != "linux" {
 		return nil
 	}
-	entries, err := os.ReadDir("/mnt/c/Users")
+	root := windowsUsersRoot()
+	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil
 	}
@@ -219,7 +318,7 @@ func windowsUserDirs() []string {
 			name == "All Users" || strings.HasPrefix(name, ".") {
 			continue
 		}
-		dirs = append(dirs, filepath.Join("/mnt/c", "Users", name))
+		dirs = append(dirs, filepath.Join(root, name))
 	}
 	return dirs
 }
@@ -264,7 +363,6 @@ func clineCandidatePaths(home string) []Client {
 					Path:   winPath,
 					Format: FormatMcpServers,
 				})
-				break
 			}
 		}
 		return clients
@@ -332,6 +430,10 @@ func dirExists(path string) bool {
 //   - "mcpServers" (default): {"mcpServers": {...}}
 //   - "array": a flat JSON array of objects, each with a "name" field
 func MergeServer(c Client, name string, server ServerConfig) error {
+	if reason := skipMergeReason(c, server); reason != "" {
+		return &SkipError{Reason: reason}
+	}
+
 	format := c.Format
 	if format == "" {
 		format = FormatMcpServers
@@ -342,40 +444,14 @@ func MergeServer(c Client, name string, server ServerConfig) error {
 		return mergeArray(c, name, server)
 	case FormatHermes:
 		return mergeHermes(c, name, server)
-	case FormatOpenCode:
-		// OpenCode uses the mcpServers JSON root key but a different
-		// env format — fall through to the map-based mcpServers path;
-		// buildEntry handles the env-as-array difference.
-		// Unlike the old configFile struct approach, the map-based
-		// writer below preserves all unknown top-level keys (e.g.
-		// OpenCode's "model", "theme" settings).
 	}
 
-	// Use a generic map to preserve unknown top-level keys (e.g. OpenCode
-	// settings like "model", "theme") that would be silently dropped by a
-	// typed struct.
-	root := map[string]json.RawMessage{}
-	if c.Existing {
-		data, err := os.ReadFile(c.Path)
-		if err != nil {
-			return fmt.Errorf("read config %s: %w", c.Path, err)
-		}
-		if len(strings.TrimSpace(string(data))) > 0 {
-			if err := json.Unmarshal(data, &root); err != nil {
-				return fmt.Errorf("parse config %s: %w", c.Path, err)
-			}
-		}
-	}
-
-	// Get or create the mcpServers object.
-	var servers map[string]json.RawMessage
-	if existing, ok := root["mcpServers"]; ok {
-		if err := json.Unmarshal(existing, &servers); err != nil {
-			return fmt.Errorf("parse mcpServers: %w", err)
-		}
-	}
-	if servers == nil {
-		servers = make(map[string]json.RawMessage)
+	// Object formats (mcpServers / OpenCode mcp). Patch the existing
+	// document so unknown top-level keys survive ($schema, model,
+	// provider, theme, preferences, …).
+	servers, err := ReadServersFormat(c.Path, format)
+	if err != nil {
+		return err
 	}
 
 	entry, err := buildEntry(c.ID, server)
@@ -384,19 +460,10 @@ func MergeServer(c Client, name string, server ServerConfig) error {
 	}
 	servers[name] = entry
 
-	serversJSON, err := json.Marshal(servers)
-	if err != nil {
-		return err
+	if format == FormatOpenCode {
+		return PatchOpenCodeMcp(c.Path, servers)
 	}
-	root["mcpServers"] = serversJSON
-
-	// Marshal the full root, preserving all unknown keys.
-	output, err := json.MarshalIndent(root, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
-	}
-	output = append(output, '\n')
-	return SafeWriteConfig(c.Path, output, "mcpServers")
+	return PatchMcpServers(c.Path, servers)
 }
 
 // arrayEntry is a single server entry in the "array" config format.
@@ -450,20 +517,27 @@ func mergeArray(c Client, name string, server ServerConfig) error {
 	return writeArrayConfig(c.Path, entries)
 }
 
+// skipMergeReason returns a non-empty skip reason when Pharos cannot
+// write a shape this client accepts. The config file must be left
+// untouched.
+func skipMergeReason(c Client, server ServerConfig) string {
+	if c.ID == ClientClaudeDesktop && strings.TrimSpace(server.URL) != "" {
+		return SkipClaudeDesktopRemote
+	}
+	return ""
+}
+
 // writeArrayConfig marshals and writes an array-format config file.
 func writeArrayConfig(path string, entries []arrayEntry) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create config dir: %w", err)
+	if entries == nil {
+		entries = []arrayEntry{}
 	}
 	data, err := json.MarshalIndent(entries, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 	data = append(data, '\n')
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("write config %s: %w", path, err)
-	}
-	return nil
+	return SafeWriteConfig(path, data, FormatArray)
 }
 
 // hermesServerEntry is the YAML representation of a single MCP server
@@ -597,8 +671,16 @@ func SafeWriteConfig(path string, data []byte, format string) error {
 			_ = os.Remove(tmpPath)
 			return fmt.Errorf("validation failed: written YAML is not parseable: %w", err)
 		}
+	case FormatArray:
+		var verify []json.RawMessage
+		if err := json.Unmarshal(writtenData, &verify); err != nil {
+			_ = os.Remove(tmpPath)
+			return fmt.Errorf("validation failed: written JSON is not a parseable array: %w", err)
+		}
 	default:
-		var verify configFile
+		// Object formats (mcpServers / OpenCode) must remain objects.
+		// Unmarshal into a generic map so extra top-level keys are accepted.
+		var verify map[string]json.RawMessage
 		if err := json.Unmarshal(writtenData, &verify); err != nil {
 			_ = os.Remove(tmpPath)
 			return fmt.Errorf("validation failed: written JSON is not parseable: %w", err)
@@ -647,15 +729,56 @@ func removeHermesServer(path, name string) (bool, error) {
 	return true, writeHermesConfig(path, out)
 }
 
-// writeConfig marshals and writes the config file safely.
-func writeConfig(path string, cfg *configFile) error {
-	data, err := json.MarshalIndent(cfg, "", "  ")
+// PatchMcpServers writes servers into the existing JSON object's
+// "mcpServers" key and leaves every other top-level key untouched.
+// If the file does not exist, a new object containing only mcpServers
+// is created. A nil servers map is written as {}.
+func PatchMcpServers(path string, servers map[string]json.RawMessage) error {
+	return patchJSONServerMap(path, keyMcpServers, servers)
+}
+
+// PatchOpenCodeMcp writes servers into OpenCode's official "mcp" key and
+// leaves every other top-level key untouched ($schema, model, provider,
+// theme, …). A leftover "mcpServers" key from older Pharos writes is
+// deleted so OpenCode never sees an unrecognized key. A nil servers map
+// is written as {}.
+func PatchOpenCodeMcp(path string, servers map[string]json.RawMessage) error {
+	return patchJSONServerMap(path, keyMcp, servers)
+}
+
+// patchJSONServerMap writes servers into root[key] of an existing JSON
+// object and preserves every other top-level key. When key is "mcp"
+// (OpenCode), any leftover "mcpServers" key is removed so both keys
+// never coexist. A nil servers map is written as {}.
+func patchJSONServerMap(path, key string, servers map[string]json.RawMessage) error {
+	root := map[string]json.RawMessage{}
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read config %s: %w", path, err)
+	}
+	if len(strings.TrimSpace(string(data))) > 0 {
+		if err := json.Unmarshal(data, &root); err != nil {
+			return fmt.Errorf("parse config %s: %w", path, err)
+		}
+	}
+	if servers == nil {
+		servers = make(map[string]json.RawMessage)
+	}
+	serversJSON, err := json.Marshal(servers)
+	if err != nil {
+		return fmt.Errorf("marshal %s: %w", key, err)
+	}
+	root[key] = serversJSON
+	if key == keyMcp {
+		delete(root, keyMcpServers)
+	}
+
+	output, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
-	// Trailing newline for friendliness with editors.
-	data = append(data, '\n')
-	return SafeWriteConfig(path, data, "mcpServers")
+	output = append(output, '\n')
+	return SafeWriteConfig(path, output, key)
 }
 
 // buildEntry produces the JSON raw message for a server entry, tailored
@@ -682,18 +805,23 @@ func buildEntry(id ClientID, server ServerConfig) (json.RawMessage, error) {
 		return json.Marshal(entry)
 
 	case ClientOpenCode:
-		// OpenCode uses mcpServers format but env is an array of
-		// "KEY=VALUE" strings, and it has a "type" field (stdio|sse).
-		entry := map[string]any{}
+		// Official OpenCode shape (opencode.ai/docs/mcp-servers):
+		//   remote: {type: "remote", url, enabled}
+		//   local:  {type: "local", command: [bin, ...args], enabled}
+		// Env stays an array of "KEY=VALUE" strings inside the mcp
+		// entry — do not invent a third env shape.
+		entry := map[string]any{"enabled": true}
 		if server.URL != "" {
+			entry["type"] = "remote"
 			entry["url"] = server.URL
-			entry["type"] = "sse"
 		} else {
-			entry["command"] = server.Command
-			if len(server.Args) > 0 {
-				entry["args"] = server.Args
+			entry["type"] = "local"
+			cmd := make([]string, 0, 1+len(server.Args))
+			if server.Command != "" {
+				cmd = append(cmd, server.Command)
 			}
-			entry["type"] = "stdio"
+			cmd = append(cmd, server.Args...)
+			entry["command"] = cmd
 			if len(server.Env) > 0 {
 				envArr := make([]string, 0, len(server.Env))
 				for k, v := range server.Env {
@@ -705,9 +833,45 @@ func buildEntry(id ClientID, server ServerConfig) (json.RawMessage, error) {
 		}
 		return json.Marshal(entry)
 
+	case ClientClaudeCode:
+		// Official Claude Code user-scope: top-level mcpServers.
+		// Remote requires type+url (url without type is skipped by Code).
+		// streamable-http maps to http. Stdio always includes type.
+		entry := map[string]any{}
+		if server.URL != "" {
+			entry["type"] = claudeCodeRemoteType(server.Type)
+			entry["url"] = server.URL
+		} else {
+			entry["type"] = "stdio"
+			entry["command"] = server.Command
+			if len(server.Args) > 0 {
+				entry["args"] = server.Args
+			}
+			if len(server.Env) > 0 {
+				entry["env"] = server.Env
+			}
+		}
+		return json.Marshal(entry)
+
+	case ClientClaudeDesktop:
+		// Official Desktop JSON is stdio only: command + optional
+		// args/env. Remotes are Settings → Connectors (skip, never
+		// write {type,url} or npx mcp-remote). Do not emit type/url.
+		if server.URL != "" {
+			return nil, &SkipError{Reason: SkipClaudeDesktopRemote}
+		}
+		entry := map[string]any{"command": server.Command}
+		if len(server.Args) > 0 {
+			entry["args"] = server.Args
+		}
+		if len(server.Env) > 0 {
+			entry["env"] = server.Env
+		}
+		return json.Marshal(entry)
+
 	default:
-		// Claude Desktop + generic + Cline: stdio uses command/args/env,
-		// http/sse uses url (+ type for generic).
+		// Generic + Cline: stdio uses command/args/env, http/sse uses
+		// url (+ type). Cline accepts native url remotes.
 		entry := map[string]any{}
 		if server.URL != "" {
 			entry["url"] = server.URL
@@ -724,6 +888,21 @@ func buildEntry(id ClientID, server ServerConfig) (json.RawMessage, error) {
 			}
 		}
 		return json.Marshal(entry)
+	}
+}
+
+// claudeCodeRemoteType maps Pharos transport names onto the type Code
+// accepts. url without type is skipped by Code, so this never returns "".
+func claudeCodeRemoteType(t string) string {
+	switch strings.ToLower(strings.TrimSpace(t)) {
+	case "sse":
+		return "sse"
+	case "ws", "websocket":
+		return "ws"
+	case "http", "streamable-http", "":
+		return "http"
+	default:
+		return "http"
 	}
 }
 
@@ -749,14 +928,18 @@ func ReadServersFormat(path, format string) (map[string]json.RawMessage, error) 
 		}
 		return nil, err
 	}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return make(map[string]json.RawMessage), nil
+	}
 	switch format {
 	case FormatArray:
 		return readArrayServers(data)
 	case FormatHermes:
 		return readHermesServers(data)
+	case FormatOpenCode:
+		return readOpenCodeServers(data)
 	default:
-		// FormatMcpServers and FormatOpenCode both use JSON
-		// {\"mcpServers\": {...}} as the root structure.
+		// FormatMcpServers: {"mcpServers": {...}}.
 		var cfg configFile
 		if err := json.Unmarshal(data, &cfg); err != nil {
 			return nil, fmt.Errorf("parse config: %w", err)
@@ -766,6 +949,45 @@ func ReadServersFormat(path, format string) (map[string]json.RawMessage, error) 
 		}
 		return cfg.McpServers, nil
 	}
+}
+
+// readOpenCodeServers reads official root["mcp"]. If a legacy file still
+// has only "mcpServers" (older Pharos writes) and no "mcp", that map is
+// returned so RemoveServer / MergeServer can migrate it on write.
+func readOpenCodeServers(data []byte) (map[string]json.RawMessage, error) {
+	root := map[string]json.RawMessage{}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return make(map[string]json.RawMessage), nil
+	}
+	if err := json.Unmarshal(data, &root); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	if raw, ok := root[keyMcp]; ok {
+		servers, err := unmarshalServerMap(raw)
+		if err != nil {
+			return nil, fmt.Errorf("parse mcp: %w", err)
+		}
+		return servers, nil
+	}
+	if raw, ok := root[keyMcpServers]; ok {
+		servers, err := unmarshalServerMap(raw)
+		if err != nil {
+			return nil, fmt.Errorf("parse mcpServers: %w", err)
+		}
+		return servers, nil
+	}
+	return make(map[string]json.RawMessage), nil
+}
+
+func unmarshalServerMap(raw json.RawMessage) (map[string]json.RawMessage, error) {
+	var servers map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &servers); err != nil {
+		return nil, err
+	}
+	if servers == nil {
+		servers = make(map[string]json.RawMessage)
+	}
+	return servers, nil
 }
 
 // readHermesServers parses a Hermes YAML config and returns the
@@ -819,7 +1041,7 @@ func readArrayServers(data []byte) (map[string]json.RawMessage, error) {
 // AllClients returns the list of all known client IDs regardless of
 // whether they're installed.
 var AllClients = []ClientID{
-	ClientClaudeDesktop, ClientCursor, ClientGeneric,
+	ClientClaudeDesktop, ClientClaudeCode, ClientCursor, ClientGeneric,
 	ClientCline, ClientOpenCode, ClientHermes,
 }
 
@@ -834,49 +1056,59 @@ func ConfigPath(id ClientID) string {
 	return ""
 }
 
-// RemoveServer removes a server entry from the config file of the given
-// client ID. Returns (true, nil) if the server was found and removed,
-// (false, nil) if it wasn't present.
-func RemoveServer(id ClientID, name string) (bool, error) {
-	// Find the client to check its format.
-	var format string
-	var path string
-	for _, c := range candidatePaths() {
-		if c.ID == id {
-			format = c.Format
-			path = c.Path
-			break
+// RemoveServer deletes name from the client's MCP server list and writes
+// the file back as a patch. Unknown top-level keys are preserved.
+// Hermes YAML is patched in place; array-format files stay a bare array.
+func RemoveServer(c Client, name string) error {
+	format := c.Format
+	if format == "" {
+		format = FormatMcpServers
+	}
+	switch format {
+	case FormatArray:
+		return removeArrayServer(c.Path, name)
+	case FormatHermes:
+		_, err := removeHermesServer(c.Path, name)
+		return err
+	case FormatOpenCode:
+		servers, err := ReadServersFormat(c.Path, format)
+		if err != nil {
+			return err
 		}
+		delete(servers, name)
+		return PatchOpenCodeMcp(c.Path, servers)
+	default:
+		servers, err := ReadServersFormat(c.Path, format)
+		if err != nil {
+			return err
+		}
+		delete(servers, name)
+		return PatchMcpServers(c.Path, servers)
 	}
-	if path == "" {
-		return false, fmt.Errorf("unknown client ID: %s", id)
-	}
+}
 
-	// Hermes uses YAML format.
-	if format == FormatHermes {
-		return removeHermesServer(path, name)
-	}
-
-	// OpenCode and standard mcpServers both use JSON configFile.
+// removeArrayServer drops a named entry from a bare JSON array config.
+func removeArrayServer(path, name string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return false, nil
+			return nil
 		}
-		return false, err
+		return err
 	}
-	var cfg configFile
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return false, fmt.Errorf("parse config: %w", err)
+	var entries []arrayEntry
+	if len(strings.TrimSpace(string(data))) > 0 {
+		if err := json.Unmarshal(data, &entries); err != nil {
+			return fmt.Errorf("parse config %s: %w", path, err)
+		}
 	}
-	if cfg.McpServers == nil {
-		return false, nil
+	kept := make([]arrayEntry, 0, len(entries))
+	for _, e := range entries {
+		if e.Name != name {
+			kept = append(kept, e)
+		}
 	}
-	if _, ok := cfg.McpServers[name]; !ok {
-		return false, nil
-	}
-	delete(cfg.McpServers, name)
-	return true, writeConfig(path, &cfg)
+	return writeArrayConfig(path, kept)
 }
 
 // ClientConfig is a loaded client config with its associated metadata,
@@ -903,7 +1135,14 @@ func Load(id ClientID) (*ClientConfig, error) {
 	if path == "" {
 		return nil, fmt.Errorf("unknown client ID: %s", id)
 	}
-	return loadFromPath(id, path, FormatMcpServers)
+	format := FormatMcpServers
+	for _, c := range candidatePaths() {
+		if c.ID == id {
+			format = c.Format
+			break
+		}
+	}
+	return loadFromPath(id, path, format)
 }
 
 // loadFromPath reads a config file at the given path using the given
@@ -922,13 +1161,27 @@ func loadFromPath(id ClientID, path, format string) (*ClientConfig, error) {
 			if v, ok := m["command"].(string); ok {
 				s.Command = v
 			}
+			// OpenCode stores command as [bin, ...args].
+			if cmds, ok := m["command"].([]any); ok {
+				for i, a := range cmds {
+					str, ok := a.(string)
+					if !ok {
+						continue
+					}
+					if i == 0 && s.Command == "" {
+						s.Command = str
+					} else {
+						s.Args = append(s.Args, str)
+					}
+				}
+			}
 			if v, ok := m["url"].(string); ok {
 				s.URL = v
 			}
 			if v, ok := m["type"].(string); ok {
 				s.Type = v
 			}
-			if args, ok := m["args"].([]any); ok {
+			if args, ok := m["args"].([]any); ok && len(s.Args) == 0 {
 				for _, a := range args {
 					if str, ok := a.(string); ok {
 						s.Args = append(s.Args, str)

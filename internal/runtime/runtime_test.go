@@ -219,7 +219,6 @@ func TestStart_BackgroundStartsProcessAndWritesPID(t *testing.T) {
 		Name:    "svc",
 		Command: "sleep 30",
 		WorkDir: work,
-		Port:    8080,
 	})
 	if err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -231,8 +230,8 @@ func TestStart_BackgroundStartsProcessAndWritesPID(t *testing.T) {
 	if res.PID <= 0 {
 		t.Errorf("StartResult.PID = %d, want > 0", res.PID)
 	}
-	if res.Port != 8080 {
-		t.Errorf("StartResult.Port = %d, want 8080", res.Port)
+	if res.Port != 0 {
+		t.Errorf("StartResult.Port = %d, want 0 (no listen wait for sleep)", res.Port)
 	}
 
 	// PID file should exist with the returned PID.
@@ -255,6 +254,187 @@ func TestStart_BackgroundStartsProcessAndWritesPID(t *testing.T) {
 		t.Errorf("log file not created at %s: %v", logFile, err)
 	}
 	_ = home
+}
+
+func TestStart_ImmediateExitReturnsErrorAndRemovesPID(t *testing.T) {
+	useTempHome(t)
+	work := t.TempDir()
+
+	res, err := Start(StartOptions{
+		Name:    "dead-on-arrival",
+		Command: "false",
+		WorkDir: work,
+	})
+	if err == nil {
+		if res != nil {
+			_ = Stop(StopOptions{Name: "dead-on-arrival", Force: true, Timeout: 1})
+		}
+		t.Fatal("Start of immediately-exiting command must return an error")
+	}
+	if res != nil {
+		t.Errorf("StartResult = %+v, want nil on failure", res)
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "exited") &&
+		!strings.Contains(strings.ToLower(err.Error()), "died") {
+		t.Errorf("error = %v, want it to mention the process exited", err)
+	}
+
+	pidPath, pathErr := PIDFile("dead-on-arrival")
+	if pathErr != nil {
+		t.Fatal(pathErr)
+	}
+	if _, statErr := os.Stat(pidPath); !os.IsNotExist(statErr) {
+		t.Errorf("PID file should be removed after immediate exit, stat err = %v", statErr)
+	}
+	pid, _ := ReadPID("dead-on-arrival")
+	if pid != 0 {
+		t.Errorf("ReadPID = %d, want 0 after failed start", pid)
+	}
+}
+
+func TestStart_StaysUpThenStop(t *testing.T) {
+	useTempHome(t)
+	work := t.TempDir()
+
+	res, err := Start(StartOptions{
+		Name:    "keeper",
+		Command: "sleep 30",
+		WorkDir: work,
+	})
+	if err != nil {
+		t.Fatalf("Start of long-lived process failed: %v", err)
+	}
+	if res == nil || res.PID <= 0 {
+		t.Fatalf("StartResult = %+v, want a live PID", res)
+	}
+	if !IsRunning(res.PID) {
+		t.Fatalf("started process %d is not running", res.PID)
+	}
+	if err := Stop(StopOptions{Name: "keeper", Force: true, Timeout: 1}); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+}
+
+func TestStart_PortAlreadyInUseFailsBeforeLaunch(t *testing.T) {
+	useTempHome(t)
+	work := t.TempDir()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	res, err := Start(StartOptions{
+		Name:    "port-taken",
+		Command: "sleep 30",
+		WorkDir: work,
+		Port:    port,
+	})
+	if err == nil {
+		if res != nil {
+			_ = Stop(StopOptions{Name: "port-taken", Force: true, Timeout: 1})
+		}
+		t.Fatal("Start must fail when the requested port is already in use")
+	}
+	if !strings.Contains(err.Error(), fmt.Sprintf("port %d already in use", port)) {
+		t.Errorf("error = %v, want 'port %d already in use'", err, port)
+	}
+	if res != nil {
+		t.Errorf("StartResult = %+v, want nil when port is in use", res)
+	}
+	pid, _ := ReadPID("port-taken")
+	if pid != 0 {
+		t.Errorf("ReadPID = %d, want 0 (must not write a success PID)", pid)
+	}
+}
+
+func TestStart_WaitsForPortThenSucceeds(t *testing.T) {
+	useTempHome(t)
+	work := t.TempDir()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	// Compile a tiny helper first so Start's listen wait is not racing `go run`.
+	helper := filepath.Join(work, "listen.go")
+	bin := filepath.Join(work, "listenbin")
+	src := fmt.Sprintf(`package main
+import ("net"; "time")
+func main() {
+	ln, err := net.Listen("tcp", "127.0.0.1:%d")
+	if err != nil { panic(err) }
+	defer ln.Close()
+	time.Sleep(60 * time.Second)
+}
+`, port)
+	if err := os.WriteFile(helper, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	build := exec.Command("go", "build", "-o", bin, helper)
+	if out, buildErr := build.CombinedOutput(); buildErr != nil {
+		t.Fatalf("go build helper: %v\n%s", buildErr, out)
+	}
+
+	res, err := Start(StartOptions{
+		Name:    "listener",
+		Command: bin,
+		WorkDir: work,
+		Port:    port,
+	})
+	if err != nil {
+		t.Fatalf("Start of listener failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = Stop(StopOptions{Name: "listener", Force: true, Timeout: 2})
+	})
+	if res.PID <= 0 {
+		t.Errorf("StartResult.PID = %d, want > 0", res.PID)
+	}
+	if res.Port != port {
+		t.Errorf("StartResult.Port = %d, want %d", res.Port, port)
+	}
+	if !isPortOpen(port) {
+		t.Errorf("port %d is not accepting after successful Start", port)
+	}
+}
+
+func TestStart_ProcessAliveButPortNeverOpensFails(t *testing.T) {
+	useTempHome(t)
+	work := t.TempDir()
+
+	// Pick a free port that nothing will bind.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	res, err := Start(StartOptions{
+		Name:    "no-listen",
+		Command: "sleep 30",
+		WorkDir: work,
+		Port:    port,
+	})
+	if err == nil {
+		if res != nil {
+			_ = Stop(StopOptions{Name: "no-listen", Force: true, Timeout: 1})
+		}
+		t.Fatal("Start must fail when the process stays up but never listens")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "port") {
+		t.Errorf("error = %v, want it to mention the port", err)
+	}
+	pid, _ := ReadPID("no-listen")
+	if pid != 0 {
+		t.Errorf("ReadPID = %d, want 0 after failed listen wait", pid)
+	}
 }
 
 // --- Stop ---
@@ -346,9 +526,15 @@ func TestStop_GracefulTimeoutOnIgnoringProcess(t *testing.T) {
 	useTempHome(t)
 
 	work := t.TempDir()
+	// Start splits the command with Fields, so quotes never reach bash.
+	// Write a real script that ignores SIGTERM instead.
+	script := filepath.Join(work, "ignore-term.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/bash\ntrap '' TERM\nwhile true; do sleep 1; done\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := Start(StartOptions{
 		Name:    "svc",
-		Command: `bash -c "trap '' TERM; while true; do sleep 1; done"`,
+		Command: script,
 		WorkDir: work,
 	}); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -430,7 +616,7 @@ func TestProbeStatus_RunningProcess(t *testing.T) {
 	useTempHome(t)
 
 	work := t.TempDir()
-	res, err := Start(StartOptions{Name: "svc", Command: "sleep 30", WorkDir: work, Port: 9000})
+	res, err := Start(StartOptions{Name: "svc", Command: "sleep 30", WorkDir: work})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -438,15 +624,12 @@ func TestProbeStatus_RunningProcess(t *testing.T) {
 		_ = Stop(StopOptions{Name: "svc", Force: true, Timeout: 1})
 	})
 
-	st := ProbeStatus("svc", 9000)
+	st := ProbeStatus("svc", 0)
 	if !st.Running {
 		t.Error("ProbeStatus.Running = false, want true")
 	}
 	if st.PID != res.PID {
 		t.Errorf("ProbeStatus.PID = %d, want %d", st.PID, res.PID)
-	}
-	if st.Port != 9000 {
-		t.Errorf("ProbeStatus.Port = %d, want 9000", st.Port)
 	}
 }
 
@@ -795,9 +978,9 @@ func TestStart_ForegroundRunsAndExits(t *testing.T) {
 
 	// A command that exits immediately on its own.
 	res, err := Start(StartOptions{
-		Name:      "svc",
-		Command:   "true",
-		WorkDir:   t.TempDir(),
+		Name:       "svc",
+		Command:    "true",
+		WorkDir:    t.TempDir(),
 		Foreground: true,
 	})
 	if err != nil {
@@ -813,9 +996,9 @@ func TestStart_ForegroundFailureReturnsError(t *testing.T) {
 
 	// 'false' exits with status 1.
 	_, err := Start(StartOptions{
-		Name:      "svc",
-		Command:   "false",
-		WorkDir:   t.TempDir(),
+		Name:       "svc",
+		Command:    "false",
+		WorkDir:    t.TempDir(),
 		Foreground: true,
 	})
 	if err == nil {
@@ -840,4 +1023,181 @@ func skipIfHelpersMissing(t *testing.T) {
 func ExampleExtractPort() {
 	fmt.Println(ExtractPort("3000"))
 	// Output: 3000
+}
+
+// --- spawn-time python → python3 ---
+
+func writePathExe(t *testing.T, dir, name, body string) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+const spawnArgLogger = "#!/bin/sh\n{\n  printf 'exe=%s\\n' \"$0\"\n  for a in \"$@\"; do printf 'arg=%s\\n' \"$a\"; done\n} > \"$PHAROS_SPAWN_LOG\"\nexec /bin/sleep 30\n"
+
+func TestResolveSpawnExe_PythonMissingUsesPython3(t *testing.T) {
+	dir := t.TempDir()
+	writePathExe(t, dir, "python3", "#!/bin/sh\nexit 0\n")
+	t.Setenv("PATH", dir)
+
+	got, err := ResolveSpawnExe("python")
+	if err != nil {
+		t.Fatalf("ResolveSpawnExe: %v", err)
+	}
+	want := filepath.Join(dir, "python3")
+	if got != want {
+		t.Fatalf("ResolveSpawnExe = %q, want %q", got, want)
+	}
+}
+
+func TestResolveSpawnExe_PythonPresentKeepsPython(t *testing.T) {
+	dir := t.TempDir()
+	writePathExe(t, dir, "python", "#!/bin/sh\nexit 0\n")
+	writePathExe(t, dir, "python3", "#!/bin/sh\nexit 0\n")
+	t.Setenv("PATH", dir)
+
+	got, err := ResolveSpawnExe("python")
+	if err != nil {
+		t.Fatalf("ResolveSpawnExe: %v", err)
+	}
+	want := filepath.Join(dir, "python")
+	if got != want {
+		t.Fatalf("ResolveSpawnExe = %q, want %q when python is on PATH", got, want)
+	}
+}
+
+func TestResolveSpawnExe_NeitherPythonErrorsWithoutAptHint(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	_, err := ResolveSpawnExe("python")
+	if err == nil {
+		t.Fatal("expected error when neither python nor python3 is on PATH")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "python") {
+		t.Errorf("error should mention python: %v", err)
+	}
+	if !strings.Contains(msg, "python3") {
+		t.Errorf("error should mention python3 as the missing interpreter: %v", err)
+	}
+	if strings.Contains(msg, "python-is-python3") || strings.Contains(msg, "apt install") {
+		t.Errorf("must not tell the user to apt-install python-is-python3: %v", err)
+	}
+}
+
+func TestResolveSpawnExe_DoesNotRewriteOtherRuntimes(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	for _, exe := range []string{"npx", "uvx", "docker"} {
+		got, err := ResolveSpawnExe(exe)
+		if err == nil {
+			t.Fatalf("%s: expected missing-exe error, got %q", exe, got)
+		}
+		if got != "" {
+			t.Errorf("%s: got %q on error, want empty", exe, got)
+		}
+		if strings.Contains(err.Error(), "python3") {
+			t.Errorf("%s: must not fall back to python3: %v", exe, err)
+		}
+	}
+}
+
+func TestStart_PythonMissingUsesPython3KeepsArgs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("PATH exe stubs are POSIX scripts")
+	}
+	useTempHome(t)
+	work := t.TempDir()
+	bin := t.TempDir()
+	writePathExe(t, bin, "python3", spawnArgLogger)
+	t.Setenv("PATH", bin)
+
+	logPath := filepath.Join(work, "spawned.txt")
+	res, err := Start(StartOptions{
+		Name:    "echo",
+		Command: "python server.py",
+		WorkDir: work,
+		Env:     []string{"PHAROS_SPAWN_LOG=" + logPath},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = Stop(StopOptions{Name: "echo", Force: true, Timeout: 1})
+	})
+	if res.PID <= 0 {
+		t.Fatalf("PID = %d, want > 0", res.PID)
+	}
+
+	body, err := waitFile(logPath, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "exe="+filepath.Join(bin, "python3")) {
+		t.Errorf("spawned exe = %q, want python3", body)
+	}
+	if !strings.Contains(body, "arg=server.py") {
+		t.Errorf("args lost server.py: %q", body)
+	}
+	if strings.Contains(body, "test-echo-server") {
+		t.Errorf("must not rewrite args to package name: %q", body)
+	}
+}
+
+func TestStart_PythonPresentKeepsPython(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("PATH exe stubs are POSIX scripts")
+	}
+	useTempHome(t)
+	work := t.TempDir()
+	bin := t.TempDir()
+	writePathExe(t, bin, "python", spawnArgLogger)
+	writePathExe(t, bin, "python3", "#!/bin/sh\necho unexpected-python3 > \"$PHAROS_SPAWN_LOG\"\nexec /bin/sleep 30\n")
+	t.Setenv("PATH", bin)
+
+	logPath := filepath.Join(work, "spawned.txt")
+	if _, err := Start(StartOptions{
+		Name:    "echo",
+		Command: "python server.py",
+		WorkDir: work,
+		Env:     []string{"PHAROS_SPAWN_LOG=" + logPath},
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = Stop(StopOptions{Name: "echo", Force: true, Timeout: 1})
+	})
+
+	body, err := waitFile(logPath, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "exe="+filepath.Join(bin, "python")) {
+		t.Errorf("spawned exe = %q, want python", body)
+	}
+	if strings.Contains(body, "unexpected-python3") || strings.Contains(body, filepath.Join(bin, "python3")) {
+		t.Errorf("must not substitute python3 when python is on PATH: %q", body)
+	}
+	if !strings.Contains(body, "arg=server.py") {
+		t.Errorf("args lost server.py: %q", body)
+	}
+}
+
+func waitFile(path string, d time.Duration) (string, error) {
+	deadline := time.Now().Add(d)
+	var last error
+	for time.Now().Before(deadline) {
+		b, err := os.ReadFile(path)
+		if err == nil && len(b) > 0 {
+			return string(b), nil
+		}
+		last = err
+		time.Sleep(20 * time.Millisecond)
+	}
+	if last == nil {
+		last = fmt.Errorf("timeout waiting for %s", path)
+	}
+	return "", last
 }

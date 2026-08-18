@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/Wpnx330/pharos-cli/internal/clientconfig"
 	"github.com/Wpnx330/pharos-cli/internal/lockfile"
 )
 
@@ -470,6 +472,337 @@ func TestPackageDependsOn(t *testing.T) {
 					storeDir, tt.pkgName, tt.version, tt.target, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestConfinedPackageDirRejectsTraversal(t *testing.T) {
+	store := t.TempDir()
+	bad := []string{
+		"../etc",
+		"..",
+		".",
+		"",
+		"foo/../../../etc/passwd",
+		"/etc/passwd",
+		`..\windows`,
+	}
+	for _, name := range bad {
+		got, err := confinedPackageDir(store, name)
+		if err == nil {
+			t.Errorf("confinedPackageDir(%q) = %q, want error", name, got)
+		}
+	}
+}
+
+func TestConfinedPackageDirAllowsStoreChild(t *testing.T) {
+	store := t.TempDir()
+	got, err := confinedPackageDir(store, "test-echo-server")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := filepath.Join(store, "test-echo-server")
+	if got != want {
+		t.Errorf("path = %q, want %q", got, want)
+	}
+}
+
+func TestConfinedPackageDirAllowsScopedNameInsideStore(t *testing.T) {
+	store := t.TempDir()
+	got, err := confinedPackageDir(store, "com.invokera/world-time")
+	if err != nil {
+		t.Fatalf("scoped name rejected: %v", err)
+	}
+	want := filepath.Join(store, "com.invokera", "world-time")
+	if got != want {
+		t.Errorf("path = %q, want %q", got, want)
+	}
+	if !pathInsideStore(store, got) {
+		t.Errorf("scoped path %q not inside store", got)
+	}
+}
+
+func TestPlanRemoveKind1BookmarkAndConfigOnly(t *testing.T) {
+	store := t.TempDir()
+	plan, err := planRemove(store, "world-time", packageLaunch{
+		Endpoint:  "https://world-time.example/mcp",
+		Transport: "streamable-http",
+	})
+	if err != nil {
+		t.Fatalf("planRemove: %v", err)
+	}
+	if !plan.DeleteBookmark {
+		t.Error("kind 1 should delete bookmark metadata")
+	}
+	if !plan.DeleteConfig {
+		t.Error("kind 1 should delete client config")
+	}
+	if plan.StopProcess {
+		t.Error("kind 1 should not stop a remote process")
+	}
+	if plan.DeleteTarball {
+		t.Error("kind 1 must not delete a tarball")
+	}
+}
+
+func TestPlanRemoveKind2StopsAndDeletesStore(t *testing.T) {
+	store := t.TempDir()
+	plan, err := planRemove(store, "test-echo-server", packageLaunch{
+		Bin:       "python server.py",
+		Transport: "http-sse",
+		Location:  filepath.Join(store, "test-echo-server", "0.2.4"),
+	})
+	if err != nil {
+		t.Fatalf("planRemove: %v", err)
+	}
+	if !plan.StopProcess || !plan.DeleteStore || !plan.DeleteConfig {
+		t.Errorf("kind 2 plan = %+v, want stop+store+config", plan)
+	}
+}
+
+func TestPlanRemoveKind3NpxMetadataAndConfigOnly(t *testing.T) {
+	store := t.TempDir()
+	plan, err := planRemove(store, "ev4nv-models", packageLaunch{
+		Command:   "npx -y ev4nv-models",
+		Runtime:   "npx",
+		Package:   "ev4nv-models",
+		Transport: "stdio",
+	})
+	if err != nil {
+		t.Fatalf("planRemove: %v", err)
+	}
+	if !plan.DeleteBookmark || !plan.DeleteConfig {
+		t.Errorf("npx kind 3 should drop metadata+config, got %+v", plan)
+	}
+	if plan.DeleteTarball {
+		t.Error("npx-style kind 3 must not invent a tarball delete")
+	}
+}
+
+func TestPlanRemoveKind3TarballDeletesStoreInsideStoreOnly(t *testing.T) {
+	store := t.TempDir()
+	loc := filepath.Join(store, "native-stdio", "1.0.0")
+	plan, err := planRemove(store, "native-stdio", packageLaunch{
+		Bin:       "bin/server",
+		Transport: "stdio",
+		Location:  loc,
+	})
+	if err != nil {
+		t.Fatalf("planRemove: %v", err)
+	}
+	if !plan.DeleteStore {
+		t.Error("kind 3 native tarball should delete store extract")
+	}
+
+	outside, err := planRemove(store, "native-stdio", packageLaunch{
+		Bin:       "bin/server",
+		Transport: "stdio",
+		Location:  filepath.Join(t.TempDir(), "escape"),
+	})
+	if err != nil {
+		t.Fatalf("planRemove outside: %v", err)
+	}
+	if outside.DeleteTarball || (outside.Location != "" && !strings.HasPrefix(outside.Location, store)) {
+		t.Errorf("must not delete location outside store: %+v", outside)
+	}
+}
+
+func TestSafeRemoveStorePathRefusesOutside(t *testing.T) {
+	store := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "nope")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := safeRemoveStorePath(store, outside); err == nil {
+		t.Fatal("expected error removing path outside store")
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Fatalf("outside path was deleted: %v", err)
+	}
+
+	inside := filepath.Join(store, "pkg")
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := safeRemoveStorePath(store, inside); err != nil {
+		t.Fatalf("safe remove inside store: %v", err)
+	}
+	if _, err := os.Stat(inside); !os.IsNotExist(err) {
+		t.Fatal("expected inside path to be removed")
+	}
+}
+
+func TestRewriteClientConfigFormatPreservesClaudeKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "claude_desktop_config.json")
+	orig := []byte(`{
+  "preferences": {
+    "quickEntryShortcut": "off",
+    "coworkScheduledTasksEnabled": false
+  },
+  "coworkUserFilesPath": "C:\\Users\\chris\\.claude\\cowork\\user-files",
+  "mcpServers": {
+    "keep-me": {
+      "command": "npx",
+      "args": ["-y", "keep"]
+    },
+    "drop-me": {
+      "command": "npx",
+      "args": ["-y", "drop"]
+    }
+  }
+}
+`)
+	if err := os.WriteFile(path, orig, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	remaining := map[string]json.RawMessage{
+		"keep-me": json.RawMessage(`{"command":"npx","args":["-y","keep"]}`),
+	}
+	if err := rewriteClientConfigFormat(path, "mcpServers", remaining); err != nil {
+		t.Fatalf("rewriteClientConfigFormat: %v", err)
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after)*2 < len(orig) {
+		t.Fatalf("patched file shrank too much: wrote %d bytes, original %d", len(after), len(orig))
+	}
+
+	root := map[string]json.RawMessage{}
+	if err := json.Unmarshal(after, &root); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := root["preferences"]; !ok {
+		t.Fatal("preferences was dropped")
+	}
+	if _, ok := root["coworkUserFilesPath"]; !ok {
+		t.Fatal("coworkUserFilesPath was dropped")
+	}
+	var servers map[string]json.RawMessage
+	if err := json.Unmarshal(root["mcpServers"], &servers); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := servers["keep-me"]; !ok {
+		t.Fatal("remaining server keep-me is missing")
+	}
+	if _, ok := servers["drop-me"]; ok {
+		t.Fatal("removed server drop-me is still present")
+	}
+}
+
+func TestRewriteClientConfigFormatPreservesOpenCodeKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "opencode.json")
+	orig := []byte(`{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "anthropic/claude-sonnet-4-5",
+  "provider": {"anthropic": {}},
+  "theme": "tron",
+  "mcp": {
+    "keep-me": {"type": "local", "command": ["npx"], "enabled": true},
+    "drop-me": {"type": "local", "command": ["npx"], "enabled": true}
+  }
+}
+`)
+	if err := os.WriteFile(path, orig, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	remaining := map[string]json.RawMessage{
+		"keep-me": json.RawMessage(`{"type":"local","command":["npx"],"enabled":true}`),
+	}
+	if err := rewriteClientConfigFormat(path, clientconfig.FormatOpenCode, remaining); err != nil {
+		t.Fatalf("rewriteClientConfigFormat: %v", err)
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after)*2 < len(orig) {
+		t.Fatalf("patched file shrank too much: wrote %d bytes, original %d", len(after), len(orig))
+	}
+
+	root := map[string]json.RawMessage{}
+	if err := json.Unmarshal(after, &root); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"$schema", "model", "provider", "theme", "mcp"} {
+		if _, ok := root[key]; !ok {
+			t.Errorf("%s was dropped", key)
+		}
+	}
+	if _, ok := root["mcpServers"]; ok {
+		t.Fatal("mcpServers must not be written into OpenCode config")
+	}
+}
+
+func TestRewriteClientConfigFormatKeepsKeysWhenLastServerRemoved(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "claude_desktop_config.json")
+	orig := []byte(`{
+  "preferences": {"quickEntryShortcut": "off"},
+  "coworkUserFilesPath": "/tmp/cowork",
+  "mcpServers": {
+    "only-one": {"command": "npx"}
+  }
+}
+`)
+	if err := os.WriteFile(path, orig, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := rewriteClientConfigFormat(path, "mcpServers", map[string]json.RawMessage{}); err != nil {
+		t.Fatalf("rewriteClientConfigFormat: %v", err)
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := map[string]json.RawMessage{}
+	if err := json.Unmarshal(after, &root); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"preferences", "coworkUserFilesPath", "mcpServers"} {
+		if _, ok := root[key]; !ok {
+			t.Errorf("%s was dropped after removing last server", key)
+		}
+	}
+	var servers map[string]json.RawMessage
+	if err := json.Unmarshal(root["mcpServers"], &servers); err != nil {
+		t.Fatal(err)
+	}
+	if len(servers) != 0 {
+		t.Errorf("mcpServers should be empty, got %d entries", len(servers))
+	}
+}
+
+func TestRewriteArrayConfigLeavesBareArray(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mcp.json")
+	orig := []byte(`[
+  {"name": "keep-me", "command": "npx"},
+  {"name": "drop-me", "command": "node"}
+]
+`)
+	if err := os.WriteFile(path, orig, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	remaining := map[string]json.RawMessage{
+		"keep-me": json.RawMessage(`{"command":"npx"}`),
+	}
+	if err := rewriteClientConfigFormat(path, "array", remaining); err != nil {
+		t.Fatalf("rewrite array: %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entries []map[string]any
+	if err := json.Unmarshal(after, &entries); err != nil {
+		t.Fatalf("array rewrite must remain a bare array: %v\n%s", err, after)
+	}
+	if len(entries) != 1 || entries[0]["name"] != "keep-me" {
+		t.Fatalf("entries = %+v", entries)
 	}
 }
 

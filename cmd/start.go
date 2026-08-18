@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -60,28 +59,41 @@ var startCmd = &cobra.Command{
 			return
 		}
 
-		// Load the manifest. For stdio installs, pkg.Location points to the
-		// extracted tarball directory and pharos.json lives there. For http/sse
-		// installs, Location is empty — there's no local tarball — so we fetch
-		// the manifest from the registry instead.
-		sm, err := loadStartManifest(pkg)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, ui.Error.Render("Cannot load manifest:"), err)
-			return
+		launch := loadPackageLaunch(storeDir, *pkg)
+		if launch.Endpoint == "" && launch.Bin == "" && launch.Command == "" {
+			// Registry fetch fills endpoint/bin/command for older installs
+			// that only persisted transport+location.
+			if sm, err := loadStartManifest(pkg); err == nil && sm.manifest != nil {
+				if launch.Endpoint == "" {
+					launch.Endpoint = sm.manifest.Endpoint
+				}
+				if launch.Bin == "" {
+					launch.Bin = sm.manifest.Bin
+				}
+				if launch.Command == "" {
+					launch.Command = sm.manifest.Command
+				}
+				if launch.Runtime == "" {
+					launch.Runtime = sm.manifest.Runtime
+				}
+				if launch.Transport == "" {
+					launch.Transport = sm.manifest.Transport
+				}
+				if launch.Location == "" {
+					launch.Location = sm.workDir
+				}
+			}
 		}
-		m := sm.manifest
 
-		// stdio servers communicate over stdin/stdout — they're meant to be
-		// spawned by MCP clients (Cursor, Claude Desktop, etc.) as child
-		// processes with piped I/O. Starting one in background mode makes no
-		// sense: the process would have no stdin to read from and would exit
-		// immediately. Only allow --foreground (useful for debugging) or
-		// refuse with an informative message.
-		transport := strings.ToLower(strings.TrimSpace(m.Transport))
-		if transport == "" {
-			transport = "stdio"
-		}
-		if transport == "stdio" && !startForeground {
+		plan := planStart(*pkg, launch, startForeground)
+		switch plan.Action {
+		case startActionRefuseRemote:
+			fmt.Printf("%s %s\n", ui.Label.Render("ℹ"), plan.Message)
+			if launch.Endpoint != "" {
+				fmt.Printf("%s Endpoint: %s\n", ui.Muted.Render(" "), launch.Endpoint)
+			}
+			return
+		case startActionRefuseStdio:
 			fmt.Printf("%s %s is a stdio server — it launches automatically when an\n",
 				ui.Label.Render("ℹ"), ui.PackageName.Render(name))
 			fmt.Printf("%s MCP client (Cursor, Claude Desktop, etc.) connects. No need to start it manually.\n",
@@ -89,27 +101,39 @@ var startCmd = &cobra.Command{
 			fmt.Printf("%s To run in foreground for debugging: pharos start %s --foreground\n",
 				ui.Muted.Render(" "), name)
 			return
-		}
-
-		// Determine the command to run
-		runCmd := m.RunCommand()
-		if runCmd == "" {
-			fmt.Fprintln(os.Stderr, ui.Error.Render("Manifest has no 'command' or 'bin' field — cannot determine how to start the server."))
+		case startActionError:
+			fmt.Fprintln(os.Stderr, ui.Error.Render("Cannot start:"), plan.Message)
 			return
 		}
 
-		// Determine the port
-		port := startPort
-		if port == 0 && (m.Transport == "http-sse" || m.Transport == "http") {
-			// Try to extract port from the command string (e.g. "python server.py --port 8765")
-			port = runtime.ExtractPort(runCmd)
+		if isRemoteLaunchURL(plan.Command) {
+			fmt.Fprintln(os.Stderr, ui.Error.Render("Refusing to execute a remote URL as a local process."))
+			return
 		}
 
-		// Start the server
+		kind := inferLaunchKind(launch)
+		port := resolveStartListenPort(startPort, plan.Port, kind == kindLocalHTTP)
+
+		// Kind 2: if the listen port is already accepting (or daemon.json
+		// says running), treat start as a success no-op. runtime.Start
+		// would otherwise fail with "port already in use".
+		if kind == kindLocalHTTP {
+			daemon := loadDaemonState()
+			st := runtime.ProbeStatus(name, port)
+			if resolveKind2StartAction(name, launch, plan, st, daemon) == startActionAlreadyRunning {
+				if port > 0 {
+					fmt.Printf("%s %s is already running on port %d\n", ui.Success.Render("✓"), ui.PackageName.Render(name), port)
+				} else {
+					fmt.Printf("%s %s is already running\n", ui.Success.Render("✓"), ui.PackageName.Render(name))
+				}
+				return
+			}
+		}
+
 		result, err := runtime.Start(runtime.StartOptions{
 			Name:       name,
-			Command:    runCmd,
-			WorkDir:    sm.workDir,
+			Command:    plan.Command,
+			WorkDir:    plan.WorkDir,
 			Env:        startEnv,
 			Port:       port,
 			Foreground: startForeground,
@@ -123,27 +147,41 @@ var startCmd = &cobra.Command{
 			return // foreground mode blocks until the server exits
 		}
 
-		// For http-sse servers, probe the port to confirm startup
+		// runtime.Start already waited for a live PID (and listen, when
+		// the port is known). Only print success after a nil error.
 		if port > 0 {
-			fmt.Printf("%s Starting %s on port %d...\n", ui.Label.Render("▸"), ui.PackageName.Render(name), port)
-			// Give the server a moment to bind
-			if runtime.IsRunning(result.PID) {
-				fmt.Printf("%s Started %s (PID %d) on port %d\n", ui.Success.Render("✓"), ui.PackageName.Render(name), result.PID, port)
-			} else {
-				fmt.Fprintln(os.Stderr, ui.Error.Render("Server process exited immediately. Check the log file."))
-			}
+			fmt.Printf("%s Started %s (PID %d) on port %d\n", ui.Success.Render("✓"), ui.PackageName.Render(name), result.PID, port)
 		} else {
 			fmt.Printf("%s Started %s (PID %d)\n", ui.Success.Render("✓"), ui.PackageName.Render(name), result.PID)
 		}
 
-		// Show log file location
-		logDir := filepath.Dir(sm.workDir)
-		if logDir == "." {
-			logDir = filepath.Join(os.Getenv("HOME"), ".pharos", "store")
+		logDir := filepath.Dir(plan.WorkDir)
+		if logDir == "." || plan.WorkDir == "" {
+			logDir = storeDir
 		}
 		logFile := filepath.Join(logDir, name+".log")
 		fmt.Printf("%s Logs: %s\n", ui.Muted.Render(" "), logFile)
 	},
+}
+
+// defaultLocalHTTPPort is the well-known listen port used when a kind-2
+// local HTTP server has no --port / :PORT in its command. Same default
+// the list agent uses for test-echo-server. Never applied to remote URLs.
+const defaultLocalHTTPPort = 8765
+
+// resolveStartListenPort chooses the port runtime.Start should wait on.
+// Flag wins, then plan.Port from ExtractPort, then 8765 only for local HTTP.
+func resolveStartListenPort(flagPort, planPort int, localHTTP bool) int {
+	if flagPort > 0 {
+		return flagPort
+	}
+	if planPort > 0 {
+		return planPort
+	}
+	if localHTTP {
+		return defaultLocalHTTPPort
+	}
+	return 0
 }
 
 // loadStartManifest resolves the manifest for an installed package.

@@ -12,7 +12,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Wpnx330/pharos-cli/internal/install"
-	"github.com/Wpnx330/pharos-cli/internal/manifest"
 	"github.com/Wpnx330/pharos-cli/internal/runtime"
 	"github.com/Wpnx330/pharos-cli/internal/ui"
 )
@@ -20,6 +19,7 @@ import (
 var (
 	listRunning bool
 	listSort    string
+	listJSON    bool
 )
 
 var listCmd = &cobra.Command{
@@ -32,59 +32,73 @@ var listCmd = &cobra.Command{
 			fmt.Fprintln(os.Stderr, ui.Error.Render("Cannot determine home directory:"), err)
 			return
 		}
-		mgr := install.NewManager(filepath.Join(home, ".pharos", "store"))
+		storeDir := filepath.Join(home, ".pharos", "store")
+		mgr := install.NewManager(storeDir)
 		pkgs, err := mgr.List()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, ui.Error.Render("Failed to list packages:"), err)
 			return
 		}
 		if len(pkgs) == 0 {
+			if listJSON {
+				fmt.Println("[]")
+				return
+			}
 			fmt.Println(ui.Muted.Render("No packages installed."))
 			return
 		}
 
-		// Build enriched rows with runtime status
 		type entry struct {
 			pkg    install.InstalledPackage
+			launch packageLaunch
+			row    listRow
 			status runtime.ProcessStatus
 			size   int64
 		}
 		entries := make([]entry, 0, len(pkgs))
+		daemonState := loadDaemonState()
 
 		for _, p := range pkgs {
-			// Read the manifest to get transport and port info
-			var port int
-			manifestPath := filepath.Join(p.Location, "pharos.json")
-			if data, err := os.ReadFile(manifestPath); err == nil {
-				if m, err := manifest.Parse(data); err == nil {
-					if m.Transport == "http-sse" || m.Transport == "http" {
-						port = runtime.ExtractPort(m.RunCommand())
-					}
-				}
+			launch := loadPackageLaunch(storeDir, p)
+			kind := inferLaunchKind(launch)
+			port := 0
+			if kind == kindLocalHTTP {
+				port = kind2ListenPort(p.Name, launch, daemonState)
 			}
 
 			st := runtime.ProbeStatus(p.Name, port)
+			if kind == kindRemote {
+				// Never treat a publisher URL as a local process.
+				st = runtime.ProcessStatus{}
+			} else if kind == kindLocalHTTP {
+				st = applyKind2DaemonRunning(p.Name, st, daemonState)
+				if st.Running && st.Port == 0 && port > 0 {
+					st.Port = port
+				}
+			}
 
-			// Filter: --running flag
-			if listRunning && !st.Running {
+			if listRunning && (kind == kindRemote || !st.Running) {
 				continue
 			}
 
-			// Disk size
 			var size int64
-			if p.Location != "" {
+			if kind != kindRemote && p.Location != "" {
 				size = dirSize(p.Location)
 			}
 
-			entries = append(entries, entry{pkg: p, status: st, size: size})
+			row := buildListRow(p, launch, st, size, daemonState)
+			entries = append(entries, entry{pkg: p, launch: launch, row: row, status: st, size: size})
 		}
 
 		if len(entries) == 0 {
+			if listJSON {
+				fmt.Println("[]")
+				return
+			}
 			fmt.Println(ui.Muted.Render("No running servers."))
 			return
 		}
 
-		// Sort
 		sort.Slice(entries, func(i, j int) bool {
 			switch listSort {
 			case "size":
@@ -100,91 +114,101 @@ var listCmd = &cobra.Command{
 			}
 		})
 
-		// Render table
-		cols := []ui.TableColumn{
-			{Title: "NAME", Width: 22, MaxWidth: 0},
-			{Title: "VERSION", Width: 10, MaxWidth: 10},
-			{Title: "TRANSPORT", Width: 11, MaxWidth: 11},
-			{Title: "STATUS", Width: 10, MaxWidth: 10},
-			{Title: "PORT", Width: 7, MaxWidth: 7},
-			{Title: "SIZE", Width: 9, MaxWidth: 9},
-			{Title: "MEMORY", Width: 9, MaxWidth: 9},
-			{Title: "UPTIME", Width: 9, MaxWidth: 9},
-			{Title: "IDLE", Width: 9, MaxWidth: 9},
-			{Title: "LAST ACTIVITY", Width: 14, MaxWidth: 14},
-		}
-		// Load daemon state for idle/last-activity columns.
-		// The daemon writes ~/.pharos/daemon.json with per-server
-		// lastActivity timestamps. If the daemon isn't running or the
-		// file doesn't exist, both columns show "—".
-		daemonState := loadDaemonState()
-
-		var rows []ui.TableRow
+		rows := make([]listRow, 0, len(entries))
 		for _, e := range entries {
-			name := ui.PackageName.Render(e.pkg.Name)
-			version := e.pkg.Version
-			transport := e.pkg.Transport
+			rows = append(rows, e.row)
+		}
 
-			var statusStr, portStr, memStr, uptimeStr string
-			isStdio := e.pkg.Transport == "stdio" || e.pkg.Transport == ""
-			if e.status.Running {
-				statusStr = ui.Success.Render("running")
-				if e.status.Port > 0 {
-					portStr = fmt.Sprintf("%d", e.status.Port)
-				}
-				if e.status.Memory > 0 {
-					memStr = ui.FormatBytes(e.status.Memory)
-				}
-				uptimeStr = e.status.Uptime
-			} else if isStdio {
-				// stdio servers don't have a standalone lifecycle — they're
-				// spawned by MCP clients on demand. "idle" communicates that
-				// the package is installed and ready, not broken or stopped.
-				statusStr = ui.Muted.Render("idle")
-			} else {
-				statusStr = ui.Muted.Render("stopped")
+		if listJSON {
+			data, err := marshalListJSON(rows)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, ui.Error.Render("Failed to encode JSON:"), err)
+				return
 			}
+			fmt.Println(string(data))
+			return
+		}
 
-			sizeStr := ui.FormatBytes(e.size)
-			if e.size == 0 {
-				sizeStr = ui.Muted.Render("—")
+		cols := listTableColumns()
+
+		var tableRows []ui.TableRow
+		for _, r := range rows {
+			statusStr := r.Status
+			switch r.Status {
+			case "running", "connected":
+				statusStr = ui.Success.Render(r.Status)
+			default:
+				statusStr = ui.Muted.Render(r.Status)
 			}
-
-			if e.pkg.Transport == "stdio" || e.pkg.Transport == "" {
-				portStr = ui.Muted.Render("—")
+			portStr := r.Port
+			if portStr == listDash || portStr == "" {
+				portStr = ui.Muted.Render(listDash)
 			}
-
-			// Idle time and last activity from daemon state.
-			// Only daemon-managed servers (http/sse/streamable-http
-			// with the daemon running) have this data.
-			// stdio and stopped servers show "—".
-			var idleStr, lastActStr string
-			if ds, ok := daemonState[e.pkg.Name]; ok && ds.LastActivity != "" {
-				if t, err := time.Parse(time.RFC3339, ds.LastActivity); err == nil {
-					idleStr = formatDuration(time.Since(t))
-					lastActStr = formatTimeAgo(t)
-				} else {
-					idleStr = ui.Muted.Render("—")
-					lastActStr = ui.Muted.Render("—")
-				}
-			} else {
-				idleStr = ui.Muted.Render("—")
-				lastActStr = ui.Muted.Render("—")
+			sizeStr := r.Size
+			if sizeStr == listDash || sizeStr == "" {
+				sizeStr = ui.Muted.Render(listDash)
 			}
-
-			rows = append(rows, ui.TableRow{
-				name, version, transport, statusStr, portStr, sizeStr, memStr, uptimeStr,
-				idleStr, lastActStr,
+			memStr := r.Memory
+			if memStr == listDash || memStr == "" {
+				memStr = ui.Muted.Render(listDash)
+			}
+			uptimeStr := r.Uptime
+			if uptimeStr == listDash || uptimeStr == "" {
+				uptimeStr = ui.Muted.Render(listDash)
+			}
+			idleStr := r.Idle
+			if idleStr == listDash || idleStr == "" {
+				idleStr = ui.Muted.Render(listDash)
+			}
+			lastActStr := r.LastActivity
+			if lastActStr == listDash || lastActStr == "" {
+				lastActStr = ui.Muted.Render(listDash)
+			}
+			ep := r.Endpoint
+			if ep == "" {
+				ep = ui.Muted.Render(listDash)
+			}
+			tableRows = append(tableRows, ui.TableRow{
+				ui.PackageName.Render(r.Name),
+				r.Version,
+				r.Transport,
+				statusStr,
+				portStr,
+				sizeStr,
+				memStr,
+				uptimeStr,
+				idleStr,
+				lastActStr,
+				ep,
 			})
 		}
-		fmt.Print(ui.RenderTable(cols, rows))
+		fmt.Print(ui.RenderTable(cols, tableRows))
 	},
 }
 
 func init() {
 	listCmd.Flags().BoolVar(&listRunning, "running", false, "show only running servers")
 	listCmd.Flags().StringVar(&listSort, "sort", "name", "sort by: name, size, port, memory, uptime")
+	listCmd.Flags().BoolVar(&listJSON, "json", false, "output as JSON (kind, status, endpoint, metrics)")
 	rootCmd.AddCommand(listCmd)
+}
+
+// listTableColumns is the human table header. KIND is an internal
+// classifier and must not appear here. ENDPOINT is last.
+func listTableColumns() []ui.TableColumn {
+	return []ui.TableColumn{
+		{Title: "NAME", Width: 22, MaxWidth: 0},
+		{Title: "VERSION", Width: 10, MaxWidth: 10},
+		{Title: "TRANSPORT", Width: 11, MaxWidth: 11},
+		{Title: "STATUS", Width: 10, MaxWidth: 10},
+		{Title: "PORT", Width: 7, MaxWidth: 7},
+		{Title: "SIZE", Width: 9, MaxWidth: 9},
+		{Title: "MEMORY", Width: 9, MaxWidth: 9},
+		{Title: "UPTIME", Width: 9, MaxWidth: 9},
+		{Title: "IDLE", Width: 9, MaxWidth: 9},
+		{Title: "LAST ACTIVITY", Width: 14, MaxWidth: 14},
+		{Title: "ENDPOINT", Width: 18, MaxWidth: 32},
+	}
 }
 
 // dirSize calculates the total size of all files in a directory (recursively).
@@ -202,60 +226,88 @@ func dirSize(path string) int64 {
 	return size
 }
 
-// Ensure strings import is used (for future filter extensions)
-var _ = strings.TrimSpace
-
 // =============================================================
 // Daemon state helpers
 // =============================================================
 
 // daemonServerState is the per-server entry in ~/.pharos/daemon.json.
-// It mirrors the relevant fields from daemon.ServerStatus but is kept
+// It mirrors the relevant fields from daemon.ServerState but is kept
 // minimal so we can parse just what we need for the list table.
+// Port is the daemon *proxy* port, not the backing listen port.
 type daemonServerState struct {
 	Name         string `json:"name"`
 	State        string `json:"state"`
+	PID          int    `json:"pid"`
 	Port         int    `json:"port"`
 	LastActivity string `json:"lastActivity"` // RFC 3339 timestamp
-}
-
-// daemonStateFile represents the on-disk structure of ~/.pharos/daemon.json.
-type daemonStateFile struct {
-	Running bool               `json:"running"`
-	PID     int                `json:"pid"`
-	Port    int                `json:"port"`
-	Servers []daemonServerState `json:"servers"`
 }
 
 // loadDaemonState reads ~/.pharos/daemon.json and returns a map of
 // server name → daemon state. If the file doesn't exist or can't be
 // parsed, returns an empty map (all idle/activity columns show "—").
 func loadDaemonState() map[string]daemonServerState {
-	result := make(map[string]daemonServerState)
-
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return result
+		return map[string]daemonServerState{}
 	}
 
 	data, err := os.ReadFile(filepath.Join(home, ".pharos", "daemon.json"))
 	if err != nil {
+		return map[string]daemonServerState{}
+	}
+
+	return parseDaemonState(data)
+}
+
+// parseDaemonState unmarshals daemon.json. Canonical shape is
+// DaemonState: {pid, startedAt, servers: map[name]ServerState}.
+// There is no top-level "running" bool — the daemon is treated as up
+// when the file parses (typically pid > 0). A legacy servers array is
+// still accepted so older fixtures keep working.
+func parseDaemonState(data []byte) map[string]daemonServerState {
+	result := make(map[string]daemonServerState)
+	if len(data) == 0 {
 		return result
 	}
 
-	var dsf daemonStateFile
-	if err := json.Unmarshal(data, &dsf); err != nil {
+	var envelope struct {
+		PID     int             `json:"pid"`
+		Servers json.RawMessage `json:"servers"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return result
+	}
+	_ = envelope.PID // pid>0 means the writer thought the daemon was up; overlay still uses servers
+
+	if len(envelope.Servers) == 0 || string(envelope.Servers) == "null" {
 		return result
 	}
 
-	if !dsf.Running {
+	var asMap map[string]daemonServerState
+	if err := json.Unmarshal(envelope.Servers, &asMap); err == nil && asMap != nil {
+		for name, s := range asMap {
+			if strings.TrimSpace(s.Name) == "" {
+				s.Name = name
+			}
+			key := s.Name
+			if key == "" {
+				key = name
+			}
+			result[key] = s
+		}
 		return result
 	}
 
-	for _, s := range dsf.Servers {
+	var asArray []daemonServerState
+	if err := json.Unmarshal(envelope.Servers, &asArray); err != nil {
+		return result
+	}
+	for _, s := range asArray {
+		if s.Name == "" {
+			continue
+		}
 		result[s.Name] = s
 	}
-
 	return result
 }
 

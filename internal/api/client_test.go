@@ -73,6 +73,21 @@ func TestPackagePath(t *testing.T) {
 			input: "a/b",
 			want:  "@a/b",
 		},
+		{
+			name:  "reverse-dns scoped id stays scoped",
+			input: "io.github.j0hanz/filesystem-mcp",
+			want:  "@io.github.j0hanz/filesystem-mcp",
+		},
+		{
+			name:  "spaced display name is escaped not rejected",
+			input: "Filesystem MCP Server",
+			want:  "Filesystem%20MCP%20Server",
+		},
+		{
+			name:  "spaced title with slash is one escaped segment",
+			input: "Filesystem MCP Server (@shtse8/filesystem-mcp)",
+			want:  "Filesystem%20MCP%20Server%20%28@shtse8%2Ffilesystem-mcp%29",
+		},
 	}
 
 	for _, tt := range tests {
@@ -100,5 +115,28 @@ func TestPackagePathScopedAddsAt(t *testing.T) {
 	got := packagePath("org/pkg")
 	if !strings.HasPrefix(got, "@") {
 		t.Errorf("packagePath(\"org/pkg\") = %q, should start with @", got)
+	}
+}
+
+func TestPackagePathKeepsScopedSlash(t *testing.T) {
+	got := packagePath("io.github.j0hanz/filesystem-mcp")
+	if !strings.Contains(got, "/") {
+		t.Fatalf("packagePath scoped id = %q, must keep / as scope separator", got)
+	}
+	if strings.Contains(got, "%2F") {
+		t.Fatalf("packagePath scoped id = %q, must not escape / as a single blob", got)
+	}
+	if !strings.HasPrefix(got, "@io.github.j0hanz/") {
+		t.Errorf("packagePath scoped id = %q, want scoped route prefix", got)
+	}
+}
+
+func TestPackagePathEscapesSpacedName(t *testing.T) {
+	got := packagePath("Filesystem MCP Server")
+	if got != "Filesystem%20MCP%20Server" {
+		t.Errorf("packagePath spaced name = %q, want escaped spaces", got)
+	}
+	if strings.Contains(got, " ") {
+		t.Errorf("packagePath(%q) still contains a raw space", got)
 	}
 }

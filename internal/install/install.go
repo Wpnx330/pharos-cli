@@ -21,16 +21,26 @@ import (
 	"github.com/Wpnx330/pharos-cli/internal/api"
 	"github.com/Wpnx330/pharos-cli/internal/clientconfig"
 	"github.com/Wpnx330/pharos-cli/internal/lockfile"
+	"github.com/Wpnx330/pharos-cli/internal/runtime"
 )
 
 // InstalledPackage records metadata about a locally installed package.
+// Kind/Endpoint/Command/Bin/Runtime/Package are persisted so list/start/remove
+// (T1b) can act without re-fetching the registry.
 type InstalledPackage struct {
-	Name      string `json:"name"`
-	Version   string `json:"version"`
-	Transport string `json:"transport"`
-	Installed string `json:"installed"`
-	Location  string `json:"location"`
-	Integrity string `json:"integrity"`
+	Name      string   `json:"name"`
+	Version   string   `json:"version"`
+	Transport string   `json:"transport"`
+	Installed string   `json:"installed"`
+	Location  string   `json:"location"`
+	Integrity string   `json:"integrity"`
+	Kind      Kind     `json:"kind,omitempty"`
+	Endpoint  string   `json:"endpoint,omitempty"`
+	Command   string   `json:"command,omitempty"`
+	Args      []string `json:"args,omitempty"`
+	Bin       string   `json:"bin,omitempty"`
+	Runtime   string   `json:"runtime,omitempty"`
+	Package   string   `json:"package,omitempty"`
 }
 
 // Manager handles package installation, the local store, lockfile,
@@ -174,6 +184,21 @@ type InstallResult struct {
 	Transport string
 	Integrity string
 	Location  string
+	Kind      Kind
+	Endpoint  string
+	Command   string
+	Bin       string
+	Runtime   string
+	Package   string
+}
+
+// InstallOptions is the kind-aware install request.
+type InstallOptions struct {
+	Name              string
+	Version           string
+	TarballURL        string
+	ExpectedIntegrity string
+	Manifest          api.Manifest
 }
 
 // InstallStdio downloads, verifies, and extracts a stdio transport package.
@@ -204,6 +229,7 @@ func (m *Manager) InstallStdio(name, version, tarballURL, expectedIntegrity stri
 		Installed: time.Now().UTC().Format(time.RFC3339),
 		Location:  dest,
 		Integrity: integrity,
+		Kind:      KindStdio,
 	}
 	if err := m.saveMetadata(name, version, pkg); err != nil {
 		return nil, err
@@ -214,17 +240,34 @@ func (m *Manager) InstallStdio(name, version, tarballURL, expectedIntegrity stri
 		Transport: "stdio",
 		Integrity: integrity,
 		Location:  dest,
+		Kind:      KindStdio,
 	}, nil
 }
 
 // InstallHTTP installs an http/sse transport package (no download needed).
 func (m *Manager) InstallHTTP(name, version string) (*InstallResult, error) {
+	return m.InstallHTTPBookmark(name, version, "http", "")
+}
+
+// InstallHTTPBookmark writes a kind-1 remote bookmark. No tarball is fetched.
+func (m *Manager) InstallHTTPBookmark(name, version, transport, endpoint string) (*InstallResult, error) {
+	if err := ValidateInstallIdentity(name, version); err != nil {
+		return nil, err
+	}
+	if transport == "" {
+		transport = "http"
+	}
+	if !IsHTTPFamily(transport) {
+		transport = "http"
+	}
 	pkg := &InstalledPackage{
 		Name:      name,
 		Version:   version,
-		Transport: "http",
+		Transport: transport,
 		Installed: time.Now().UTC().Format(time.RFC3339),
 		Location:  "",
+		Kind:      KindRemoteHTTP,
+		Endpoint:  endpoint,
 	}
 	if err := m.saveMetadata(name, version, pkg); err != nil {
 		return nil, err
@@ -232,30 +275,297 @@ func (m *Manager) InstallHTTP(name, version string) (*InstallResult, error) {
 	return &InstallResult{
 		Name:      name,
 		Version:   version,
-		Transport: "http",
+		Transport: transport,
+		Kind:      KindRemoteHTTP,
+		Endpoint:  endpoint,
 	}, nil
+}
+
+// InstallByKind classifies the manifest and installs kind 1, 2, or 3.
+// Kind 1 never fetches a tarball. Kind 2 downloads only if the tarball URL
+// returns 200. Kind 3 uses InstallStdio when a tarball is present, otherwise
+// persists command / runtime+package (mcp.io, no /v1/tarballs required).
+func (m *Manager) InstallByKind(opts InstallOptions) (*InstallResult, error) {
+	if err := ValidateInstallIdentity(opts.Name, opts.Version); err != nil {
+		return nil, err
+	}
+	kind := ClassifyManifest(opts.Manifest)
+	if kind == KindNone {
+		return nil, fmt.Errorf("package %s@%s is not installable: no endpoint, command, bin, or runtime+package", opts.Name, opts.Version)
+	}
+	if RemoteOnlyRejected(kind, EnvRemoteOnly()) {
+		return nil, fmt.Errorf("PHAROS_REMOTE_ONLY: refusing local install of %s@%s (kind %s); only kind 1 remote HTTP is allowed", opts.Name, opts.Version, kind)
+	}
+
+	switch kind {
+	case KindRemoteHTTP:
+		transport := opts.Manifest.Transport
+		if transport == "" {
+			transport = "http"
+		}
+		return m.InstallHTTPBookmark(opts.Name, opts.Version, transport, opts.Manifest.Endpoint)
+	case KindLocalHTTP:
+		return m.installLocalHTTP(opts)
+	case KindStdio:
+		return m.installStdioKind(opts)
+	default:
+		return nil, fmt.Errorf("package %s@%s is not installable", opts.Name, opts.Version)
+	}
+}
+
+func (m *Manager) installLocalHTTP(opts InstallOptions) (*InstallResult, error) {
+	transport := opts.Manifest.Transport
+	if transport == "" || !IsHTTPFamily(transport) {
+		transport = "http"
+	}
+
+	if opts.TarballURL != "" {
+		data, err := m.tryDownloadTarball(opts.TarballURL)
+		if err != nil {
+			return nil, err
+		}
+		if data != nil {
+			if err := VerifyIntegrity(data, opts.ExpectedIntegrity); err != nil {
+				return nil, fmt.Errorf("integrity verification failed: %w", err)
+			}
+			integrity := ComputeIntegrity(data)
+			if opts.ExpectedIntegrity != "" {
+				integrity = opts.ExpectedIntegrity
+			}
+			dest := m.versionPath(opts.Name, opts.Version)
+			os.RemoveAll(dest)
+			if err := Extract(data, dest); err != nil {
+				return nil, fmt.Errorf("extract: %w", err)
+			}
+			pkg := applyLaunchMetadata(&InstalledPackage{
+				Name:      opts.Name,
+				Version:   opts.Version,
+				Transport: transport,
+				Installed: time.Now().UTC().Format(time.RFC3339),
+				Location:  dest,
+				Integrity: integrity,
+				Kind:      KindLocalHTTP,
+			}, opts.Manifest)
+			persistDerivedLaunch(pkg, opts.Manifest, m.StoreDir)
+			if err := m.saveMetadata(opts.Name, opts.Version, pkg); err != nil {
+				return nil, err
+			}
+			return resultFromPackage(pkg), nil
+		}
+	}
+
+	// No tarball (missing URL or non-200). Persist launch line; do not 404-fail.
+	pkg := applyLaunchMetadata(&InstalledPackage{
+		Name:      opts.Name,
+		Version:   opts.Version,
+		Transport: transport,
+		Installed: time.Now().UTC().Format(time.RFC3339),
+		Kind:      KindLocalHTTP,
+	}, opts.Manifest)
+	persistDerivedLaunch(pkg, opts.Manifest, m.StoreDir)
+	if err := m.saveMetadata(opts.Name, opts.Version, pkg); err != nil {
+		return nil, err
+	}
+	return resultFromPackage(pkg), nil
+}
+
+func (m *Manager) installStdioKind(opts InstallOptions) (*InstallResult, error) {
+	if opts.TarballURL != "" {
+		data, err := m.tryDownloadTarball(opts.TarballURL)
+		if err != nil {
+			return nil, err
+		}
+		if data != nil {
+			res, err := m.installStdioBytes(opts.Name, opts.Version, data, opts.ExpectedIntegrity)
+			if err != nil {
+				return nil, err
+			}
+			pkg := applyLaunchMetadata(&InstalledPackage{
+				Name:      res.Name,
+				Version:   res.Version,
+				Transport: "stdio",
+				Installed: time.Now().UTC().Format(time.RFC3339),
+				Location:  res.Location,
+				Integrity: res.Integrity,
+				Kind:      KindStdio,
+			}, opts.Manifest)
+			persistDerivedLaunch(pkg, opts.Manifest, m.StoreDir)
+			if err := m.saveMetadata(opts.Name, opts.Version, pkg); err != nil {
+				return nil, err
+			}
+			return resultFromPackage(pkg), nil
+		}
+	}
+
+	// Kind 3 mcp.io / npx: persist command or runtime+package. No tarball required.
+	pkg := applyLaunchMetadata(&InstalledPackage{
+		Name:      opts.Name,
+		Version:   opts.Version,
+		Transport: "stdio",
+		Installed: time.Now().UTC().Format(time.RFC3339),
+		Kind:      KindStdio,
+	}, opts.Manifest)
+	persistDerivedLaunch(pkg, opts.Manifest, m.StoreDir)
+	if err := m.saveMetadata(opts.Name, opts.Version, pkg); err != nil {
+		return nil, err
+	}
+	return resultFromPackage(pkg), nil
+}
+
+func (m *Manager) installStdioBytes(name, version string, data []byte, expectedIntegrity string) (*InstallResult, error) {
+	if err := VerifyIntegrity(data, expectedIntegrity); err != nil {
+		return nil, fmt.Errorf("integrity verification failed: %w", err)
+	}
+	integrity := ComputeIntegrity(data)
+	if expectedIntegrity != "" {
+		integrity = expectedIntegrity
+	}
+	dest := m.versionPath(name, version)
+	os.RemoveAll(dest)
+	if err := Extract(data, dest); err != nil {
+		return nil, fmt.Errorf("extract: %w", err)
+	}
+	return &InstallResult{
+		Name:      name,
+		Version:   version,
+		Transport: "stdio",
+		Integrity: integrity,
+		Location:  dest,
+		Kind:      KindStdio,
+	}, nil
+}
+
+// tryDownloadTarball returns (nil, nil) when the URL is missing or the
+// registry answers with a non-200 (including 404). Network errors fail.
+func (m *Manager) tryDownloadTarball(rawURL string) ([]byte, error) {
+	if strings.TrimSpace(rawURL) == "" {
+		return nil, nil
+	}
+	resp, err := m.HTTPClient.Get(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("download: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		return io.ReadAll(resp.Body)
+	}
+	io.Copy(io.Discard, resp.Body)
+	return nil, nil
+}
+
+func applyLaunchMetadata(pkg *InstalledPackage, m api.Manifest) *InstalledPackage {
+	pkg.Endpoint = m.Endpoint
+	pkg.Command = m.Command
+	pkg.Args = m.Args
+	pkg.Bin = m.Bin
+	pkg.Runtime = m.Runtime
+	pkg.Package = m.Package
+	return pkg
+}
+
+func persistDerivedLaunch(pkg *InstalledPackage, m api.Manifest, storeDir string) {
+	if strings.TrimSpace(pkg.Command) != "" {
+		return
+	}
+	cfg := BuildServerConfig(m, storeDir)
+	if cfg.Command == "" {
+		return
+	}
+	pkg.Command = cfg.Command
+	if len(pkg.Args) == 0 {
+		pkg.Args = cfg.Args
+	}
+}
+
+func resultFromPackage(pkg *InstalledPackage) *InstallResult {
+	return &InstallResult{
+		Name:      pkg.Name,
+		Version:   pkg.Version,
+		Transport: pkg.Transport,
+		Integrity: pkg.Integrity,
+		Location:  pkg.Location,
+		Kind:      pkg.Kind,
+		Endpoint:  pkg.Endpoint,
+		Command:   pkg.Command,
+		Bin:       pkg.Bin,
+		Runtime:   pkg.Runtime,
+		Package:   pkg.Package,
+	}
+}
+
+// ValidateInstallIdentity rejects empty or path-traversing name/version
+// before they are joined into the store path.
+func ValidateInstallIdentity(name, version string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("package name is required")
+	}
+	if strings.TrimSpace(version) == "" {
+		return fmt.Errorf("package version is required")
+	}
+	if !safeStoreSegment(name) {
+		return fmt.Errorf("invalid package name %q", name)
+	}
+	if !safeStoreSegment(version) {
+		return fmt.Errorf("invalid package version %q", version)
+	}
+	return nil
+}
+
+func safeStoreSegment(s string) bool {
+	if s == "." || s == ".." {
+		return false
+	}
+	if strings.Contains(s, "\x00") {
+		return false
+	}
+	if strings.Contains(s, "..") {
+		return false
+	}
+	cleaned := filepath.Clean(s)
+	if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(os.PathSeparator)) {
+		return false
+	}
+	if filepath.IsAbs(cleaned) {
+		return false
+	}
+	return true
 }
 
 // BuildServerConfig constructs a clientconfig.ServerConfig from the
 // manifest, tailored to the transport type.
 func BuildServerConfig(manifest api.Manifest, storeDir string) clientconfig.ServerConfig {
 	transport := normalizeTransport(manifest.Transport)
-	if transport == "http" || transport == "sse" {
+	// Kind 1: publisher URL. Kind 2 has no publisher endpoint — persist launch line.
+	if (transport == "http" || transport == "sse") && IsHTTPEndpoint(manifest.Endpoint) {
 		return clientconfig.ServerConfig{
-			URL:  manifest.Endpoint,
+			URL:  strings.TrimSpace(manifest.Endpoint),
 			Type: transport,
+			Env:  manifest.Env,
 		}
 	}
 
-	// stdio: build command/args based on runtime hint.
+	// stdio or kind-2 local HTTP: build command/args from command, bin, or runtime.
 	cfg := clientconfig.ServerConfig{
-		Env: manifest.Env,
+		Env:  manifest.Env,
+		Type: transport,
 	}
 
 	// If the manifest has an explicit Command, use it directly.
 	// This handles Python servers ("python -m src.server"), custom binaries, etc.
 	if manifest.Command != "" {
 		parts := strings.Fields(manifest.Command)
+		if len(parts) > 0 {
+			cfg.Command = parts[0]
+			cfg.Args = append(parts[1:], manifest.Args...)
+		}
+		return cfg
+	}
+
+	// If Bin is set, persist it as argv before the runtime switch.
+	// A known runtime (python/npx/...) must not replace "python server.py"
+	// with "python3 <package>". runtime=binary still uses the store path below.
+	if strings.TrimSpace(manifest.Bin) != "" && !strings.EqualFold(strings.TrimSpace(manifest.Runtime), "binary") {
+		parts := strings.Fields(manifest.Bin)
 		if len(parts) > 0 {
 			cfg.Command = parts[0]
 			cfg.Args = append(parts[1:], manifest.Args...)
@@ -304,68 +614,138 @@ func BuildServerConfig(manifest api.Manifest, storeDir string) clientconfig.Serv
 	return cfg
 }
 
-func normalizeTransport(t string) string {
-	t = strings.ToLower(strings.TrimSpace(t))
-	if t == "sse" || t == "https" {
-		return "sse"
+// defaultKind2ClientPort matches list/start/daemon when bin/command has no --port.
+const defaultKind2ClientPort = 8765
+
+// BuildClientConfig constructs the MCP client entry for WriteClientConfigs only.
+// Kind 1 keeps the publisher URL. Kind 2 is a localhost listen URL with no
+// command/args (the daemon spawn line stays in BuildServerConfig). Kind 3 is
+// command/args with no URL.
+func BuildClientConfig(manifest api.Manifest, storeDir string) clientconfig.ServerConfig {
+	switch ClassifyManifest(manifest) {
+	case KindLocalHTTP:
+		return clientconfig.ServerConfig{
+			URL:  fmt.Sprintf("http://127.0.0.1:%d", kind2ListenPort(manifest)),
+			Type: kind2ClientType(manifest.Transport),
+			Env:  manifest.Env,
+		}
+	default:
+		return BuildServerConfig(manifest, storeDir)
 	}
-	if t == "http" {
-		return "http"
-	}
-	return "stdio"
 }
 
-// WriteClientConfigs detects installed MCP clients and writes the server
-// config entry to each. If clientID is non-empty, only that client is
-// written. Returns the list of clients that were updated.
-// WriteClientConfigs writes the server config to the specified MCP clients.
-// If clientIDs is empty, writes to all detected clients (auto mode).
-// If clientIDs is non-empty, writes only to the specified clients (must be
-// detected or be known candidate paths).
-func WriteClientConfigs(name string, serverCfg clientconfig.ServerConfig, clientIDs []string) ([]clientconfig.Client, error) {
-	var targets []clientconfig.Client
+// kind2ClientType is the MCP client transport for a kind-2 localhost URL.
+// http-sse / http+sse / streamable-http are streamable HTTP (POST), not
+// EventSource. Only an exact "sse" transport writes type: sse.
+func kind2ClientType(transport string) string {
+	if strings.EqualFold(strings.TrimSpace(transport), "sse") {
+		return "sse"
+	}
+	return "http"
+}
 
-	if len(clientIDs) > 0 {
-		// Explicit list — resolve each ID.
-		for _, id := range clientIDs {
-			id = strings.TrimSpace(id)
-			if id == "" {
-				continue
-			}
-			// First try detected clients (includes custom clients).
-			if c := clientconfig.DetectByID(clientconfig.ClientID(id)); c != nil {
-				targets = append(targets, *c)
-				continue
-			}
-			// Then try candidate paths (client may exist but not be detected yet).
-			found := false
-			for _, c := range clientconfig.CandidatePaths() {
-				if string(c.ID) == id {
-					targets = append(targets, c)
-					found = true
-					break
-				}
-			}
-			if !found {
-				return nil, fmt.Errorf("client %q not recognized; use 'pharos config list-clients' to see available clients", id)
-			}
-		}
-	} else {
-		// Auto mode — all detected clients.
-		targets = clientconfig.Detect()
-		if len(targets) == 0 {
-			return nil, fmt.Errorf("no MCP clients detected; use --client to specify one or --select-clients to pick")
+func kind2ListenPort(manifest api.Manifest) int {
+	candidates := []string{
+		manifest.Bin,
+		manifest.Command,
+		strings.Join(manifest.Args, " "),
+	}
+	for _, s := range candidates {
+		if p := runtime.ExtractPort(s); p > 0 {
+			return p
 		}
 	}
+	return defaultKind2ClientPort
+}
 
-	var updated []clientconfig.Client
+func normalizeTransport(t string) string {
+	t = strings.ToLower(strings.TrimSpace(t))
+	switch t {
+	case "sse", "https", "http-sse", "http+sse":
+		return "sse"
+	case "http", "streamable-http":
+		return "http"
+	case "stdio", "":
+		return "stdio"
+	default:
+		if IsHTTPFamily(t) {
+			return "http"
+		}
+		return "stdio"
+	}
+}
+
+// WriteClientConfigs writes the server config to the specified MCP clients.
+// If clientIDs is empty, writes to all detected clients (auto mode).
+// If clientIDs is non-empty, writes every detected path with that ID
+// (Linux home + Windows-via-WSL2). Clients Pharos cannot configure
+// (for example Claude Desktop remotes) are returned in skipped, not
+// as a write error and not as a successful update.
+func WriteClientConfigs(name string, serverCfg clientconfig.ServerConfig, clientIDs []string) (updated []clientconfig.Client, skipped []clientconfig.SkippedClient, err error) {
+	targets, err := resolveWriteTargets(clientIDs)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	for _, c := range targets {
-		if err := clientconfig.MergeServer(c, name, serverCfg); err != nil {
-			return updated, fmt.Errorf("failed to write config for %s: %w", c.Name, err)
+		if mergeErr := clientconfig.MergeServer(c, name, serverCfg); mergeErr != nil {
+			if clientconfig.IsSkip(mergeErr) {
+				skipped = append(skipped, clientconfig.SkippedClient{
+					Client: c,
+					Reason: mergeErr.Error(),
+				})
+				continue
+			}
+			return updated, skipped, fmt.Errorf("failed to write config for %s: %w", c.Name, mergeErr)
 		}
 		updated = append(updated, c)
 	}
-	return updated, nil
+	return updated, skipped, nil
+}
+
+// resolveWriteTargets expands --client IDs to every matching home-level
+// path. Auto mode (empty IDs) is every detected client.
+func resolveWriteTargets(clientIDs []string) ([]clientconfig.Client, error) {
+	if len(clientIDs) == 0 {
+		targets := clientconfig.Detect()
+		if len(targets) == 0 {
+			return nil, fmt.Errorf("no MCP clients detected; use --client to specify one or --select-clients to pick")
+		}
+		return targets, nil
+	}
+
+	var targets []clientconfig.Client
+	for _, id := range clientIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		detected := clientconfig.ClientsByID(clientconfig.ClientID(id))
+		if len(detected) > 0 {
+			targets = append(targets, detected...)
+			continue
+		}
+		// Not detected. Known built-ins can still be created at the
+		// native home path, except Claude Code which is file-if-present.
+		var native *clientconfig.Client
+		for _, c := range clientconfig.CandidatePaths() {
+			if string(c.ID) != id {
+				continue
+			}
+			if native == nil {
+				cp := c
+				native = &cp
+			}
+		}
+		if native == nil {
+			return nil, fmt.Errorf("client %q not recognized; use 'pharos config list-clients' to see available clients", id)
+		}
+		if native.ID == clientconfig.ClientClaudeCode {
+			return nil, fmt.Errorf("client %q not detected (no ~/.claude.json); use 'pharos config list-clients' to see available clients", id)
+		}
+		targets = append(targets, *native)
+	}
+	return targets, nil
 }
 
 // UpdateLockfile writes/updates the lockfile with the install result.
@@ -429,40 +809,49 @@ func (m *Manager) UpdateTransport(name, version, transport string) error {
 }
 
 // List returns all locally installed packages.
+// It walks the store for .pharos-installed.json so scoped names
+// (com.invokera/world-time) that occupy extra path segments are found.
 func (m *Manager) List() ([]InstalledPackage, error) {
-	entries, err := os.ReadDir(m.StoreDir)
-	if err != nil {
+	if _, err := os.Stat(m.StoreDir); err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, err
 	}
 	var pkgs []InstalledPackage
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		// Each package dir contains version subdirs.
-		pkgName := entry.Name()
-		versions, err := os.ReadDir(m.packagePath(pkgName))
+	err := filepath.WalkDir(m.StoreDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			continue
+			return nil
 		}
-		for _, vd := range versions {
-			if !vd.IsDir() {
-				continue
-			}
-			metaPath := m.metadataPath(pkgName, vd.Name())
-			data, err := os.ReadFile(metaPath)
-			if err != nil {
-				continue
-			}
-			var pkg InstalledPackage
-			if err := json.Unmarshal(data, &pkg); err != nil {
-				continue
-			}
-			pkgs = append(pkgs, pkg)
+		if d.IsDir() || d.Name() != ".pharos-installed.json" {
+			return nil
 		}
+		rel, relErr := filepath.Rel(m.StoreDir, path)
+		if relErr != nil || strings.HasPrefix(rel, "..") {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil
+		}
+		var pkg InstalledPackage
+		if err := json.Unmarshal(data, &pkg); err != nil {
+			return nil
+		}
+		// Only accept metadata that lives at store/{name}/{version}/.
+		// Ignore .pharos-installed.json planted inside extracted trees.
+		if pkg.Name == "" || pkg.Version == "" {
+			return nil
+		}
+		want := filepath.Clean(m.metadataPath(pkg.Name, pkg.Version))
+		if filepath.Clean(path) != want {
+			return nil
+		}
+		pkgs = append(pkgs, pkg)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return pkgs, nil
 }

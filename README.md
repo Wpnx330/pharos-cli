@@ -23,7 +23,8 @@ go build -o pharos .
 ```bash
 # Discovery
 pharos search <query>          # Search the registry
-pharos info <name>             # Show package details
+pharos search <query> --transport http-sse --registry pharos -p 2
+pharos info "<package-id>"     # Quote IDs with spaces or (
 
 # Package lifecycle
 pharos init                    # Scaffold a new pharos.json (interactive, includes dependency + tag prompts)
@@ -71,9 +72,11 @@ pharos version                 # Print CLI version
 
 ## Flags
 
-- `--json` — Output as JSON (search, info, health)
+- `--json` — Output as JSON (search, info, health). Search includes `transport`, `source_registry`, `nextCursor`, `total`.
 - `--limit` / `-n` — Number of search results (default: 10)
-- `--page` / `-p` — Search page number
+- `--page` / `-p` — Search page (1-based). Mapped to API cursor `(page-1)*limit`.
+- `--registry` — Search filter: `mcp.io`, `mcp.so`, `pharos`, `smithery`
+- `--transport` — Search filter: `stdio`, `http-sse`, `streamable-http`, `sse`, `http`
 - `--version` / `-v` — Install a specific version
 - `--global` / `-g` — Install system-wide
 - `--token` / `-t` — Auth token for publishing
@@ -174,10 +177,11 @@ This means a buggy write can never corrupt an existing config — the original i
 | Client | Config path | Format |
 |--------|------------|--------|
 | Hermes Agent | `~/.hermes/config.yaml` | YAML (`mcp_servers:`) |
-| Claude Desktop | `~/AppData/Roaming/Claude/claude_desktop_config.json` | JSON (`{"mcpServers": {}}`) |
-| Cursor | `~/.cursor/mcp.json` | JSON (`{"mcpServers": {}}`) |
-| Cline | `~/.../cline_mcp_settings.json` | JSON (`{"mcpServers": {}}`) |
-| OpenCode | `~/.config/opencode/opencode.json` | JSON (`{"mcpServers": {}}`) |
+| Claude Desktop | `%APPDATA%/Claude/claude_desktop_config.json` (also WSL `~/.config/Claude/` if present) | JSON `mcpServers`. **Stdio/local only** (`command`/`args`/`env`). Remotes are **skipped** — official path is Settings → Connectors → Add custom connector. Install prints `— skipped`, never `✓`. |
+| Claude Code | `~/.claude.json` and Windows `%USERPROFILE%\\.claude.json` | JSON top-level `mcpServers` (user scope). Remote `{type:http,url}` (required `type`). Stdio `{type:stdio,command,...}`. Detect only if the file exists. Never project `.mcp.json`. |
+| Cursor | `~/.cursor/mcp.json` **and** Windows `%USERPROFILE%\\.cursor\\mcp.json` | JSON `mcpServers`. Home-level only. `--client cursor` writes both. Remote `{type,url}`. |
+| Cline | `~/.../cline_mcp_settings.json` (Linux + Windows via WSL2) | JSON (`{"mcpServers": {}}`) |
+| OpenCode | `~/.config/opencode/opencode.json` | JSON (`{"mcp": { "<name>": { "type": "local"|"remote", ... } }}`) |
 | Generic MCP | `~/.config/mcp/mcp.json` | JSON (`{"mcpServers": {}}`) |
 
 ## Development

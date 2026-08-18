@@ -14,8 +14,10 @@ import (
 	"github.com/Wpnx330/pharos-cli/internal/canonical"
 	"github.com/Wpnx330/pharos-cli/internal/clientconfig"
 	"github.com/Wpnx330/pharos-cli/internal/daemon"
+	"github.com/Wpnx330/pharos-cli/internal/install"
 	"github.com/Wpnx330/pharos-cli/internal/lockfile"
 	"github.com/Wpnx330/pharos-cli/internal/manifest"
+	"github.com/Wpnx330/pharos-cli/internal/runtime"
 	"github.com/Wpnx330/pharos-cli/internal/ui"
 )
 
@@ -33,9 +35,10 @@ var removeCmd = &cobra.Command{
 
 		// 0. Dependency protection — block removal if other installed
 		// packages declare this one as a dependency, unless --force.
-		storeDir, err := os.UserHomeDir()
+		home, err := os.UserHomeDir()
+		var pharosStore string
 		if err == nil {
-			pharosStore := filepath.Join(storeDir, ".pharos", "store")
+			pharosStore = filepath.Join(home, ".pharos", "store")
 			lockPath, lockErr := lockfile.DefaultPath()
 			if lockErr == nil {
 				if err := checkDependencies(pharosStore, lockPath, name, removeForce); err != nil {
@@ -45,22 +48,54 @@ var removeCmd = &cobra.Command{
 			}
 		}
 
+		launch := packageLaunch{}
+		if pharosStore != "" {
+			mgr := install.NewManager(pharosStore)
+			if pkgs, lerr := mgr.List(); lerr == nil {
+				for i := range pkgs {
+					if pkgs[i].Name == name {
+						launch = loadPackageLaunch(pharosStore, pkgs[i])
+						break
+					}
+				}
+			}
+		}
+		plan, perr := planRemove(pharosStore, name, launch)
+		if perr != nil {
+			fmt.Fprintln(os.Stderr, ui.Error.Render("Error:"), perr)
+			os.Exit(1)
+		}
+
 		// 0a. If the daemon is running and managing this server,
 		// send a reload signal so it reconciles (removes the proxy listener).
 		if daemonStatus, derr := daemon.Status(); derr == nil && daemonStatus.Running {
 			_ = daemon.ReloadDaemon(daemonStatus.PID)
 		}
 
-		// 1. Remove from store (~/.pharos/store/{name}/)
-		if err == nil {
-			pkgDir := filepath.Join(storeDir, ".pharos", "store", name)
+		if plan.StopProcess {
+			_ = runtime.Stop(runtime.StopOptions{Name: name, Force: false, Timeout: 5})
+		}
+
+		// 1. Remove from store (~/.pharos/store/{name}/) — confined.
+		// Kind 1 bookmarks and kind 3 npx metadata live here; kind 2/3
+		// tarball extracts do too. Never delete a path outside the store.
+		if plan.DeleteStore && pharosStore != "" {
+			pkgDir, cerr := confinedPackageDir(pharosStore, name)
+			if cerr != nil {
+				fmt.Fprintln(os.Stderr, ui.Error.Render("Refusing unsafe store path:"), cerr)
+				return
+			}
 			if _, err := os.Stat(pkgDir); err == nil {
-				if err := os.RemoveAll(pkgDir); err != nil {
+				if err := safeRemoveStorePath(pharosStore, pkgDir); err != nil {
 					fmt.Fprintln(os.Stderr, ui.Error.Render("Failed to remove from store:"), err)
 					return
 				}
 				removed = true
-				fmt.Printf("%s  %s\n", ui.Success.Render("✓ Removed from store:"), pkgDir)
+				if plan.DeleteTarball {
+					fmt.Printf("%s  %s\n", ui.Success.Render("✓ Removed from store:"), pkgDir)
+				} else {
+					fmt.Printf("%s  %s\n", ui.Success.Render("✓ Removed bookmark metadata:"), pkgDir)
+				}
 			}
 		}
 
@@ -72,7 +107,7 @@ var removeCmd = &cobra.Command{
 			fmt.Printf("%s\n", ui.Success.Render("✓ Removed from canonical config"))
 		}
 
-		// 3. Remove from all detected client configs
+		// 3. Remove from all detected client configs (patch, never replace).
 		for _, c := range clientconfig.Detect() {
 			if !c.Existing {
 				continue
@@ -84,9 +119,7 @@ var removeCmd = &cobra.Command{
 			if _, exists := rawServers[name]; !exists {
 				continue
 			}
-			// Delete the entry and rewrite using the client's format.
-			delete(rawServers, name)
-			if err := rewriteClientConfigFormat(c.Path, c.Format, rawServers); err != nil {
+			if err := clientconfig.RemoveServer(c, name); err != nil {
 				fmt.Fprintf(os.Stderr, "%s  %s: %v\n", ui.Error.Render("Failed to update config:"), c.Name, err)
 				continue
 			}
@@ -125,8 +158,10 @@ func rewriteClientConfig(path string, servers map[string]json.RawMessage) error 
 }
 
 // rewriteClientConfigFormat rewrites a client config file with the given
-// server map, using the specified format ("mcpServers", "array", or
-// "hermes-yaml").
+// server map, using the specified format ("mcpServers", "opencode"/"mcp",
+// "array", or "hermes-yaml"). JSON object formats are patched so unknown
+// top-level keys survive. OpenCode is written under "mcp", never
+// "mcpServers".
 func rewriteClientConfigFormat(path, format string, servers map[string]json.RawMessage) error {
 	if format == "array" {
 		return rewriteArrayConfig(path, servers)
@@ -134,16 +169,10 @@ func rewriteClientConfigFormat(path, format string, servers map[string]json.RawM
 	if format == "hermes-yaml" {
 		return rewriteHermesConfig(path, servers)
 	}
-	type configFile struct {
-		McpServers map[string]json.RawMessage `json:"mcpServers"`
+	if format == clientconfig.FormatOpenCode || format == "mcp" {
+		return clientconfig.PatchOpenCodeMcp(path, servers)
 	}
-	cfg := configFile{McpServers: servers}
-	out, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return err
-	}
-	out = append(out, '\n')
-	return clientconfig.SafeWriteConfig(path, out, "mcpServers")
+	return clientconfig.PatchMcpServers(path, servers)
 }
 
 // rewriteHermesConfig writes the servers map back to a Hermes config.yaml
@@ -193,7 +222,7 @@ func rewriteArrayConfig(path string, servers map[string]json.RawMessage) error {
 		URL     string          `json:"url,omitempty"`
 		Type    string          `json:"type,omitempty"`
 	}
-	var entries []entry
+	entries := make([]entry, 0, len(servers))
 	for name, raw := range servers {
 		var m map[string]any
 		e := entry{Name: name}
@@ -230,7 +259,7 @@ func rewriteArrayConfig(path string, servers map[string]json.RawMessage) error {
 		return err
 	}
 	out = append(out, '\n')
-	return clientconfig.SafeWriteConfig(path, out, "mcpServers")
+	return clientconfig.SafeWriteConfig(path, out, clientconfig.FormatArray)
 }
 
 // installedMeta is a local representation of .pharos-installed.json that

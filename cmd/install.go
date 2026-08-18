@@ -51,14 +51,14 @@ Examples:
   pharos install mcp-git-server --idle-timeout 30  # auto-unload after 30min idle
   pharos install mcp-git-server --idle-timeout 0   # never unload (always on)
   pharos install --frozen                   # install from lockfile only`,
-	Args: cobra.ExactArgs(1),
+	Args: cobra.MinimumNArgs(1),
 	Run:  runInstall,
 }
 
 func init() {
 	installCmd.Flags().StringVarP(&installVersion, "version", "v", "", "version or range to install (e.g. 1.2.0, ^1.0.0, latest)")
 	installCmd.Flags().BoolVarP(&installGlobal, "global", "g", false, "install system-wide")
-	installCmd.Flags().StringVarP(&installClient, "client", "c", "", "write config only to these clients (comma-separated: cursor,claude-desktop,generic)")
+	installCmd.Flags().StringVarP(&installClient, "client", "c", "", "write config only to these clients (comma-separated: cursor,claude-desktop,claude-code,generic)")
 	installCmd.Flags().BoolVar(&installSelectClients, "select-clients", false, "interactively pick which MCP clients to configure")
 	installCmd.Flags().BoolVar(&installFrozen, "frozen", false, "install strictly from lockfile; refuse if missing or mismatched")
 	installCmd.Flags().BoolVar(&installSkipDepConfig, "no-dep-config", false, "don't write MCP client configs for dependencies")
@@ -68,7 +68,7 @@ func init() {
 
 func runInstall(cmd *cobra.Command, args []string) {
 	_, client := loadConfig()
-	input := args[0]
+	input := joinInfoName(args)
 
 	// Parse name@version syntax.
 	name, versionSpec := parseNameVersion(input)
@@ -117,6 +117,17 @@ func runInstall(cmd *cobra.Command, args []string) {
 	}
 
 	manifest := vd.Manifest
+	kind := classifyInstallManifest(manifest)
+	if kind == install.KindNone {
+		fmt.Fprintln(os.Stderr, ui.Error.Render("Package is not installable:"), "no endpoint, command, bin, or runtime+package")
+		return
+	}
+	if install.RemoteOnlyRejected(kind, install.EnvRemoteOnly()) {
+		fmt.Fprintf(os.Stderr, "%s  PHAROS_REMOTE_ONLY=true refuses kind %s local install of %s@%s (kind 1 remote HTTP only)\n",
+			ui.Error.Render("Install rejected:"), kind, name, resolvedVersion)
+		return
+	}
+
 	transport := strings.ToLower(strings.TrimSpace(manifest.Transport))
 	if transport == "" {
 		transport = "stdio"
@@ -126,9 +137,11 @@ func runInstall(cmd *cobra.Command, args []string) {
 	// We extract the binary name from the manifest's bin/command field
 	// and check if it's on PATH. This is advisory — we proceed anyway
 	// since the user might be installing on a different machine than
-	// the one they'll run on.
-	if missing := checkRuntimeRequirement(manifest, transport); missing != "" {
-		fmt.Fprintf(os.Stderr, "%s  %s\n", ui.Error.Render("Warning:"), missing)
+	// the one they'll run on. Kind 1 is a remote bookmark — no local runtime.
+	if kind != install.KindRemoteHTTP {
+		if missing := checkRuntimeRequirement(manifest, transport); missing != "" {
+			fmt.Fprintf(os.Stderr, "%s  %s\n", ui.Error.Render("Warning:"), missing)
+		}
 	}
 
 	// Determine store directory.
@@ -146,48 +159,31 @@ func runInstall(cmd *cobra.Command, args []string) {
 	var result *install.InstallResult
 	var resolvedURL string
 
-	if transport == "stdio" {
-		// Download, verify, extract.
+	switch kind {
+	case install.KindRemoteHTTP:
+		resolvedURL = manifest.Endpoint
+		fmt.Printf("%s  %s@%s (%s, kind 1 remote)\n", ui.Label.Render("Registering remote server..."), name, resolvedVersion, transport)
+	case install.KindLocalHTTP:
 		resolvedURL = client.TarballURL(name, resolvedVersion)
-		fmt.Printf("%s  %s@%s\n", ui.Label.Render("Downloading..."), name, resolvedVersion)
+		fmt.Printf("%s  %s@%s (%s, kind 2 local HTTP)\n", ui.Label.Render("Installing..."), name, resolvedVersion, transport)
+	default:
+		resolvedURL = client.TarballURL(name, resolvedVersion)
+		fmt.Printf("%s  %s@%s (%s, kind 3 stdio)\n", ui.Label.Render("Installing..."), name, resolvedVersion, transport)
+	}
 
-		if mgr.IsInstalled(name, resolvedVersion) {
-			fmt.Printf("%s  %s\n", ui.Muted.Render("Already installed:"), fmt.Sprintf("%s@%s", name, resolvedVersion))
-		} else {
-			result, err = mgr.InstallStdio(name, resolvedVersion, resolvedURL, manifest.Integrity)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, ui.Error.Render("Install failed:"), err)
-				return
-			}
-		}
+	if mgr.IsInstalled(name, resolvedVersion) {
+		fmt.Printf("%s  %s\n", ui.Muted.Render("Already installed:"), fmt.Sprintf("%s@%s", name, resolvedVersion))
 	} else {
-		// http/sse: check if the package has a local command (bin/command field).
-		// If so, download the tarball so the server files are present for `pharos start`.
-		// If not (pure remote, endpoint-only), skip the download.
-		if manifest.Bin != "" {
-			resolvedURL = client.TarballURL(name, resolvedVersion)
-			fmt.Printf("%s  %s@%s (%s)\n", ui.Label.Render("Downloading..."), name, resolvedVersion, transport)
-			if mgr.IsInstalled(name, resolvedVersion) {
-				fmt.Printf("%s  %s\n", ui.Muted.Render("Already installed:"), fmt.Sprintf("%s@%s", name, resolvedVersion))
-			} else {
-				result, err = mgr.InstallStdio(name, resolvedVersion, resolvedURL, manifest.Integrity)
-				if err != nil {
-					fmt.Fprintln(os.Stderr, ui.Error.Render("Install failed:"), err)
-					return
-				}
-				// Override transport in the metadata to reflect the actual transport
-				result.Transport = transport
-				// Also fix the installed package metadata
-				mgr.UpdateTransport(name, resolvedVersion, transport)
-			}
-		} else {
-			fmt.Printf("%s  %s@%s (%s)\n", ui.Label.Render("Installing remote server..."), name, resolvedVersion, transport)
-			result, err = mgr.InstallHTTP(name, resolvedVersion)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, ui.Error.Render("Install failed:"), err)
-				return
-			}
-			resolvedURL = manifest.Endpoint
+		result, err = mgr.InstallByKind(install.InstallOptions{
+			Name:              name,
+			Version:           resolvedVersion,
+			TarballURL:        client.TarballURL(name, resolvedVersion),
+			ExpectedIntegrity: manifest.Integrity,
+			Manifest:          manifest,
+		})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, ui.Error.Render("Install failed:"), err)
+			return
 		}
 	}
 
@@ -197,11 +193,15 @@ func runInstall(cmd *cobra.Command, args []string) {
 			Name:      name,
 			Version:   resolvedVersion,
 			Transport: transport,
+			Kind:      kind,
+			Endpoint:  manifest.Endpoint,
 		}
 	}
 
-	// Build client config.
+	// Launch/canonical config (kind 2 keeps command/args). Client writes
+	// use a separate overlay so kind 2 clients get a localhost URL.
 	serverCfg := install.BuildServerConfig(manifest, storeDir)
+	clientCfg := install.BuildClientConfig(manifest, storeDir)
 
 	// Resolve which clients to write to.
 	clientIDs := resolveClientSelection()
@@ -238,14 +238,12 @@ func runInstall(cmd *cobra.Command, args []string) {
 
 	// Write to selected MCP clients.
 	fmt.Printf("%s\n", ui.Label.Render("Writing MCP client configs..."))
-	updated, err := install.WriteClientConfigs(name, serverCfg, clientIDs)
+	updated, skipped, err := install.WriteClientConfigs(name, clientCfg, clientIDs)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, ui.Error.Render("Config write failed:"), err)
 		// Don't return — still update lockfile.
 	}
-	for _, c := range updated {
-		fmt.Printf("  %s  %s\n", ui.Success.Render("✓"), c.Name)
-	}
+	printClientConfigResults(updated, skipped)
 
 	// Update lockfile.
 	if err := install.UpdateLockfile(lockPath, result, resolvedURL); err != nil {
@@ -308,7 +306,19 @@ func runInstall(cmd *cobra.Command, args []string) {
 				if depTransport == "" {
 					depTransport = "stdio"
 				}
+				depKind := classifyInstallManifest(depVD.Manifest)
+				if depKind == install.KindNone {
+					fmt.Fprintf(os.Stderr, "%s  %s@%s is not installable (no endpoint/command/bin/runtime+package)\n", ui.Error.Render("Warning:"), depName, depVersion)
+					continue
+				}
+				if install.RemoteOnlyRejected(depKind, install.EnvRemoteOnly()) {
+					fmt.Fprintf(os.Stderr, "%s  skipping local dependency %s@%s under PHAROS_REMOTE_ONLY\n", ui.Error.Render("Warning:"), depName, depVersion)
+					continue
+				}
 				depURL := client.TarballURL(depName, depVersion)
+				if depKind == install.KindRemoteHTTP {
+					depURL = depVD.Manifest.Endpoint
+				}
 
 				if mgr.IsInstalled(depName, depVersion) {
 					fmt.Printf("  %s  %s\n", ui.Muted.Render("Already installed:"), fmt.Sprintf("%s@%s", depName, depVersion))
@@ -317,34 +327,34 @@ func runInstall(cmd *cobra.Command, args []string) {
 					// dependency is accessible to MCP clients. Skip if
 					// --no-dep-config was passed.
 					if !installSkipDepConfig {
-						depCfg := install.BuildServerConfig(depVD.Manifest, storeDir)
-						_, _ = install.WriteClientConfigs(depName, depCfg, clientIDs)
+						depCfg := install.BuildClientConfig(depVD.Manifest, storeDir)
+						_, _, _ = install.WriteClientConfigs(depName, depCfg, clientIDs)
 					}
 					continue
 				}
 
-				// Transport-aware install: http/sse dependencies don't need a
-				// tarball download — they're remote servers. stdio deps get
-				// downloaded and extracted locally.
-				var depInstallResult *install.InstallResult
-				if depTransport == "http" || depTransport == "http-sse" || depTransport == "sse" {
-					depInstallResult, err = mgr.InstallHTTP(depName, depVersion)
-				} else {
-					depInstallResult, err = mgr.InstallStdio(depName, depVersion, depURL, depVD.Manifest.Integrity)
-				}
+				depInstallResult, err := mgr.InstallByKind(install.InstallOptions{
+					Name:              depName,
+					Version:           depVersion,
+					TarballURL:        client.TarballURL(depName, depVersion),
+					ExpectedIntegrity: depVD.Manifest.Integrity,
+					Manifest:          depVD.Manifest,
+				})
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "%s  failed to install %s@%s: %v\n", ui.Error.Render("Warning:"), depName, depVersion, err)
 					continue
 				}
-				_ = depInstallResult
+				if depInstallResult != nil && depInstallResult.Transport != "" {
+					depTransport = depInstallResult.Transport
+				}
 				// Write client config for the dependency (unless --no-dep-config).
 				if !installSkipDepConfig {
-					depCfg := install.BuildServerConfig(depVD.Manifest, storeDir)
-					_, _ = install.WriteClientConfigs(depName, depCfg, clientIDs)
+					depCfg := install.BuildClientConfig(depVD.Manifest, storeDir)
+					_, _, _ = install.WriteClientConfigs(depName, depCfg, clientIDs)
 				}
 				// Update lockfile for the dependency.
 				_ = install.UpdateLockfile(lockPath, &install.InstallResult{
-					Name: depName, Version: depVersion, Transport: depTransport,
+					Name: depName, Version: depVersion, Transport: depTransport, Kind: depKind,
 				}, depURL)
 				fmt.Printf("  %s  %s@%s\n", ui.Success.Render("✓"), depName, depVersion)
 				installed++
@@ -357,12 +367,13 @@ func runInstall(cmd *cobra.Command, args []string) {
 	}
 
 	// Success summary.
-	fmt.Printf("\n%s  %s\n", ui.Success.Render("✓ Installed:"), fmt.Sprintf("%s@%s (%s)", name, resolvedVersion, transport))
+	fmt.Printf("\n%s  %s\n", ui.Success.Render("✓ Installed:"), fmt.Sprintf("%s@%s (%s, kind %s)", name, resolvedVersion, transport, kind))
 	fmt.Printf("%s    %s\n", ui.Muted.Render("Usage:"), fmt.Sprintf("pharos info %s", name))
 
-	// Auto-start daemon for HTTP/SSE servers
-	if transport == "http-sse" || transport == "http" || transport == "streamable-http" {
-		ensureDaemonRunning()
+	// Auto-start daemon only for kind 2 (we host the HTTP process locally).
+	// Kind 1 is a publisher URL bookmark — do not pretend we run it.
+	if kind == install.KindLocalHTTP {
+		ensureDaemonRunning(name)
 	}
 }
 
@@ -397,21 +408,40 @@ func installFromLockfile(name, versionSpec, lockPath string, clientIDs []string)
 	storeDir, _ := install.DefaultStoreDir()
 	mgr := install.NewManager(storeDir)
 
-	if entry.Transport == "stdio" {
-		if mgr.IsInstalled(name, entry.Version) {
-			fmt.Printf("%s  %s\n", ui.Muted.Render("Already installed:"), fmt.Sprintf("%s@%s", name, entry.Version))
-		} else {
-			fmt.Printf("%s  %s@%s (from lockfile)\n", ui.Label.Render("Downloading..."), name, entry.Version)
-			_, err := mgr.InstallStdio(name, entry.Version, entry.Resolved, entry.Integrity)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, ui.Error.Render("Install failed:"), err)
-				return
-			}
+	kind := classifyInstallManifest(vd.Manifest)
+	if kind == install.KindNone {
+		fmt.Fprintln(os.Stderr, ui.Error.Render("Frozen install failed:"), "locked package is not installable")
+		return
+	}
+	if install.RemoteOnlyRejected(kind, install.EnvRemoteOnly()) {
+		fmt.Fprintf(os.Stderr, "%s  PHAROS_REMOTE_ONLY refuses kind %s\n", ui.Error.Render("Frozen install failed:"), kind)
+		return
+	}
+
+	if mgr.IsInstalled(name, entry.Version) {
+		fmt.Printf("%s  %s\n", ui.Muted.Render("Already installed:"), fmt.Sprintf("%s@%s", name, entry.Version))
+	} else {
+		fmt.Printf("%s  %s@%s (from lockfile, kind %s)\n", ui.Label.Render("Installing..."), name, entry.Version, kind)
+		tarballURL := entry.Resolved
+		if kind != install.KindRemoteHTTP && tarballURL == "" {
+			tarballURL = client.TarballURL(name, entry.Version)
+		}
+		_, err := mgr.InstallByKind(install.InstallOptions{
+			Name:              name,
+			Version:           entry.Version,
+			TarballURL:        tarballURL,
+			ExpectedIntegrity: entry.Integrity,
+			Manifest:          vd.Manifest,
+		})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, ui.Error.Render("Install failed:"), err)
+			return
 		}
 	}
 
-	// Build client config.
+	// Launch/canonical config vs client overlay (kind 2 localhost URL).
 	serverCfg := install.BuildServerConfig(vd.Manifest, storeDir)
+	clientCfg := install.BuildClientConfig(vd.Manifest, storeDir)
 
 	// Write to canonical config.
 	transport := strings.ToLower(strings.TrimSpace(vd.Manifest.Transport))
@@ -446,21 +476,22 @@ func installFromLockfile(name, versionSpec, lockPath string, clientIDs []string)
 	}
 
 	// Write client config.
-	updated, err := install.WriteClientConfigs(name, serverCfg, clientIDs)
+	updated, skipped, err := install.WriteClientConfigs(name, clientCfg, clientIDs)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, ui.Error.Render("Config write failed:"), err)
-	} else {
-		for _, c := range updated {
-			fmt.Printf("  %s  %s\n", ui.Success.Render("✓"), c.Name)
-		}
 	}
+	printClientConfigResults(updated, skipped)
 
-	fmt.Printf("\n%s  %s\n", ui.Success.Render("✓ Installed (frozen):"), fmt.Sprintf("%s@%s", name, entry.Version))
+	fmt.Printf("\n%s  %s\n", ui.Success.Render("✓ Installed (frozen):"), fmt.Sprintf("%s@%s (kind %s)", name, entry.Version, kind))
 
-	// Auto-start daemon for HTTP/SSE servers
-	if transport == "http-sse" || transport == "http" || transport == "streamable-http" {
-		ensureDaemonRunning()
+	if kind == install.KindLocalHTTP {
+		ensureDaemonRunning(name)
 	}
+}
+
+// classifyInstallManifest is the CLI entry to the shared F1–F7 classifier.
+func classifyInstallManifest(m api.Manifest) install.Kind {
+	return install.ClassifyManifest(m)
 }
 
 // parseNameVersion splits "name@version" into parts. Names with scoped
@@ -512,6 +543,17 @@ func checkRuntimeRequirement(m api.Manifest, transport string) string {
 		return fmt.Sprintf("this package requires %q which is not on $PATH", exe)
 	}
 	return ""
+}
+
+// printClientConfigResults prints a success check only for clients that
+// were actually written. Skips are never shown as ✓.
+func printClientConfigResults(updated []clientconfig.Client, skipped []clientconfig.SkippedClient) {
+	for _, c := range updated {
+		fmt.Printf("  %s  %s\n", ui.Success.Render("✓"), c.Name)
+	}
+	for _, s := range skipped {
+		fmt.Printf("  %s  %s  skipped: %s\n", ui.Muted.Render("—"), s.Client.Name, s.Reason)
+	}
 }
 
 // resolveClientSelection determines which MCP clients to write configs to.

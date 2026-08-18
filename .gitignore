@@ -4,3 +4,4 @@ pharos
 *.tgz
 dist/
 pharos-cli
+pharos.lock

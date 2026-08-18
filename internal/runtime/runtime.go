@@ -64,12 +64,12 @@ func IsRunning(pid int) bool {
 
 // StartOptions configures how a server is started.
 type StartOptions struct {
-	Name      string
-	Command   string   // e.g. "python server.py"
-	WorkDir   string   // e.g. ~/.pharos/store/test-echo-server/0.1.0
-	Env       []string // additional env vars as KEY=VALUE
-	Port      int      // override port (http-sse only)
-	Foreground bool    // run in foreground (block terminal)
+	Name       string
+	Command    string   // e.g. "python server.py"
+	WorkDir    string   // e.g. ~/.pharos/store/test-echo-server/0.1.0
+	Env        []string // additional env vars as KEY=VALUE
+	Port       int      // override port (http-sse only)
+	Foreground bool     // run in foreground (block terminal)
 }
 
 // StartResult holds the outcome of starting a server.
@@ -92,15 +92,11 @@ func Start(opts StartOptions) (*StartResult, error) {
 		return nil, fmt.Errorf("no command specified in manifest")
 	}
 
-	// Verify the executable exists on PATH. If not, produce a clear error
-	// message that tells the user what's missing and what to install.
-	exe := parts[0]
-	if _, err := exec.LookPath(exe); err != nil {
-		hint := executableHint(exe)
-		if hint != "" {
-			return nil, fmt.Errorf("executable %q not found in $PATH: %s", exe, hint)
-		}
-		return nil, fmt.Errorf("executable %q not found in $PATH", exe)
+	// Verify the executable exists on PATH. "python" may resolve to
+	// python3 at spawn time; remaining args are never rewritten.
+	exe, err := ResolveSpawnExe(parts[0])
+	if err != nil {
+		return nil, err
 	}
 
 	cmd := exec.Command(exe, parts[1:]...)
@@ -118,6 +114,13 @@ func Start(opts StartOptions) (*StartResult, error) {
 			return nil, fmt.Errorf("server exited: %w", err)
 		}
 		return &StartResult{PID: cmd.Process.Pid}, nil
+	}
+
+	// Refuse to start if the declared listen port is already taken.
+	// Doing this before exec avoids writing a PID file for a process that
+	// cannot bind, and avoids printing a false "Started".
+	if opts.Port > 0 && isPortOpen(opts.Port) {
+		return nil, fmt.Errorf("port %d already in use", opts.Port)
 	}
 
 	// Background mode: redirect stdout/stderr to log files
@@ -139,20 +142,114 @@ func Start(opts StartOptions) (*StartResult, error) {
 	}
 	lf.Close()
 
+	// Reap the child so a crash does not leave a zombie that still
+	// answers signal 0 (IsRunning would otherwise lie).
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- cmd.Wait()
+	}()
+
 	pid = cmd.Process.Pid
 
 	// Write PID file
 	pidPath, err := PIDFile(opts.Name)
 	if err != nil {
-		cmd.Process.Kill()
+		abandonStart(pid, "", waitCh)
 		return nil, err
 	}
 	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0o644); err != nil {
-		cmd.Process.Kill()
+		abandonStart(pid, "", waitCh)
 		return nil, fmt.Errorf("write PID file: %w", err)
 	}
 
+	if opts.Port > 0 {
+		if err := waitForListen(pid, opts.Port, waitCh, startListenWait); err != nil {
+			abandonStart(pid, pidPath, waitCh)
+			return nil, err
+		}
+	} else if err := waitForAlive(pid, opts.Name, waitCh, startAliveWait); err != nil {
+		abandonStart(pid, pidPath, waitCh)
+		return nil, err
+	}
+
 	return &StartResult{PID: pid, Port: opts.Port}, nil
+}
+
+const (
+	startAliveWait    = time.Second
+	startListenWait   = 5 * time.Second
+	startPollInterval = 50 * time.Millisecond
+)
+
+func waitForAlive(pid int, name string, waitCh <-chan error, d time.Duration) error {
+	deadline := time.Now().Add(d)
+	for {
+		if err := startWaitErr(waitCh); err != nil {
+			return fmt.Errorf("server %q exited immediately: %w", name, err)
+		}
+		if !IsRunning(pid) {
+			return fmt.Errorf("server %q exited immediately", name)
+		}
+		if !time.Now().Before(deadline) {
+			return nil
+		}
+		time.Sleep(startPollInterval)
+	}
+}
+
+func waitForListen(pid, port int, waitCh <-chan error, d time.Duration) error {
+	deadline := time.Now().Add(d)
+	for {
+		if err := startWaitErr(waitCh); err != nil {
+			return fmt.Errorf("process exited before port %d accepted connections: %w", port, err)
+		}
+		if !IsRunning(pid) {
+			return fmt.Errorf("process exited before port %d accepted connections", port)
+		}
+		if isPortOpen(port) {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("timed out waiting for port %d (127.0.0.1) to accept connections", port)
+		}
+		time.Sleep(startPollInterval)
+	}
+}
+
+func startWaitErr(waitCh <-chan error) error {
+	select {
+	case err := <-waitCh:
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("process exited")
+	default:
+		return nil
+	}
+}
+
+// abandonStart kills a still-running child (process group) and removes
+// the PID file so a failed start never looks like success.
+func abandonStart(pid int, pidPath string, waitCh <-chan error) {
+	if pid > 0 {
+		_ = killProc(pid)
+		deadline := time.Now().Add(500 * time.Millisecond)
+		for time.Now().Before(deadline) {
+			select {
+			case <-waitCh:
+				deadline = time.Time{}
+			default:
+				if !IsRunning(pid) {
+					deadline = time.Time{}
+				} else {
+					time.Sleep(20 * time.Millisecond)
+				}
+			}
+		}
+	}
+	if pidPath != "" {
+		_ = os.Remove(pidPath)
+	}
 }
 
 // StopOptions configures how a server is stopped.
@@ -422,12 +519,41 @@ func WritePIDFileJSON(name string, pid int) error {
 	return os.WriteFile(jsonPath, raw, 0o644)
 }
 
-// ExecutableHint returns a user-facing hint for common missing executables,
-// suggesting the package to install. This does NOT silently substitute —
-// it only produces a helpful error message. Exported so cmd packages can
-// use it for pre-install checks.
+// ResolveSpawnExe returns the executable name to exec after a PATH lookup.
+// If the first argv token is exactly "python" and LookPath("python") fails
+// but LookPath("python3") succeeds, python3 is used. Remaining args are
+// not part of this function and must be left unchanged by the caller.
+// npx, uvx, docker, and any other token are never rewritten.
+func ResolveSpawnExe(exe string) (string, error) {
+	if exe == "" {
+		return "", fmt.Errorf("empty executable")
+	}
+	if path, err := exec.LookPath(exe); err == nil {
+		return path, nil
+	}
+	if exe == "python" {
+		if path, err := exec.LookPath("python3"); err == nil {
+			return path, nil
+		}
+		return "", missingExeError(exe)
+	}
+	return "", missingExeError(exe)
+}
+
+func missingExeError(exe string) error {
+	hint := executableHint(exe)
+	if hint != "" {
+		return fmt.Errorf("executable %q not found in $PATH: %s", exe, hint)
+	}
+	return fmt.Errorf("executable %q not found in $PATH", exe)
+}
+
+// ExecutableHint returns a user-facing hint for common missing executables.
+// Spawn-time python→python3 substitution happens in ResolveSpawnExe; this
+// hint is only used when neither interpreter is on PATH. Exported so cmd
+// packages can use it for pre-install checks.
 var executableHints = map[string]string{
-	"python": "install python-is-python3 (Ubuntu/Debian: sudo apt install python-is-python3)",
+	"python": "install Python 3 so python3 is on PATH",
 	"node":   "install Node.js (Ubuntu/Debian: sudo apt install nodejs npm)",
 	"npm":    "install npm (Ubuntu/Debian: sudo apt install npm)",
 	"npx":    "install npx (Ubuntu/Debian: sudo apt install npm)",

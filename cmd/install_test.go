@@ -1,7 +1,15 @@
 package cmd
 
 import (
+	"bytes"
+	"io"
+	"os"
+	"strings"
 	"testing"
+
+	"github.com/Wpnx330/pharos-cli/internal/api"
+	"github.com/Wpnx330/pharos-cli/internal/clientconfig"
+	"github.com/Wpnx330/pharos-cli/internal/install"
 )
 
 // =============================================================
@@ -152,7 +160,8 @@ func TestInstallCmdUseAndShort(t *testing.T) {
 	}
 }
 
-// TestInstallCmdExactArgs verifies install requires exactly 1 argument.
+// TestInstallCmdMinimumArgs verifies install requires at least 1 argument
+// and joins extra words the same way as `pharos info`.
 func TestInstallCmdExactArgs(t *testing.T) {
 	if err := installCmd.Args(installCmd, []string{"server-name"}); err != nil {
 		t.Errorf("installCmd.Args with 1 arg: unexpected error: %v", err)
@@ -160,7 +169,96 @@ func TestInstallCmdExactArgs(t *testing.T) {
 	if err := installCmd.Args(installCmd, []string{}); err == nil {
 		t.Error("installCmd.Args with 0 args: expected error, got nil")
 	}
-	if err := installCmd.Args(installCmd, []string{"a", "b"}); err == nil {
-		t.Error("installCmd.Args with 2 args: expected error, got nil")
+	if err := installCmd.Args(installCmd, []string{"Filesystem", "MCP", "Server"}); err != nil {
+		t.Errorf("installCmd.Args with multi-word name: unexpected error: %v", err)
+	}
+}
+
+func TestParseNameVersion(t *testing.T) {
+	tests := []struct {
+		in, name, version string
+	}{
+		{"test-echo-server@0.2.4", "test-echo-server", "0.2.4"},
+		{"test-echo-server@^1.0.0", "test-echo-server", "^1.0.0"},
+		{"com.invokera/world-time", "com.invokera/world-time", ""},
+		{"com.invokera/world-time@1.2.3", "com.invokera/world-time", "1.2.3"},
+		{"@scope/server-git", "@scope/server-git", ""},
+		{"@scope/server-git@1.0.0", "@scope/server-git", "1.0.0"},
+		{"ev4nv-models", "ev4nv-models", ""},
+	}
+	for _, tc := range tests {
+		name, version := parseNameVersion(tc.in)
+		if name != tc.name || version != tc.version {
+			t.Errorf("parseNameVersion(%q) = (%q, %q), want (%q, %q)",
+				tc.in, name, version, tc.name, tc.version)
+		}
+	}
+}
+
+func TestDispatchInstallKindUsesClassifier(t *testing.T) {
+	// The CLI must classify before choosing bookmark vs tarball vs launch-line.
+	kind := classifyInstallManifest(api.Manifest{
+		Transport: "http-sse",
+		Endpoint:  "https://echo.example/sse",
+		Bin:       "test-echo-server",
+	})
+	if kind != install.KindRemoteHTTP {
+		t.Fatalf("F2 dispatch kind = %v, want kind 1 (endpoint wins)", kind)
+	}
+	kind = classifyInstallManifest(api.Manifest{
+		Transport: "http-sse",
+		Bin:       "test-echo-server",
+	})
+	if kind != install.KindLocalHTTP {
+		t.Fatalf("F3 dispatch kind = %v, want kind 2", kind)
+	}
+	kind = classifyInstallManifest(api.Manifest{
+		Transport: "stdio",
+		Command:   "npx -y @scope/mcp",
+	})
+	if kind != install.KindStdio {
+		t.Fatalf("F5 dispatch kind = %v, want kind 3", kind)
+	}
+	kind = classifyInstallManifest(api.Manifest{Transport: "stdio"})
+	if kind != install.KindNone {
+		t.Fatalf("F6 dispatch kind = %v, want 0 (not installable)", kind)
+	}
+}
+
+func TestPrintClientConfigResultsNeverChecksSkipped(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stdout
+	os.Stdout = w
+	printClientConfigResults(
+		[]clientconfig.Client{{Name: "Cursor (Windows via WSL2)"}},
+		[]clientconfig.SkippedClient{{
+			Client: clientconfig.Client{Name: "Claude Desktop (Windows via WSL2)"},
+			Reason: clientconfig.SkipClaudeDesktopRemote,
+		}},
+	)
+	os.Stdout = orig
+	_ = w.Close()
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, r); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "Cursor (Windows via WSL2)") {
+		t.Fatalf("missing written client in output: %q", out)
+	}
+	if !strings.Contains(out, "skipped:") {
+		t.Fatalf("missing skip line: %q", out)
+	}
+	if !strings.Contains(out, "Claude Desktop (Windows via WSL2)") {
+		t.Fatalf("missing skipped client name: %q", out)
+	}
+	// The skip line must not be a success check for Desktop.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "Claude Desktop") && strings.Contains(line, "✓") {
+			t.Fatalf("printed ✓ for skipped Desktop: %q", line)
+		}
 	}
 }

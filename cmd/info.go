@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -14,16 +15,19 @@ import (
 )
 
 var infoCmd = &cobra.Command{
-	Use:     "info <name>",
+	Use:     "info <package-id>",
 	Aliases: []string{"show"},
 	Short:   "Show detailed information about a package",
-	Args:    cobra.ExactArgs(1),
+	Args:    cobra.MinimumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		_, client := loadConfig()
-		name := args[0]
+		name := joinInfoName(args)
 		pkg, err := client.GetPackage(name)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, ui.Error.Render("Failed to get package:"), err)
+			if hint := infoLookupHint(err); hint != "" {
+				fmt.Fprintln(os.Stderr, hint)
+			}
 			return
 		}
 		if jsonFlag {
@@ -213,6 +217,24 @@ var infoCmd = &cobra.Command{
 func init() {
 	infoCmd.Flags().BoolVar(&jsonFlag, "json", false, "output as JSON")
 	rootCmd.AddCommand(infoCmd)
+}
+
+// joinInfoName joins one or more CLI args into a single package name.
+// Quoted multi-word names already arrive as one arg; unquoted words are
+// rejoined with a single space so `pharos info Filesystem MCP Server` works.
+// A single scoped token (@scope/name or io.github.foo/bar) is unchanged.
+func joinInfoName(args []string) string {
+	return strings.Join(args, " ")
+}
+
+// infoLookupHint returns a one-line hint when the registry rejects a lookup
+// with HTTP 400. Other errors are left unchanged.
+func infoLookupHint(err error) string {
+	var apiErr *api.APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == 400 {
+		return "use the exact PACKAGE ID from search (quote it if it has spaces)"
+	}
+	return ""
 }
 
 // formatDate extracts the date portion (YYYY-MM-DD) from an ISO 8601

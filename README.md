@@ -8,15 +8,29 @@ A Go CLI tool for the [PHAROS](https://getpharos.dev) MCP server package registr
 
 ## Install
 
+Linux / macOS / WSL / Git Bash:
+
+```bash
+curl -fsSL getpharos.dev/install | sh
+```
+
+Windows PowerShell (not cmd — `curl | sh` is not a cmd command):
+
+```powershell
+irm https://getpharos.dev/install.ps1 | iex
+```
+
+Until `/install.ps1` is live on the site, download the `.exe` from [the latest release](https://github.com/Wpnx330/pharos-cli/releases/latest) (`pharos_1.0.0_windows_amd64.exe`) and put it on your PATH.
+
+From source:
+
 ```bash
 go install github.com/Wpnx330/pharos-cli@latest
-```
-
-Or build from source:
-
-```bash
+# or
 go build -o pharos .
 ```
+
+Full command reference: https://discoverpharos.dev/cli/docs
 
 ## Commands
 
@@ -31,6 +45,9 @@ pharos init                    # Scaffold a new pharos.json (interactive, includ
 pharos init --yes              # Non-interactive (use defaults)
 pharos package [dir]           # Package a directory into a tarball (like npm pack)
 pharos publish [dir]           # Package + upload + publish to the registry
+pharos unpublish <name>        # Hide a package version from search and lookup
+pharos republish <name>        # Re-activate a previously unpublished version
+pharos purge <name>            # Permanently remove a package version from the registry
 
 # Local management
 pharos install <name>          # Download and install a package (with recursive dependency resolution)
@@ -39,9 +56,13 @@ pharos install <name> --idle-timeout 30  # Auto-unload after 30min idle (default
 pharos install <name> --idle-timeout 0   # Never unload — always on
 pharos list                    # List locally installed packages
 pharos list --running          # Show only running servers (daemon-managed)
+pharos start <name>            # Start a locally installed MCP server
+pharos stop <name>             # Stop a running MCP server
+pharos update [name]           # Check for and apply updates to installed servers
 pharos lock                    # Resolve dependencies and write ./pharos.lock
+pharos import                  # Import existing MCP client configs into a pharos.lock
 pharos remove <name>           # Remove a locally installed package
-pharos remove <name> --force   # Remove even if other packages depend on it
+pharos remove <name> --force   # Remove even if other packages depend on it (not a confirm skip)
 
 # Daemon (MCP server process supervisor)
 pharos daemon start            # Start the daemon (backgrounds by default)
@@ -65,10 +86,17 @@ pharos oauth configure <name> \ # With all options
   --auth-url <url> --client-id <id> --scopes <scopes> --pkce
 
 # System
+pharos doctor                  # Diagnose CLI health — registry, servers, client configs
+pharos audit                   # Scan installed servers for known vulnerabilities
 pharos config <key> [value]    # Get or set configuration
+pharos config add-client <id> --path <path>   # Register a custom MCP client
+pharos config remove-client <id>
+pharos config list-clients
 pharos health                  # Check registry health
 pharos version                 # Print CLI version
 ```
+
+One-line list only. Full flags and examples: https://discoverpharos.dev/cli/docs. Command names come from `cmd/*.go` (`Use:`). If this README and the site disagree, the Go source wins.
 
 ## Flags
 

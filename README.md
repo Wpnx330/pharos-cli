@@ -2,6 +2,11 @@
 
 ![Pharos CLI](github-social-preview.png)
 
+[![CI](https://github.com/Wpnx330/pharos-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/Wpnx330/pharos-cli/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/Wpnx330/pharos-cli)](https://goreportcard.com/report/github.com/Wpnx330/pharos-cli)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/Wpnx330/pharos-cli)](https://github.com/Wpnx330/pharos-cli/stargazers)
+
 ![CLI Demo](demo.gif)
 
 A Go CLI tool for the [PHAROS](https://getpharos.dev) MCP server package registry.

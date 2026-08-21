@@ -28,6 +28,11 @@ const (
 	ClientCline         ClientID = "cline"
 	ClientOpenCode      ClientID = "opencode"
 	ClientHermes        ClientID = "hermes"
+	ClientVSCode        ClientID = "vscode"
+	ClientWindsurf      ClientID = "windsurf"
+	ClientGemini        ClientID = "gemini"
+	ClientAmazonQ       ClientID = "amazonq"
+	ClientRooCode       ClientID = "roo-code"
 )
 
 // SkipClaudeDesktopRemote is the user-facing reason when a remote/HTTP
@@ -282,6 +287,99 @@ func candidatePaths() []Client {
 		Format: FormatMcpServers,
 	})
 
+	// VS Code (GitHub Copilot): ~/.copilot/mcp-config.json
+	clients = append(clients, Client{
+		ID:     ClientVSCode,
+		Name:   "VS Code (GitHub Copilot)",
+		Path:   filepath.Join(home, ".copilot", "mcp-config.json"),
+		Format: FormatMcpServers,
+	})
+	// WSL2: VS Code on Windows reads %USERPROFILE%\.copilot\mcp-config.json.
+	if runtime.GOOS == "linux" {
+		for _, wu := range windowsUserDirs() {
+			clients = append(clients, Client{
+				ID:     ClientVSCode,
+				Name:   "VS Code (GitHub Copilot) (Windows via WSL2)",
+				Path:   filepath.Join(wu, ".copilot", "mcp-config.json"),
+				Format: FormatMcpServers,
+			})
+		}
+	}
+
+	// Windsurf: OS-specific config paths
+	windsurfPath := ""
+	switch runtime.GOOS {
+	case "darwin":
+		windsurfPath = filepath.Join(home, "Library", "Application Support", "Codeium", "windsurf", "mcp_config.json")
+	case "windows":
+		appdata := os.Getenv("APPDATA")
+		if appdata == "" {
+			appdata = filepath.Join(home, "AppData", "Roaming")
+		}
+		windsurfPath = filepath.Join(appdata, "Codeium", "windsurf", "mcp_config.json")
+	default:
+		windsurfPath = filepath.Join(home, ".codeium", "windsurf", "mcp_config.json")
+	}
+	clients = append(clients, Client{
+		ID:     ClientWindsurf,
+		Name:   "Windsurf",
+		Path:   windsurfPath,
+		Format: FormatMcpServers,
+	})
+	// WSL2: Windsurf on Windows reads %APPDATA%\Codeium\windsurf\mcp_config.json.
+	if runtime.GOOS == "linux" {
+		for _, wu := range windowsUserDirs() {
+			clients = append(clients, Client{
+				ID:     ClientWindsurf,
+				Name:   "Windsurf (Windows via WSL2)",
+				Path:   filepath.Join(wu, "AppData", "Roaming", "Codeium", "windsurf", "mcp_config.json"),
+				Format: FormatMcpServers,
+			})
+		}
+	}
+
+	// Gemini CLI: ~/.gemini/settings.json
+	clients = append(clients, Client{
+		ID:     ClientGemini,
+		Name:   "Gemini CLI",
+		Path:   filepath.Join(home, ".gemini", "settings.json"),
+		Format: FormatMcpServers,
+	})
+	// WSL2: Gemini CLI on Windows reads %USERPROFILE%\.gemini\settings.json.
+	if runtime.GOOS == "linux" {
+		for _, wu := range windowsUserDirs() {
+			clients = append(clients, Client{
+				ID:     ClientGemini,
+				Name:   "Gemini CLI (Windows via WSL2)",
+				Path:   filepath.Join(wu, ".gemini", "settings.json"),
+				Format: FormatMcpServers,
+			})
+		}
+	}
+
+	// Amazon Q Developer: ~/.aws/amazonq/mcp.json
+	clients = append(clients, Client{
+		ID:     ClientAmazonQ,
+		Name:   "Amazon Q Developer",
+		Path:   filepath.Join(home, ".aws", "amazonq", "mcp.json"),
+		Format: FormatMcpServers,
+	})
+	// WSL2: Amazon Q on Windows reads %USERPROFILE%\.aws\amazonq\mcp.json.
+	if runtime.GOOS == "linux" {
+		for _, wu := range windowsUserDirs() {
+			clients = append(clients, Client{
+				ID:     ClientAmazonQ,
+				Name:   "Amazon Q Developer (Windows via WSL2)",
+				Path:   filepath.Join(wu, ".aws", "amazonq", "mcp.json"),
+				Format: FormatMcpServers,
+			})
+		}
+	}
+
+	// Roo Code: VS Code extension config.
+	rooCodePaths := rooCodeCandidatePaths(home)
+	clients = append(clients, rooCodePaths...)
+
 	return clients
 }
 
@@ -360,6 +458,52 @@ func clineCandidatePaths(home string) []Client {
 				clients = append(clients, Client{
 					ID:     ClientCline,
 					Name:   "Cline (Windows via WSL2)",
+					Path:   winPath,
+					Format: FormatMcpServers,
+				})
+			}
+		}
+		return clients
+	}
+}
+
+// rooCodeCandidatePaths returns Roo Code client entries for the current OS.
+func rooCodeCandidatePaths(home string) []Client {
+	switch runtime.GOOS {
+	case "darwin":
+		return []Client{{
+			ID:     ClientRooCode,
+			Name:   "Roo Code",
+			Path:   filepath.Join(home, "Library", "Application Support", "Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings", "roo_mcp_settings.json"),
+			Format: FormatMcpServers,
+		}}
+	case "windows":
+		appdata := os.Getenv("APPDATA")
+		if appdata == "" {
+			appdata = filepath.Join(home, "AppData", "Roaming")
+		}
+		return []Client{{
+			ID:     ClientRooCode,
+			Name:   "Roo Code",
+			Path:   filepath.Join(appdata, "Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings", "roo_mcp_settings.json"),
+			Format: FormatMcpServers,
+		}}
+	default:
+		var clients []Client
+		// Linux native VS Code
+		clients = append(clients, Client{
+			ID:     ClientRooCode,
+			Name:   "Roo Code",
+			Path:   filepath.Join(home, ".config", "Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings", "roo_mcp_settings.json"),
+			Format: FormatMcpServers,
+		})
+		// WSL2: VS Code installed on Windows
+		for _, wu := range windowsUserDirs() {
+			winPath := filepath.Join(wu, "AppData", "Roaming", "Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings", "roo_mcp_settings.json")
+			if _, err := os.Stat(winPath); err == nil {
+				clients = append(clients, Client{
+					ID:     ClientRooCode,
+					Name:   "Roo Code (Windows via WSL2)",
 					Path:   winPath,
 					Format: FormatMcpServers,
 				})
@@ -869,8 +1013,30 @@ func buildEntry(id ClientID, server ServerConfig) (json.RawMessage, error) {
 		}
 		return json.Marshal(entry)
 
+	case ClientVSCode, ClientWindsurf, ClientGemini, ClientAmazonQ:
+		// These clients support a "type" field for remote connections.
+		// Default remote type is "http" (modern, preferred over sse).
+		entry := map[string]any{}
+		if server.URL != "" {
+			entry["url"] = server.URL
+			if server.Type != "" {
+				entry["type"] = server.Type
+			} else {
+				entry["type"] = "http"
+			}
+		} else {
+			entry["command"] = server.Command
+			if len(server.Args) > 0 {
+				entry["args"] = server.Args
+			}
+			if len(server.Env) > 0 {
+				entry["env"] = server.Env
+			}
+		}
+		return json.Marshal(entry)
+
 	default:
-		// Generic + Cline: stdio uses command/args/env, http/sse uses
+		// Generic + Cline + Roo Code: stdio uses command/args/env, http/sse uses
 		// url (+ type). Cline accepts native url remotes.
 		entry := map[string]any{}
 		if server.URL != "" {
@@ -1043,6 +1209,7 @@ func readArrayServers(data []byte) (map[string]json.RawMessage, error) {
 var AllClients = []ClientID{
 	ClientClaudeDesktop, ClientClaudeCode, ClientCursor, ClientGeneric,
 	ClientCline, ClientOpenCode, ClientHermes,
+	ClientVSCode, ClientWindsurf, ClientGemini, ClientAmazonQ, ClientRooCode,
 }
 
 // ConfigPath returns the config file path for a client ID on the current

@@ -215,6 +215,11 @@ This means a buggy write can never corrupt an existing config — the original i
 | Cursor | `~/.cursor/mcp.json` **and** Windows `%USERPROFILE%\\.cursor\\mcp.json` | JSON `mcpServers`. Home-level only. `--client cursor` writes both. Remote `{type,url}`. |
 | Cline | `~/.../cline_mcp_settings.json` (Linux + Windows via WSL2) | JSON (`{"mcpServers": {}}`) |
 | OpenCode | `~/.config/opencode/opencode.json` | JSON (`{"mcp": { "<name>": { "type": "local"|"remote", ... } }}`) |
+| VS Code (GitHub Copilot) | `~/.copilot/mcp-config.json` (all OS, WSL2 Windows) | JSON (`{"mcpServers": {}}`). Remote `{url, type:"http"}`. |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` (Linux), `~/Library/Application Support/Codeium/windsurf/` (macOS), `%APPDATA%/Codeium/windsurf/` (Windows) | JSON (`{"mcpServers": {}}`). Remote `{url, type:"http"}`. |
+| Gemini CLI | `~/.gemini/settings.json` (all OS, WSL2 Windows) | JSON (`{"mcpServers": {}}`). Remote `{url, type:"http"}`. Other settings keys preserved. |
+| Amazon Q Developer | `~/.aws/amazonq/mcp.json` (all OS, WSL2 Windows) | JSON (`{"mcpServers": {}}`). Remote `{url, type:"http"}`. |
+| Roo Code | `~/.../roo_mcp_settings.json` (Linux + Windows via WSL2) | JSON (`{"mcpServers": {}}`). Remote `{url}`. |
 | Generic MCP | `~/.config/mcp/mcp.json` | JSON (`{"mcpServers": {}}`) |
 
 ## Development

@@ -448,10 +448,10 @@ func TestRemoveServerPreservesClaudeDesktopKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "claude_desktop_config.json")
 	orig := writeJSONFixture(t, path, map[string]any{
 		"preferences": map[string]any{
-			"quickEntryShortcut":            "off",
-			"coworkScheduledTasksEnabled":   false,
-			"coworkWebSearchEnabled":        true,
-			"allowAllBrowserActions":        false,
+			"quickEntryShortcut":          "off",
+			"coworkScheduledTasksEnabled": false,
+			"coworkWebSearchEnabled":      true,
+			"allowAllBrowserActions":      false,
 		},
 		"coworkUserFilesPath": `C:\Users\chris\.claude\cowork\user-files`,
 		"mcpServers": map[string]any{
@@ -1133,9 +1133,9 @@ func TestDetectClaudeCodeRequiresExistingFile(t *testing.T) {
 func TestMergeServerClaudeCodeRemoteHasTypeAndURL(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".claude.json")
 	writeJSONFixture(t, path, map[string]any{
-		"userID":          "abc",
-		"machineID":       "m1",
-		"firstStartTime":  1,
+		"userID":           "abc",
+		"machineID":        "m1",
+		"firstStartTime":   1,
 		"migrationVersion": 2,
 	})
 	c := Client{
@@ -1315,5 +1315,330 @@ func TestRemoveServerHitsEveryCursorPath(t *testing.T) {
 	}
 	if !winNames["MCP_DOCKER"] {
 		t.Error("windows cursor lost MCP_DOCKER")
+	}
+}
+
+func TestClientsByIDReturnsAllVSCodePaths(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".copilot"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	winRoot := isolateWindowsUsers(t)
+	winUser := filepath.Join(winRoot, "chris")
+	if err := os.MkdirAll(filepath.Join(winUser, ".copilot"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(winUser, ".copilot", "mcp-config.json"), []byte(`{"mcpServers":{}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	all := ClientsByID(ClientVSCode)
+	if len(all) != 2 {
+		t.Fatalf("ClientsByID(vscode) = %d, want 2: %+v", len(all), all)
+	}
+	names := map[string]bool{}
+	for _, c := range all {
+		names[c.Name] = true
+	}
+	if !names["VS Code (GitHub Copilot)"] || !names["VS Code (GitHub Copilot) (Windows via WSL2)"] {
+		t.Errorf("names = %v", names)
+	}
+}
+
+func TestRemoveServerHitsEveryVSCodePath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	linuxPath := filepath.Join(home, ".copilot", "mcp-config.json")
+	writeJSONFixture(t, linuxPath, map[string]any{
+		"mcpServers": map[string]any{
+			"com.invokera/world-time": map[string]any{"type": "http", "url": "https://invokera.com/r/world-time"},
+			"keep-me":                 map[string]any{"command": "npx"},
+		},
+	})
+
+	winRoot := isolateWindowsUsers(t)
+	winPath := filepath.Join(winRoot, "chris", ".copilot", "mcp-config.json")
+	writeJSONFixture(t, winPath, map[string]any{
+		"mcpServers": map[string]any{
+			"com.invokera/world-time": map[string]any{"type": "http", "url": "https://invokera.com/r/world-time"},
+			"MCP_DOCKER":              map[string]any{"command": "docker", "args": []string{"mcp", "gateway", "run"}},
+		},
+	})
+
+	removed := 0
+	for _, c := range Detect() {
+		if c.ID != ClientVSCode || !c.Existing {
+			continue
+		}
+		if err := RemoveServer(c, "com.invokera/world-time"); err != nil {
+			t.Fatalf("RemoveServer %s: %v", c.Name, err)
+		}
+		removed++
+	}
+	if removed != 2 {
+		t.Fatalf("removed from %d vscode paths, want 2", removed)
+	}
+
+	linux := readJSONObject(t, linuxPath)
+	linuxNames := mcpServerNames(t, linux)
+	if linuxNames["com.invokera/world-time"] {
+		t.Error("linux vscode still has world-time")
+	}
+	if !linuxNames["keep-me"] {
+		t.Error("linux vscode lost keep-me")
+	}
+
+	win := readJSONObject(t, winPath)
+	winNames := mcpServerNames(t, win)
+	if winNames["com.invokera/world-time"] {
+		t.Error("windows vscode still has world-time")
+	}
+	if !winNames["MCP_DOCKER"] {
+		t.Error("windows vscode lost MCP_DOCKER")
+	}
+}
+
+func TestClientsByIDReturnsAllGeminiPaths(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".gemini"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	winRoot := isolateWindowsUsers(t)
+	winUser := filepath.Join(winRoot, "chris")
+	if err := os.MkdirAll(filepath.Join(winUser, ".gemini"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(winUser, ".gemini", "settings.json"), []byte(`{"mcpServers":{}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	all := ClientsByID(ClientGemini)
+	if len(all) != 2 {
+		t.Fatalf("ClientsByID(gemini) = %d, want 2: %+v", len(all), all)
+	}
+}
+
+func TestClientsByIDReturnsAllAmazonQPaths(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".aws", "amazonq"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	winRoot := isolateWindowsUsers(t)
+	winUser := filepath.Join(winRoot, "chris")
+	if err := os.MkdirAll(filepath.Join(winUser, ".aws", "amazonq"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(winUser, ".aws", "amazonq", "mcp.json"), []byte(`{"mcpServers":{}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	all := ClientsByID(ClientAmazonQ)
+	if len(all) != 2 {
+		t.Fatalf("ClientsByID(amazonq) = %d, want 2: %+v", len(all), all)
+	}
+}
+
+func TestClientsByIDReturnsAllWindsurfPaths(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".codeium", "windsurf"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	winRoot := isolateWindowsUsers(t)
+	winUser := filepath.Join(winRoot, "chris")
+	winDir := filepath.Join(winUser, "AppData", "Roaming", "Codeium", "windsurf")
+	if err := os.MkdirAll(winDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(winDir, "mcp_config.json"), []byte(`{"mcpServers":{}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	all := ClientsByID(ClientWindsurf)
+	if len(all) != 2 {
+		t.Fatalf("ClientsByID(windsurf) = %d, want 2: %+v", len(all), all)
+	}
+}
+
+func TestClientsByIDReturnsAllRooCodePaths(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	linuxDir := filepath.Join(home, ".config", "Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings")
+	if err := os.MkdirAll(linuxDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(linuxDir, "roo_mcp_settings.json"), []byte(`{"mcpServers":{}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	winRoot := isolateWindowsUsers(t)
+	winDir := filepath.Join(winRoot, "chris", "AppData", "Roaming", "Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings")
+	if err := os.MkdirAll(winDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(winDir, "roo_mcp_settings.json"), []byte(`{"mcpServers":{}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	all := ClientsByID(ClientRooCode)
+	if len(all) != 2 {
+		t.Fatalf("ClientsByID(roo-code) = %d, want 2: %+v", len(all), all)
+	}
+	names := map[string]bool{}
+	for _, c := range all {
+		names[c.Name] = true
+	}
+	if !names["Roo Code"] || !names["Roo Code (Windows via WSL2)"] {
+		t.Errorf("names = %v", names)
+	}
+}
+
+func TestNewClientMergeRemove(t *testing.T) {
+	isolateWindowsUsers(t)
+
+	clients := []struct {
+		id   ClientID
+		name string
+		path string
+	}{
+		{ClientVSCode, "VS Code", "copilot/mcp-config.json"},
+		{ClientWindsurf, "Windsurf", "windsurf/mcp_config.json"},
+		{ClientGemini, "Gemini CLI", "gemini/settings.json"},
+		{ClientAmazonQ, "Amazon Q Developer", "amazonq/mcp.json"},
+		{ClientRooCode, "Roo Code", "roo/roo_mcp_settings.json"},
+	}
+
+	for _, tc := range clients {
+		t.Run(string(tc.id), func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, tc.path)
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			orig := writeJSONFixture(t, path, map[string]any{
+				"version": "1.0",
+				"mcpServers": map[string]any{
+					"existing": map[string]any{"command": "foo"},
+				},
+			})
+
+			c := Client{
+				ID:       tc.id,
+				Name:     tc.name,
+				Path:     path,
+				Format:   FormatMcpServers,
+				Existing: true,
+			}
+
+			// 1. Merge a stdio server
+			stdioServer := ServerConfig{
+				Command: "npx",
+				Args:    []string{"-y", "@scope/pkg"},
+				Env:     map[string]string{"FOO": "bar"},
+			}
+			if err := MergeServer(c, "my-stdio", stdioServer); err != nil {
+				t.Fatalf("MergeServer stdio: %v", err)
+			}
+
+			root := readJSONObject(t, path)
+
+			// non-mcpServers keys preserved
+			if _, ok := root["version"]; !ok {
+				t.Error("version key was dropped after stdio merge")
+			}
+
+			names := mcpServerNames(t, root)
+			if !names["existing"] {
+				t.Error("existing server was clobbered by stdio merge")
+			}
+			if !names["my-stdio"] {
+				t.Error("my-stdio was not written")
+			}
+
+			// verify stdio entry content
+			var servers map[string]map[string]any
+			if err := json.Unmarshal(root["mcpServers"], &servers); err != nil {
+				t.Fatal(err)
+			}
+			stdioEntry := servers["my-stdio"]
+			if stdioEntry["command"] != "npx" {
+				t.Errorf("stdio command = %v, want npx", stdioEntry["command"])
+			}
+
+			// 2. Merge a remote http server
+			remoteServer := ServerConfig{URL: "https://example.com/mcp"}
+			if err := MergeServer(c, "my-remote", remoteServer); err != nil {
+				t.Fatalf("MergeServer remote: %v", err)
+			}
+
+			root = readJSONObject(t, path)
+			if _, ok := root["version"]; !ok {
+				t.Error("version key was dropped after remote merge")
+			}
+
+			if err := json.Unmarshal(root["mcpServers"], &servers); err != nil {
+				t.Fatal(err)
+			}
+			names = mcpServerNames(t, root)
+			if !names["existing"] {
+				t.Error("existing server was clobbered by remote merge")
+			}
+			if !names["my-stdio"] {
+				t.Error("my-stdio was lost after remote merge")
+			}
+			if !names["my-remote"] {
+				t.Error("my-remote was not written")
+			}
+
+			remoteEntry := servers["my-remote"]
+			if remoteEntry["url"] != "https://example.com/mcp" {
+				t.Errorf("remote url = %v, want https://example.com/mcp", remoteEntry["url"])
+			}
+			expectedType := "http"
+			if tc.id == ClientRooCode {
+				expectedType = ""
+			}
+			if expectedType != "" {
+				if remoteEntry["type"] != expectedType {
+					t.Errorf("remote type = %v, want %s", remoteEntry["type"], expectedType)
+				}
+			}
+
+			// 3. Remove the remote server
+			if err := RemoveServer(c, "my-remote"); err != nil {
+				t.Fatalf("RemoveServer: %v", err)
+			}
+
+			root = readJSONObject(t, path)
+			if _, ok := root["version"]; !ok {
+				t.Error("version key was dropped after remove")
+			}
+			names = mcpServerNames(t, root)
+			if names["my-remote"] {
+				t.Error("my-remote was not removed")
+			}
+			if !names["existing"] {
+				t.Error("existing server was lost after remove")
+			}
+			if !names["my-stdio"] {
+				t.Error("my-stdio was lost after remove")
+			}
+
+			// file didn't shrink too much
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(after)*2 < len(orig) {
+				t.Fatalf("file shrank too much: %d -> %d", len(orig), len(after))
+			}
+		})
 	}
 }

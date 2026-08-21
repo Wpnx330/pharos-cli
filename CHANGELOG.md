@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - MIT licence file, code of conduct, contributing guide, and issue templates.
 - README badges, a complete command list, and `curl` as the lead install method.
+- Auto-configuration support for 5 new MCP clients: VS Code (GitHub Copilot),
+  Windsurf, Gemini CLI, Amazon Q Developer, and Roo Code. All use the
+  `{"mcpServers": {}}` JSON format with safe patching that preserves existing
+  config keys. Remote entries default to `type: "http"` for modern clients.
 
 ## [1.0.0] - 2026-08-18
 

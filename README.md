@@ -225,6 +225,8 @@ go vet ./...
 go build .
 ```
 
+Notable changes per release are recorded in [CHANGELOG.md](CHANGELOG.md).
+
 ## Dependency Resolution
 
 The CLI supports recursive dependency resolution. When you install a package that declares

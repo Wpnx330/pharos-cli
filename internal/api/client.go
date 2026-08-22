@@ -8,9 +8,33 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
+
+const maxRetries = 3
+
+// retryDelay calculates the delay before retrying a 429 response.
+// If retryAfter parses as integer seconds, that value is used.
+// Otherwise exponential backoff is used: 2s, 4s, 8s (attempt 0, 1, 2).
+// The delay is capped at 30s.
+func retryDelay(attempt int, retryAfter string) time.Duration {
+	if retryAfter != "" {
+		if secs, err := strconv.Atoi(retryAfter); err == nil && secs > 0 {
+			d := time.Duration(secs) * time.Second
+			if d > 30*time.Second {
+				return 30 * time.Second
+			}
+			return d
+		}
+	}
+	d := time.Duration(1<<(attempt+1)) * time.Second
+	if d > 30*time.Second {
+		return 30 * time.Second
+	}
+	return d
+}
 
 // Client is the PHAROS registry API client.
 type Client struct {
@@ -33,34 +57,64 @@ func New(baseURL, token string) *Client {
 
 // do performs an HTTP request and returns the raw response body.
 // It sets the Authorization header when a token is configured.
+// On HTTP 429 (Too Many Requests) it retries up to maxRetries times
+// with exponential backoff, honoring the Retry-After header if present.
 func (c *Client) do(method, path string, body io.Reader) ([]byte, int, error) {
 	u := c.BaseURL + path
-	req, err := http.NewRequest(method, u, body)
-	if err != nil {
-		return nil, 0, err
-	}
-	if c.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.Token)
-	}
+
+	var buf []byte
 	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, resp.StatusCode, err
-	}
-	if resp.StatusCode >= 400 {
-		return data, resp.StatusCode, &APIError{
-			StatusCode: resp.StatusCode,
-			Body:       data,
+		var err error
+		buf, err = io.ReadAll(body)
+		if err != nil {
+			return nil, 0, err
 		}
 	}
-	return data, resp.StatusCode, nil
+
+	for attempt := 0; ; attempt++ {
+		var bodyReader io.Reader
+		if buf != nil {
+			bodyReader = bytes.NewReader(buf)
+		}
+
+		req, err := http.NewRequest(method, u, bodyReader)
+		if err != nil {
+			return nil, 0, err
+		}
+		if c.Token != "" {
+			req.Header.Set("Authorization", "Bearer "+c.Token)
+		}
+		if buf != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+
+		resp, err := c.HTTPClient.Do(req)
+		if err != nil {
+			return nil, 0, err
+		}
+
+		data, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if readErr != nil {
+			return nil, resp.StatusCode, readErr
+		}
+
+		if resp.StatusCode == 429 && attempt < maxRetries {
+			delay := retryDelay(attempt, resp.Header.Get("Retry-After"))
+			time.Sleep(delay)
+			continue
+		}
+
+		if resp.StatusCode >= 400 {
+			return data, resp.StatusCode, &APIError{
+				StatusCode: resp.StatusCode,
+				Body:       data,
+			}
+		}
+
+		return data, resp.StatusCode, nil
+	}
 }
 
 // get is a convenience wrapper for GET requests.

@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/BurntSushi/toml"
 	"github.com/Wpnx330/pharos-cli/internal/config"
 	"gopkg.in/yaml.v3"
 )
@@ -33,12 +34,21 @@ const (
 	ClientGemini        ClientID = "gemini"
 	ClientAmazonQ       ClientID = "amazonq"
 	ClientRooCode       ClientID = "roo-code"
+	ClientCodex         ClientID = "codex"
+	ClientGrok          ClientID = "grok"
+	ClientZed           ClientID = "zed"
+	ClientAider         ClientID = "aider"
 )
 
 // SkipClaudeDesktopRemote is the user-facing reason when a remote/HTTP
 // server cannot be written into claude_desktop_config.json. Official
 // Desktop remotes are Settings → Connectors, not JSON.
 const SkipClaudeDesktopRemote = "Claude Desktop remotes are Settings → Connectors, not claude_desktop_config.json"
+
+// SkipAiderRemote is the user-facing reason when a remote/HTTP server
+// cannot be written into the Aider YAML config. Aider supports stdio MCP
+// servers only.
+const SkipAiderRemote = "aider supports stdio MCP servers only; remote servers are skipped"
 
 // SkipError means the client was not configured because Pharos cannot
 // write a shape that client accepts. It is not a write failure.
@@ -80,12 +90,25 @@ const FormatOpenCode = "opencode"
 
 // json key names for the two object-based MCP maps.
 const (
-	keyMcpServers = "mcpServers"
-	keyMcp        = "mcp"
+	keyMcpServers     = "mcpServers"
+	keyMcp            = "mcp"
+	keyContextServers = "context_servers"
 )
 
 // FormatHermes is the YAML format with a top-level mcp_servers: key.
 const FormatHermes = "hermes-yaml"
+
+// FormatTOML is the TOML format with a top-level [mcp_servers] table,
+// used by Codex CLI and Grok Build.
+const FormatTOML = "toml"
+
+// FormatZed is the JSON format with a top-level "context_servers" key,
+// used by the Zed editor.
+const FormatZed = "zed"
+
+// FormatAider is the YAML format with a top-level "mcp-servers" list,
+// used by Aider.
+const FormatAider = "aider-yaml"
 
 // Client describes a detected MCP client and its config file path.
 type Client struct {
@@ -380,6 +403,98 @@ func candidatePaths() []Client {
 	rooCodePaths := rooCodeCandidatePaths(home)
 	clients = append(clients, rooCodePaths...)
 
+	// Codex CLI: ~/.codex/config.toml (all OS)
+	clients = append(clients, Client{
+		ID:     ClientCodex,
+		Name:   "Codex CLI",
+		Path:   filepath.Join(home, ".codex", "config.toml"),
+		Format: FormatTOML,
+	})
+	// WSL2: Codex on Windows reads %USERPROFILE%\.codex\config.toml.
+	if runtime.GOOS == "linux" {
+		for _, wu := range windowsUserDirs() {
+			clients = append(clients, Client{
+				ID:     ClientCodex,
+				Name:   "Codex CLI (Windows via WSL2)",
+				Path:   filepath.Join(wu, ".codex", "config.toml"),
+				Format: FormatTOML,
+			})
+		}
+	}
+
+	// Grok Build: ~/.grok/config.toml (all OS)
+	clients = append(clients, Client{
+		ID:     ClientGrok,
+		Name:   "Grok Build",
+		Path:   filepath.Join(home, ".grok", "config.toml"),
+		Format: FormatTOML,
+	})
+	// WSL2: Grok on Windows reads %USERPROFILE%\.grok\config.toml.
+	if runtime.GOOS == "linux" {
+		for _, wu := range windowsUserDirs() {
+			clients = append(clients, Client{
+				ID:     ClientGrok,
+				Name:   "Grok Build (Windows via WSL2)",
+				Path:   filepath.Join(wu, ".grok", "config.toml"),
+				Format: FormatTOML,
+			})
+		}
+	}
+
+	// Zed: OS-specific settings.json with "context_servers" key.
+	zedPath := ""
+	switch runtime.GOOS {
+	case "darwin":
+		zedPath = filepath.Join(home, "Library", "Application Support", "Zed", "settings.json")
+	case "windows":
+		appdata := os.Getenv("APPDATA")
+		if appdata == "" {
+			appdata = filepath.Join(home, "AppData", "Roaming")
+		}
+		zedPath = filepath.Join(appdata, "Zed", "settings.json")
+	default:
+		zedPath = filepath.Join(home, ".config", "zed", "settings.json")
+	}
+	clients = append(clients, Client{
+		ID:     ClientZed,
+		Name:   "Zed",
+		Path:   zedPath,
+		Format: FormatZed,
+	})
+	// WSL2: Zed on Windows reads %APPDATA%\Zed\settings.json.
+	if runtime.GOOS == "linux" {
+		for _, wu := range windowsUserDirs() {
+			winPath := filepath.Join(wu, "AppData", "Roaming", "Zed", "settings.json")
+			if _, err := os.Stat(winPath); err == nil {
+				clients = append(clients, Client{
+					ID:     ClientZed,
+					Name:   "Zed (Windows via WSL2)",
+					Path:   winPath,
+					Format: FormatZed,
+				})
+			}
+		}
+	}
+
+	// Aider: ~/.aider.conf.yml (all OS)
+	clients = append(clients, Client{
+		ID:     ClientAider,
+		Name:   "Aider",
+		Path:   filepath.Join(home, ".aider.conf.yml"),
+		Format: FormatAider,
+	})
+	// WSL2: Aider on Windows reads %USERPROFILE%\.aider.conf.yml.
+	if runtime.GOOS == "linux" {
+		for _, wu := range windowsUserDirs() {
+			clients = append(clients, Client{
+				ID:     ClientAider,
+				Name:   "Aider (Windows via WSL2)",
+				Path:   filepath.Join(wu, ".aider.conf.yml"),
+				Format: FormatAider,
+			})
+		}
+	}
+
 	return clients
 }
 
@@ -588,11 +703,15 @@ func MergeServer(c Client, name string, server ServerConfig) error {
 		return mergeArray(c, name, server)
 	case FormatHermes:
 		return mergeHermes(c, name, server)
+	case FormatTOML:
+		return mergeTOML(c, name, server)
+	case FormatAider:
+		return mergeAider(c, name, server)
 	}
 
-	// Object formats (mcpServers / OpenCode mcp). Patch the existing
-	// document so unknown top-level keys survive ($schema, model,
-	// provider, theme, preferences, …).
+	// Object formats (mcpServers / OpenCode mcp / Zed context_servers).
+	// Patch the existing document so unknown top-level keys survive
+	// ($schema, model, provider, theme, preferences, …).
 	servers, err := ReadServersFormat(c.Path, format)
 	if err != nil {
 		return err
@@ -606,6 +725,9 @@ func MergeServer(c Client, name string, server ServerConfig) error {
 
 	if format == FormatOpenCode {
 		return PatchOpenCodeMcp(c.Path, servers)
+	}
+	if format == FormatZed {
+		return PatchContextServers(c.Path, servers)
 	}
 	return PatchMcpServers(c.Path, servers)
 }
@@ -667,6 +789,9 @@ func mergeArray(c Client, name string, server ServerConfig) error {
 func skipMergeReason(c Client, server ServerConfig) string {
 	if c.ID == ClientClaudeDesktop && strings.TrimSpace(server.URL) != "" {
 		return SkipClaudeDesktopRemote
+	}
+	if c.ID == ClientAider && strings.TrimSpace(server.URL) != "" {
+		return SkipAiderRemote
 	}
 	return ""
 }
@@ -815,15 +940,28 @@ func SafeWriteConfig(path string, data []byte, format string) error {
 			_ = os.Remove(tmpPath)
 			return fmt.Errorf("validation failed: written YAML is not parseable: %w", err)
 		}
+	case FormatAider:
+		var verify map[string]any
+		if err := yaml.Unmarshal(writtenData, &verify); err != nil {
+			_ = os.Remove(tmpPath)
+			return fmt.Errorf("validation failed: written Aider YAML is not parseable: %w", err)
+		}
 	case FormatArray:
 		var verify []json.RawMessage
 		if err := json.Unmarshal(writtenData, &verify); err != nil {
 			_ = os.Remove(tmpPath)
 			return fmt.Errorf("validation failed: written JSON is not a parseable array: %w", err)
 		}
+	case FormatTOML:
+		var verify map[string]any
+		if err := toml.Unmarshal(writtenData, &verify); err != nil {
+			_ = os.Remove(tmpPath)
+			return fmt.Errorf("validation failed: written TOML is not parseable: %w", err)
+		}
 	default:
-		// Object formats (mcpServers / OpenCode) must remain objects.
-		// Unmarshal into a generic map so extra top-level keys are accepted.
+		// Object formats (mcpServers / OpenCode / Zed) must remain
+		// objects. Unmarshal into a generic map so extra top-level keys
+		// are accepted.
 		var verify map[string]json.RawMessage
 		if err := json.Unmarshal(writtenData, &verify); err != nil {
 			_ = os.Remove(tmpPath)
@@ -871,6 +1009,324 @@ func removeHermesServer(path, name string) (bool, error) {
 		return false, fmt.Errorf("marshal config: %w", err)
 	}
 	return true, writeHermesConfig(path, out)
+}
+
+// mergeTOML reads a TOML config file (Codex or Grok), adds or replaces
+// the server entry under [mcp_servers.<name>], and writes it back. All
+// existing top-level keys (model, model_providers, etc.) are preserved.
+// Codex remote entries use {url}; Grok remote entries use {url, headers}.
+func mergeTOML(c Client, name string, server ServerConfig) error {
+	data, err := os.ReadFile(c.Path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			root := map[string]any{
+				"mcp_servers": map[string]any{
+					name: buildTOMLEntry(c.ID, server),
+				},
+			}
+			out, encErr := toml.Marshal(root)
+			if encErr != nil {
+				return fmt.Errorf("marshal config: %w", encErr)
+			}
+			return writeTOMLConfig(c.Path, out)
+		}
+		return fmt.Errorf("read config %s: %w", c.Path, err)
+	}
+
+	var root map[string]any
+	if err := toml.Unmarshal(data, &root); err != nil {
+		return fmt.Errorf("parse config %s: %w", c.Path, err)
+	}
+	if root == nil {
+		root = make(map[string]any)
+	}
+
+	servers, _ := root["mcp_servers"].(map[string]any)
+	if servers == nil {
+		servers = make(map[string]any)
+	}
+
+	servers[name] = buildTOMLEntry(c.ID, server)
+	root["mcp_servers"] = servers
+
+	out, err := toml.Marshal(root)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	return writeTOMLConfig(c.Path, out)
+}
+
+// buildTOMLEntry constructs the TOML entry map for a server. Stdio
+// entries use {command, args, env}; remote entries use {url} (Codex) or
+// {url, headers} (Grok).
+func buildTOMLEntry(id ClientID, server ServerConfig) map[string]any {
+	entry := map[string]any{}
+	if server.URL != "" {
+		entry["url"] = server.URL
+		if id == ClientGrok && len(server.Env) > 0 {
+			headers := make(map[string]any, len(server.Env))
+			for k, v := range server.Env {
+				headers[k] = v
+			}
+			entry["headers"] = headers
+		}
+	} else {
+		entry["command"] = server.Command
+		if len(server.Args) > 0 {
+			entry["args"] = server.Args
+		}
+		if len(server.Env) > 0 {
+			env := make(map[string]any, len(server.Env))
+			for k, v := range server.Env {
+				env[k] = v
+			}
+			entry["env"] = env
+		}
+	}
+	return entry
+}
+
+// writeTOMLConfig writes the TOML data to the config file safely.
+func writeTOMLConfig(path string, data []byte) error {
+	return SafeWriteConfig(path, data, FormatTOML)
+}
+
+// readTOMLServers parses a TOML config and returns the mcp_servers
+// entries as a name→raw-JSON map (converted to JSON for uniformity with
+// other formats).
+func readTOMLServers(data []byte) (map[string]json.RawMessage, error) {
+	var root map[string]any
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return make(map[string]json.RawMessage), nil
+	}
+	if err := toml.Unmarshal(data, &root); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	servers, _ := root["mcp_servers"].(map[string]any)
+	if servers == nil {
+		return make(map[string]json.RawMessage), nil
+	}
+	out := make(map[string]json.RawMessage, len(servers))
+	for name, raw := range servers {
+		j, err := json.Marshal(raw)
+		if err != nil {
+			continue
+		}
+		out[name] = j
+	}
+	return out, nil
+}
+
+// removeTOMLServer removes a server entry from a TOML config file.
+func removeTOMLServer(path, name string) (bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	var root map[string]any
+	if err := toml.Unmarshal(data, &root); err != nil {
+		return false, fmt.Errorf("parse config: %w", err)
+	}
+	servers, _ := root["mcp_servers"].(map[string]any)
+	if servers == nil {
+		return false, nil
+	}
+	if _, ok := servers[name]; !ok {
+		return false, nil
+	}
+	delete(servers, name)
+	root["mcp_servers"] = servers
+	out, err := toml.Marshal(root)
+	if err != nil {
+		return false, fmt.Errorf("marshal config: %w", err)
+	}
+	return true, writeTOMLConfig(path, out)
+}
+
+// PatchContextServers writes servers into the existing JSON object's
+// "context_servers" key and leaves every other top-level key untouched.
+// If the file does not exist, a new object containing only
+// context_servers is created. A nil servers map is written as {}.
+func PatchContextServers(path string, servers map[string]json.RawMessage) error {
+	return patchJSONServerMap(path, keyContextServers, servers)
+}
+
+// readZedServers reads Zed's root["context_servers"] as a name→raw-JSON
+// map. Falls back to "mcpServers" if the legacy key is present and
+// "context_servers" is not.
+func readZedServers(data []byte) (map[string]json.RawMessage, error) {
+	root := map[string]json.RawMessage{}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return make(map[string]json.RawMessage), nil
+	}
+	if err := json.Unmarshal(data, &root); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	if raw, ok := root[keyContextServers]; ok {
+		servers, err := unmarshalServerMap(raw)
+		if err != nil {
+			return nil, fmt.Errorf("parse context_servers: %w", err)
+		}
+		return servers, nil
+	}
+	if raw, ok := root[keyMcpServers]; ok {
+		servers, err := unmarshalServerMap(raw)
+		if err != nil {
+			return nil, fmt.Errorf("parse mcpServers: %w", err)
+		}
+		return servers, nil
+	}
+	return make(map[string]json.RawMessage), nil
+}
+
+// mergeAider reads the Aider YAML config, adds or replaces the server
+// entry under the "mcp-servers" list, and writes it back. All existing
+// top-level keys (model, auto_commits, etc.) are preserved. Aider is
+// stdio-only; remote servers are rejected by skipMergeReason before
+// reaching this function.
+func mergeAider(c Client, name string, server ServerConfig) error {
+	data, err := os.ReadFile(c.Path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			root := map[string]any{
+				"mcp-servers": []any{
+					buildAiderEntry(name, server),
+				},
+			}
+			out, _ := yaml.Marshal(root)
+			return writeAiderConfig(c.Path, out)
+		}
+		return fmt.Errorf("read config %s: %w", c.Path, err)
+	}
+
+	var root map[string]any
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return fmt.Errorf("parse config %s: %w", c.Path, err)
+	}
+	if root == nil {
+		root = make(map[string]any)
+	}
+
+	rawList, _ := root["mcp-servers"].([]any)
+	entry := buildAiderEntry(name, server)
+
+	found := false
+	for i, item := range rawList {
+		if m, ok := item.(map[string]any); ok {
+			if n, _ := m["name"].(string); n == name {
+				rawList[i] = entry
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		rawList = append(rawList, entry)
+	}
+	root["mcp-servers"] = rawList
+
+	out, err := yaml.Marshal(root)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	return writeAiderConfig(c.Path, out)
+}
+
+// buildAiderEntry constructs a single Aider MCP server list entry map.
+// Aider uses stdio only: {name, command, args, env}.
+func buildAiderEntry(name string, server ServerConfig) map[string]any {
+	entry := map[string]any{
+		"name":    name,
+		"command": server.Command,
+	}
+	if len(server.Args) > 0 {
+		entry["args"] = server.Args
+	}
+	if len(server.Env) > 0 {
+		entry["env"] = server.Env
+	}
+	return entry
+}
+
+// writeAiderConfig writes the Aider YAML data to the config file safely.
+func writeAiderConfig(path string, data []byte) error {
+	return SafeWriteConfig(path, data, FormatAider)
+}
+
+// readAiderServers parses an Aider YAML config and returns the
+// mcp-servers list entries as a name→raw-JSON map.
+func readAiderServers(data []byte) (map[string]json.RawMessage, error) {
+	var root map[string]any
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return make(map[string]json.RawMessage), nil
+	}
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	rawList, _ := root["mcp-servers"].([]any)
+	if rawList == nil {
+		return make(map[string]json.RawMessage), nil
+	}
+	out := make(map[string]json.RawMessage, len(rawList))
+	for _, item := range rawList {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := m["name"].(string)
+		if name == "" {
+			continue
+		}
+		j, err := json.Marshal(m)
+		if err != nil {
+			continue
+		}
+		out[name] = j
+	}
+	return out, nil
+}
+
+// removeAiderServer removes a named entry from the Aider YAML config's
+// mcp-servers list.
+func removeAiderServer(path, name string) (bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	var root map[string]any
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return false, fmt.Errorf("parse config: %w", err)
+	}
+	rawList, _ := root["mcp-servers"].([]any)
+	if rawList == nil {
+		return false, nil
+	}
+	kept := make([]any, 0, len(rawList))
+	found := false
+	for _, item := range rawList {
+		if m, ok := item.(map[string]any); ok {
+			if n, _ := m["name"].(string); n == name {
+				found = true
+				continue
+			}
+		}
+		kept = append(kept, item)
+	}
+	if !found {
+		return false, nil
+	}
+	root["mcp-servers"] = kept
+	out, err := yaml.Marshal(root)
+	if err != nil {
+		return false, fmt.Errorf("marshal config: %w", err)
+	}
+	return true, writeAiderConfig(path, out)
 }
 
 // PatchMcpServers writes servers into the existing JSON object's
@@ -1013,7 +1469,7 @@ func buildEntry(id ClientID, server ServerConfig) (json.RawMessage, error) {
 		}
 		return json.Marshal(entry)
 
-	case ClientVSCode, ClientWindsurf, ClientGemini, ClientAmazonQ:
+	case ClientVSCode, ClientWindsurf, ClientGemini, ClientAmazonQ, ClientZed:
 		// These clients support a "type" field for remote connections.
 		// Default remote type is "http" (modern, preferred over sse).
 		entry := map[string]any{}
@@ -1104,6 +1560,12 @@ func ReadServersFormat(path, format string) (map[string]json.RawMessage, error) 
 		return readHermesServers(data)
 	case FormatOpenCode:
 		return readOpenCodeServers(data)
+	case FormatTOML:
+		return readTOMLServers(data)
+	case FormatZed:
+		return readZedServers(data)
+	case FormatAider:
+		return readAiderServers(data)
 	default:
 		// FormatMcpServers: {"mcpServers": {...}}.
 		var cfg configFile
@@ -1210,6 +1672,7 @@ var AllClients = []ClientID{
 	ClientClaudeDesktop, ClientClaudeCode, ClientCursor, ClientGeneric,
 	ClientCline, ClientOpenCode, ClientHermes,
 	ClientVSCode, ClientWindsurf, ClientGemini, ClientAmazonQ, ClientRooCode,
+	ClientCodex, ClientGrok, ClientZed, ClientAider,
 }
 
 // ConfigPath returns the config file path for a client ID on the current
@@ -1237,6 +1700,12 @@ func RemoveServer(c Client, name string) error {
 	case FormatHermes:
 		_, err := removeHermesServer(c.Path, name)
 		return err
+	case FormatTOML:
+		_, err := removeTOMLServer(c.Path, name)
+		return err
+	case FormatAider:
+		_, err := removeAiderServer(c.Path, name)
+		return err
 	case FormatOpenCode:
 		servers, err := ReadServersFormat(c.Path, format)
 		if err != nil {
@@ -1244,6 +1713,13 @@ func RemoveServer(c Client, name string) error {
 		}
 		delete(servers, name)
 		return PatchOpenCodeMcp(c.Path, servers)
+	case FormatZed:
+		servers, err := ReadServersFormat(c.Path, format)
+		if err != nil {
+			return err
+		}
+		delete(servers, name)
+		return PatchContextServers(c.Path, servers)
 	default:
 		servers, err := ReadServersFormat(c.Path, format)
 		if err != nil {

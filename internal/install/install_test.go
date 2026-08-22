@@ -903,8 +903,16 @@ func TestWriteClientConfigsCursorBothHomesAutoAndExplicit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(skipped) != 0 {
-		t.Fatalf("cursor remotes must not skip: %v", skipped)
+	// Aider is stdio-only and will skip remote servers. Filter it out
+	// from the skip check; every other client should accept remotes.
+	var nonAiderSkipped []clientconfig.SkippedClient
+	for _, s := range skipped {
+		if s.Client.ID != clientconfig.ClientAider {
+			nonAiderSkipped = append(nonAiderSkipped, s)
+		}
+	}
+	if len(nonAiderSkipped) != 0 {
+		t.Fatalf("cursor remotes must not skip: %v", nonAiderSkipped)
 	}
 	cursorHits := 0
 	for _, c := range updated {

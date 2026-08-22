@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/BurntSushi/toml"
+	"gopkg.in/yaml.v3"
 )
 
 // isolateWindowsUsers points windowsUserDirs() at an empty temp tree so
@@ -373,7 +376,7 @@ func TestCandidatePathsExported(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	for _, c := range CandidatePaths() {
 		switch c.Format {
-		case FormatMcpServers, FormatArray, FormatOpenCode, FormatHermes:
+		case FormatMcpServers, FormatArray, FormatOpenCode, FormatHermes, FormatTOML, FormatZed, FormatAider:
 			// valid format
 		default:
 			t.Errorf("client %s format = %s, unknown format", c.Name, c.Format)
@@ -1641,4 +1644,975 @@ func TestNewClientMergeRemove(t *testing.T) {
 			}
 		})
 	}
+}
+
+// readTOMLRoot parses a TOML file into a map for test assertions.
+func readTOMLRoot(t *testing.T, path string) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root map[string]any
+	if err := toml.Unmarshal(data, &root); err != nil {
+		t.Fatalf("parse TOML %s: %v\n%s", path, err, data)
+	}
+	return root
+}
+
+// readYAMLRoot parses a YAML file into a map for test assertions.
+func readYAMLRoot(t *testing.T, path string) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root map[string]any
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		t.Fatalf("parse YAML %s: %v\n%s", path, err, data)
+	}
+	return root
+}
+
+// contextServerNames returns the set of server names under the
+// "context_servers" key in a Zed settings.json root.
+func contextServerNames(t *testing.T, root map[string]json.RawMessage) map[string]bool {
+	t.Helper()
+	return namedServers(t, root, "context_servers")
+}
+
+// writeTOMLFixture writes a TOML string to a file, creating parent dirs.
+func writeTOMLFixture(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeYAMLFixture writes a YAML string to a file, creating parent dirs.
+func writeYAMLFixture(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Codex CLI tests (TOML)
+// ---------------------------------------------------------------------------
+
+func TestClientsByIDReturnsAllCodexPaths(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	winRoot := isolateWindowsUsers(t)
+	winUser := filepath.Join(winRoot, "chris")
+	if err := os.MkdirAll(filepath.Join(winUser, ".codex"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(winUser, ".codex", "config.toml"), []byte("# codex\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	all := ClientsByID(ClientCodex)
+	if len(all) != 2 {
+		t.Fatalf("ClientsByID(codex) = %d, want 2: %+v", len(all), all)
+	}
+	names := map[string]bool{}
+	for _, c := range all {
+		names[c.Name] = true
+	}
+	if !names["Codex CLI"] || !names["Codex CLI (Windows via WSL2)"] {
+		t.Errorf("names = %v", names)
+	}
+}
+
+func TestCodexMergeStdioPreservesExistingKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	writeTOMLFixture(t, path, `model = "o4-mini"
+model_providers = []
+
+[mcp_servers.existing]
+command = "node"
+args = ["old.js"]
+`)
+	c := Client{
+		ID:       ClientCodex,
+		Name:     "Codex CLI",
+		Path:     path,
+		Format:   FormatTOML,
+		Existing: true,
+	}
+	server := ServerConfig{
+		Command: "npx",
+		Args:    []string{"-y", "mcp-server"},
+		Env:     map[string]string{"API_KEY": "secret"},
+	}
+	if err := MergeServer(c, "my-server", server); err != nil {
+		t.Fatalf("MergeServer: %v", err)
+	}
+
+	root := readTOMLRoot(t, path)
+	if root["model"] != "o4-mini" {
+		t.Errorf("model = %v, want o4-mini", root["model"])
+	}
+	if _, ok := root["model_providers"]; !ok {
+		t.Error("model_providers was dropped")
+	}
+	servers, _ := root["mcp_servers"].(map[string]any)
+	if servers == nil {
+		t.Fatal("mcp_servers missing")
+	}
+	if _, ok := servers["existing"]; !ok {
+		t.Error("existing server was clobbered")
+	}
+	if _, ok := servers["my-server"]; !ok {
+		t.Error("my-server not written")
+	}
+	entry, _ := servers["my-server"].(map[string]any)
+	if entry == nil {
+		t.Fatal("my-server entry is nil")
+	}
+	if entry["command"] != "npx" {
+		t.Errorf("command = %v, want npx", entry["command"])
+	}
+}
+
+func TestCodexMergeRemoteWritesURL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	c := Client{
+		ID:     ClientCodex,
+		Name:   "Codex CLI",
+		Path:   path,
+		Format: FormatTOML,
+	}
+	server := ServerConfig{URL: "https://example.com/mcp"}
+	if err := MergeServer(c, "my-remote", server); err != nil {
+		t.Fatalf("MergeServer: %v", err)
+	}
+	root := readTOMLRoot(t, path)
+	servers, _ := root["mcp_servers"].(map[string]any)
+	if servers == nil {
+		t.Fatal("mcp_servers missing")
+	}
+	entry, _ := servers["my-remote"].(map[string]any)
+	if entry == nil {
+		t.Fatal("my-remote entry is nil")
+	}
+	if entry["url"] != "https://example.com/mcp" {
+		t.Errorf("url = %v, want https://example.com/mcp", entry["url"])
+	}
+	if _, has := entry["command"]; has {
+		t.Error("remote entry must not include command")
+	}
+}
+
+func TestCodexRemovePreservesOtherData(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	writeTOMLFixture(t, path, `model = "o4-mini"
+
+[mcp_servers.keep-me]
+command = "node"
+
+[mcp_servers.drop-me]
+command = "python3"
+`)
+	c := Client{
+		ID:       ClientCodex,
+		Name:     "Codex CLI",
+		Path:     path,
+		Format:   FormatTOML,
+		Existing: true,
+	}
+	if err := RemoveServer(c, "drop-me"); err != nil {
+		t.Fatalf("RemoveServer: %v", err)
+	}
+	root := readTOMLRoot(t, path)
+	if root["model"] != "o4-mini" {
+		t.Error("model was dropped")
+	}
+	servers, _ := root["mcp_servers"].(map[string]any)
+	if _, ok := servers["keep-me"]; !ok {
+		t.Error("keep-me was lost")
+	}
+	if _, ok := servers["drop-me"]; ok {
+		t.Error("drop-me was not removed")
+	}
+}
+
+func TestCodexRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	c := Client{
+		ID:     ClientCodex,
+		Name:   "Codex CLI",
+		Path:   path,
+		Format: FormatTOML,
+	}
+	server := ServerConfig{
+		Command: "npx",
+		Args:    []string{"-y", "mcp-server"},
+		Env:     map[string]string{"FOO": "bar"},
+	}
+	if err := MergeServer(c, "round-trip", server); err != nil {
+		t.Fatal(err)
+	}
+	servers, err := ReadServersFormat(path, FormatTOML)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, ok := servers["round-trip"]
+	if !ok {
+		t.Fatal("round-trip server not found after read")
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["command"] != "npx" {
+		t.Errorf("command = %v, want npx", entry["command"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Grok Build tests (TOML, headers for remotes)
+// ---------------------------------------------------------------------------
+
+func TestClientsByIDReturnsAllGrokPaths(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".grok"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	winRoot := isolateWindowsUsers(t)
+	winUser := filepath.Join(winRoot, "chris")
+	if err := os.MkdirAll(filepath.Join(winUser, ".grok"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(winUser, ".grok", "config.toml"), []byte("# grok\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	all := ClientsByID(ClientGrok)
+	if len(all) != 2 {
+		t.Fatalf("ClientsByID(grok) = %d, want 2: %+v", len(all), all)
+	}
+}
+
+func TestGrokMergeStdioPreservesExistingKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	writeTOMLFixture(t, path, `model = "grok-3"
+
+[mcp_servers.existing]
+command = "node"
+`)
+	c := Client{
+		ID:       ClientGrok,
+		Name:     "Grok Build",
+		Path:     path,
+		Format:   FormatTOML,
+		Existing: true,
+	}
+	server := ServerConfig{
+		Command: "npx",
+		Args:    []string{"-y", "mcp-server"},
+		Env:     map[string]string{"API_KEY": "value"},
+	}
+	if err := MergeServer(c, "my-server", server); err != nil {
+		t.Fatalf("MergeServer: %v", err)
+	}
+	root := readTOMLRoot(t, path)
+	if root["model"] != "grok-3" {
+		t.Errorf("model = %v, want grok-3", root["model"])
+	}
+	servers, _ := root["mcp_servers"].(map[string]any)
+	if _, ok := servers["existing"]; !ok {
+		t.Error("existing server was clobbered")
+	}
+	entry, _ := servers["my-server"].(map[string]any)
+	if entry["command"] != "npx" {
+		t.Errorf("command = %v, want npx", entry["command"])
+	}
+}
+
+func TestGrokMergeRemoteUsesHeaders(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	c := Client{
+		ID:     ClientGrok,
+		Name:   "Grok Build",
+		Path:   path,
+		Format: FormatTOML,
+	}
+	server := ServerConfig{
+		URL: "https://example.com/mcp",
+		Env: map[string]string{"Authorization": "Bearer token"},
+	}
+	if err := MergeServer(c, "my-remote", server); err != nil {
+		t.Fatalf("MergeServer: %v", err)
+	}
+	root := readTOMLRoot(t, path)
+	servers, _ := root["mcp_servers"].(map[string]any)
+	entry, _ := servers["my-remote"].(map[string]any)
+	if entry == nil {
+		t.Fatal("my-remote entry is nil")
+	}
+	if entry["url"] != "https://example.com/mcp" {
+		t.Errorf("url = %v", entry["url"])
+	}
+	headers, _ := entry["headers"].(map[string]any)
+	if headers == nil {
+		t.Fatal("headers missing from Grok remote entry")
+	}
+	if headers["Authorization"] != "Bearer token" {
+		t.Errorf("Authorization = %v, want 'Bearer token'", headers["Authorization"])
+	}
+}
+
+func TestGrokRemovePreservesOtherData(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	writeTOMLFixture(t, path, `model = "grok-3"
+
+[mcp_servers.keep-me]
+command = "node"
+
+[mcp_servers.drop-me]
+command = "python3"
+`)
+	c := Client{
+		ID:       ClientGrok,
+		Name:     "Grok Build",
+		Path:     path,
+		Format:   FormatTOML,
+		Existing: true,
+	}
+	if err := RemoveServer(c, "drop-me"); err != nil {
+		t.Fatalf("RemoveServer: %v", err)
+	}
+	root := readTOMLRoot(t, path)
+	if root["model"] != "grok-3" {
+		t.Error("model was dropped")
+	}
+	servers, _ := root["mcp_servers"].(map[string]any)
+	if _, ok := servers["keep-me"]; !ok {
+		t.Error("keep-me was lost")
+	}
+	if _, ok := servers["drop-me"]; ok {
+		t.Error("drop-me was not removed")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Zed tests (JSON, context_servers key)
+// ---------------------------------------------------------------------------
+
+func TestClientsByIDReturnsAllZedPaths(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".config", "zed"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	winRoot := isolateWindowsUsers(t)
+	winDir := filepath.Join(winRoot, "chris", "AppData", "Roaming", "Zed")
+	if err := os.MkdirAll(winDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(winDir, "settings.json"), []byte(`{}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	all := ClientsByID(ClientZed)
+	if len(all) != 2 {
+		t.Fatalf("ClientsByID(zed) = %d, want 2: %+v", len(all), all)
+	}
+	names := map[string]bool{}
+	for _, c := range all {
+		names[c.Name] = true
+	}
+	if !names["Zed"] || !names["Zed (Windows via WSL2)"] {
+		t.Errorf("names = %v", names)
+	}
+}
+
+func TestZedMergeStdioPreservesExistingKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	writeJSONFixture(t, path, map[string]any{
+		"theme":            "monokai",
+		"buffer_font_size": 14,
+		"context_servers": map[string]any{
+			"existing": map[string]any{"command": "node"},
+		},
+	})
+	c := Client{
+		ID:       ClientZed,
+		Name:     "Zed",
+		Path:     path,
+		Format:   FormatZed,
+		Existing: true,
+	}
+	server := ServerConfig{
+		Command: "npx",
+		Args:    []string{"-y", "mcp-server"},
+		Env:     map[string]string{"FOO": "bar"},
+	}
+	if err := MergeServer(c, "my-server", server); err != nil {
+		t.Fatalf("MergeServer: %v", err)
+	}
+	root := readJSONObject(t, path)
+	if _, ok := root["theme"]; !ok {
+		t.Error("theme was dropped")
+	}
+	if _, ok := root["buffer_font_size"]; !ok {
+		t.Error("buffer_font_size was dropped")
+	}
+	names := contextServerNames(t, root)
+	if !names["existing"] {
+		t.Error("existing server was clobbered")
+	}
+	if !names["my-server"] {
+		t.Error("my-server not written")
+	}
+	var servers map[string]map[string]any
+	if err := json.Unmarshal(root["context_servers"], &servers); err != nil {
+		t.Fatal(err)
+	}
+	entry := servers["my-server"]
+	if entry["command"] != "npx" {
+		t.Errorf("command = %v, want npx", entry["command"])
+	}
+}
+
+func TestZedMergeRemoteWritesURL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	c := Client{
+		ID:     ClientZed,
+		Name:   "Zed",
+		Path:   path,
+		Format: FormatZed,
+	}
+	server := ServerConfig{URL: "https://example.com/mcp"}
+	if err := MergeServer(c, "my-remote", server); err != nil {
+		t.Fatalf("MergeServer: %v", err)
+	}
+	root := readJSONObject(t, path)
+	var servers map[string]map[string]any
+	if err := json.Unmarshal(root["context_servers"], &servers); err != nil {
+		t.Fatal(err)
+	}
+	entry := servers["my-remote"]
+	if entry["url"] != "https://example.com/mcp" {
+		t.Errorf("url = %v, want https://example.com/mcp", entry["url"])
+	}
+	if _, has := entry["command"]; has {
+		t.Error("remote entry must not include command")
+	}
+}
+
+func TestZedRemovePreservesOtherData(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	writeJSONFixture(t, path, map[string]any{
+		"theme": "monokai",
+		"context_servers": map[string]any{
+			"keep-me": map[string]any{"command": "node"},
+			"drop-me": map[string]any{"command": "python3"},
+		},
+	})
+	c := Client{
+		ID:       ClientZed,
+		Name:     "Zed",
+		Path:     path,
+		Format:   FormatZed,
+		Existing: true,
+	}
+	if err := RemoveServer(c, "drop-me"); err != nil {
+		t.Fatalf("RemoveServer: %v", err)
+	}
+	root := readJSONObject(t, path)
+	if _, ok := root["theme"]; !ok {
+		t.Error("theme was dropped")
+	}
+	names := contextServerNames(t, root)
+	if !names["keep-me"] {
+		t.Error("keep-me was lost")
+	}
+	if names["drop-me"] {
+		t.Error("drop-me was not removed")
+	}
+}
+
+func TestZedRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	c := Client{
+		ID:     ClientZed,
+		Name:   "Zed",
+		Path:   path,
+		Format: FormatZed,
+	}
+	server := ServerConfig{Command: "npx", Args: []string{"-y", "pkg"}}
+	if err := MergeServer(c, "rt", server); err != nil {
+		t.Fatal(err)
+	}
+	servers, err := ReadServersFormat(path, FormatZed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := servers["rt"]; !ok {
+		t.Fatal("rt server not found")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Aider tests (YAML, mcp-servers list, stdio only)
+// ---------------------------------------------------------------------------
+
+func TestClientsByIDReturnsAllAiderPaths(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// Aider config file is at ~/.aider.conf.yml — parent is $HOME which
+	// always exists. But Detect() requires the file itself to exist.
+	if err := os.WriteFile(filepath.Join(home, ".aider.conf.yml"), []byte("# aider\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	winRoot := isolateWindowsUsers(t)
+	winUser := filepath.Join(winRoot, "chris")
+	if err := os.MkdirAll(winUser, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(winUser, ".aider.conf.yml"), []byte("# aider\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	all := ClientsByID(ClientAider)
+	if len(all) != 2 {
+		t.Fatalf("ClientsByID(aider) = %d, want 2: %+v", len(all), all)
+	}
+}
+
+func TestAiderMergeStdioPreservesExistingKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".aider.conf.yml")
+	writeYAMLFixture(t, path, `model: gpt-4
+auto_commits: true
+mcp-servers:
+  - name: existing
+    command: node
+    args:
+      - old.js
+`)
+	c := Client{
+		ID:       ClientAider,
+		Name:     "Aider",
+		Path:     path,
+		Format:   FormatAider,
+		Existing: true,
+	}
+	server := ServerConfig{
+		Command: "npx",
+		Args:    []string{"-y", "mcp-server"},
+		Env:     map[string]string{"API_KEY": "value"},
+	}
+	if err := MergeServer(c, "my-server", server); err != nil {
+		t.Fatalf("MergeServer: %v", err)
+	}
+	root := readYAMLRoot(t, path)
+	if root["model"] != "gpt-4" {
+		t.Errorf("model = %v, want gpt-4", root["model"])
+	}
+	if root["auto_commits"] != true {
+		t.Error("auto_commits was dropped or changed")
+	}
+	rawList, _ := root["mcp-servers"].([]any)
+	if rawList == nil {
+		t.Fatal("mcp-servers list missing")
+	}
+	names := make(map[string]bool)
+	for _, item := range rawList {
+		m, _ := item.(map[string]any)
+		if n, _ := m["name"].(string); n != "" {
+			names[n] = true
+		}
+	}
+	if !names["existing"] {
+		t.Error("existing server was clobbered")
+	}
+	if !names["my-server"] {
+		t.Error("my-server not written")
+	}
+}
+
+func TestAiderMergeRemoteIsSkipped(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".aider.conf.yml")
+	writeYAMLFixture(t, path, `model: gpt-4
+mcp-servers: []
+`)
+	c := Client{
+		ID:       ClientAider,
+		Name:     "Aider",
+		Path:     path,
+		Format:   FormatAider,
+		Existing: true,
+	}
+	server := ServerConfig{URL: "https://example.com/mcp"}
+	err := MergeServer(c, "my-remote", server)
+	if err == nil {
+		t.Fatal("expected Aider remote merge to skip, got nil")
+	}
+	if !IsSkip(err) {
+		t.Fatalf("err = %v, want SkipError", err)
+	}
+	if !strings.Contains(err.Error(), "stdio") {
+		t.Errorf("skip reason = %q, want stdio mention", err.Error())
+	}
+	root := readYAMLRoot(t, path)
+	if root["model"] != "gpt-4" {
+		t.Error("model was modified during skip")
+	}
+}
+
+func TestAiderRemovePreservesOtherData(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".aider.conf.yml")
+	writeYAMLFixture(t, path, `model: gpt-4
+auto_commits: false
+mcp-servers:
+  - name: keep-me
+    command: node
+  - name: drop-me
+    command: python3
+`)
+	c := Client{
+		ID:       ClientAider,
+		Name:     "Aider",
+		Path:     path,
+		Format:   FormatAider,
+		Existing: true,
+	}
+	if err := RemoveServer(c, "drop-me"); err != nil {
+		t.Fatalf("RemoveServer: %v", err)
+	}
+	root := readYAMLRoot(t, path)
+	if root["model"] != "gpt-4" {
+		t.Error("model was dropped")
+	}
+	if root["auto_commits"] != false {
+		t.Error("auto_commits was dropped")
+	}
+	rawList, _ := root["mcp-servers"].([]any)
+	names := make(map[string]bool)
+	for _, item := range rawList {
+		m, _ := item.(map[string]any)
+		if n, _ := m["name"].(string); n != "" {
+			names[n] = true
+		}
+	}
+	if !names["keep-me"] {
+		t.Error("keep-me was lost")
+	}
+	if names["drop-me"] {
+		t.Error("drop-me was not removed")
+	}
+}
+
+func TestAiderRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".aider.conf.yml")
+	c := Client{
+		ID:     ClientAider,
+		Name:   "Aider",
+		Path:   path,
+		Format: FormatAider,
+	}
+	server := ServerConfig{
+		Command: "npx",
+		Args:    []string{"-y", "mcp-server"},
+		Env:     map[string]string{"FOO": "bar"},
+	}
+	if err := MergeServer(c, "round-trip", server); err != nil {
+		t.Fatal(err)
+	}
+	servers, err := ReadServersFormat(path, FormatAider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, ok := servers["round-trip"]
+	if !ok {
+		t.Fatal("round-trip server not found")
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["command"] != "npx" {
+		t.Errorf("command = %v, want npx", entry["command"])
+	}
+	if entry["name"] != "round-trip" {
+		t.Errorf("name = %v, want round-trip", entry["name"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Combined new-client merge/remove subtests
+// ---------------------------------------------------------------------------
+
+func TestNewClientMergeRemoveCodexGrokZedAider(t *testing.T) {
+	isolateWindowsUsers(t)
+
+	tomlClients := []struct {
+		id   ClientID
+		name string
+	}{
+		{ClientCodex, "Codex CLI"},
+		{ClientGrok, "Grok Build"},
+	}
+
+	for _, tc := range tomlClients {
+		t.Run(string(tc.id), func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.toml")
+			writeTOMLFixture(t, path, `model = "test-model"
+
+[mcp_servers.existing]
+command = "foo"
+`)
+			c := Client{
+				ID:       tc.id,
+				Name:     tc.name,
+				Path:     path,
+				Format:   FormatTOML,
+				Existing: true,
+			}
+
+			// 1. Merge stdio
+			stdioServer := ServerConfig{
+				Command: "npx",
+				Args:    []string{"-y", "pkg"},
+				Env:     map[string]string{"FOO": "bar"},
+			}
+			if err := MergeServer(c, "my-stdio", stdioServer); err != nil {
+				t.Fatalf("MergeServer stdio: %v", err)
+			}
+			root := readTOMLRoot(t, path)
+			if root["model"] != "test-model" {
+				t.Error("model was dropped after stdio merge")
+			}
+			servers, _ := root["mcp_servers"].(map[string]any)
+			if _, ok := servers["existing"]; !ok {
+				t.Error("existing server was clobbered")
+			}
+			if _, ok := servers["my-stdio"]; !ok {
+				t.Error("my-stdio was not written")
+			}
+
+			// 2. Merge remote
+			remoteServer := ServerConfig{URL: "https://example.com/mcp"}
+			if err := MergeServer(c, "my-remote", remoteServer); err != nil {
+				t.Fatalf("MergeServer remote: %v", err)
+			}
+			root = readTOMLRoot(t, path)
+			if root["model"] != "test-model" {
+				t.Error("model was dropped after remote merge")
+			}
+			servers, _ = root["mcp_servers"].(map[string]any)
+			if _, ok := servers["existing"]; !ok {
+				t.Error("existing server was clobbered by remote merge")
+			}
+			if _, ok := servers["my-stdio"]; !ok {
+				t.Error("my-stdio was lost after remote merge")
+			}
+			if _, ok := servers["my-remote"]; !ok {
+				t.Error("my-remote was not written")
+			}
+			entry, _ := servers["my-remote"].(map[string]any)
+			if entry["url"] != "https://example.com/mcp" {
+				t.Errorf("remote url = %v", entry["url"])
+			}
+
+			// 3. Remove the remote server
+			if err := RemoveServer(c, "my-remote"); err != nil {
+				t.Fatalf("RemoveServer: %v", err)
+			}
+			root = readTOMLRoot(t, path)
+			if root["model"] != "test-model" {
+				t.Error("model was dropped after remove")
+			}
+			servers, _ = root["mcp_servers"].(map[string]any)
+			if _, ok := servers["my-remote"]; ok {
+				t.Error("my-remote was not removed")
+			}
+			if _, ok := servers["existing"]; !ok {
+				t.Error("existing was lost after remove")
+			}
+			if _, ok := servers["my-stdio"]; !ok {
+				t.Error("my-stdio was lost after remove")
+			}
+		})
+	}
+
+	// Zed subtest
+	t.Run(string(ClientZed), func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "settings.json")
+		writeJSONFixture(t, path, map[string]any{
+			"theme": "dark",
+			"context_servers": map[string]any{
+				"existing": map[string]any{"command": "foo"},
+			},
+		})
+		c := Client{
+			ID:       ClientZed,
+			Name:     "Zed",
+			Path:     path,
+			Format:   FormatZed,
+			Existing: true,
+		}
+
+		// 1. Merge stdio
+		stdioServer := ServerConfig{
+			Command: "npx",
+			Args:    []string{"-y", "pkg"},
+			Env:     map[string]string{"FOO": "bar"},
+		}
+		if err := MergeServer(c, "my-stdio", stdioServer); err != nil {
+			t.Fatalf("MergeServer stdio: %v", err)
+		}
+		root := readJSONObject(t, path)
+		if _, ok := root["theme"]; !ok {
+			t.Error("theme was dropped after stdio merge")
+		}
+		names := contextServerNames(t, root)
+		if !names["existing"] {
+			t.Error("existing server was clobbered")
+		}
+		if !names["my-stdio"] {
+			t.Error("my-stdio was not written")
+		}
+
+		// 2. Merge remote
+		remoteServer := ServerConfig{URL: "https://example.com/mcp"}
+		if err := MergeServer(c, "my-remote", remoteServer); err != nil {
+			t.Fatalf("MergeServer remote: %v", err)
+		}
+		root = readJSONObject(t, path)
+		if _, ok := root["theme"]; !ok {
+			t.Error("theme was dropped after remote merge")
+		}
+		names = contextServerNames(t, root)
+		if !names["existing"] || !names["my-stdio"] || !names["my-remote"] {
+			t.Errorf("servers = %v", names)
+		}
+
+		// 3. Remove the remote server
+		if err := RemoveServer(c, "my-remote"); err != nil {
+			t.Fatalf("RemoveServer: %v", err)
+		}
+		root = readJSONObject(t, path)
+		if _, ok := root["theme"]; !ok {
+			t.Error("theme was dropped after remove")
+		}
+		names = contextServerNames(t, root)
+		if names["my-remote"] {
+			t.Error("my-remote was not removed")
+		}
+		if !names["existing"] || !names["my-stdio"] {
+			t.Error("existing or my-stdio was lost after remove")
+		}
+	})
+
+	// Aider subtest (stdio only)
+	t.Run(string(ClientAider), func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, ".aider.conf.yml")
+		writeYAMLFixture(t, path, `model: gpt-4
+mcp-servers:
+  - name: existing
+    command: foo
+`)
+		c := Client{
+			ID:       ClientAider,
+			Name:     "Aider",
+			Path:     path,
+			Format:   FormatAider,
+			Existing: true,
+		}
+
+		// 1. Merge stdio
+		stdioServer := ServerConfig{
+			Command: "npx",
+			Args:    []string{"-y", "pkg"},
+			Env:     map[string]string{"FOO": "bar"},
+		}
+		if err := MergeServer(c, "my-stdio", stdioServer); err != nil {
+			t.Fatalf("MergeServer stdio: %v", err)
+		}
+		root := readYAMLRoot(t, path)
+		if root["model"] != "gpt-4" {
+			t.Error("model was dropped after stdio merge")
+		}
+		rawList, _ := root["mcp-servers"].([]any)
+		names := make(map[string]bool)
+		for _, item := range rawList {
+			m, _ := item.(map[string]any)
+			if n, _ := m["name"].(string); n != "" {
+				names[n] = true
+			}
+		}
+		if !names["existing"] {
+			t.Error("existing server was clobbered")
+		}
+		if !names["my-stdio"] {
+			t.Error("my-stdio was not written")
+		}
+
+		// 2. Merge remote — should be skipped
+		remoteServer := ServerConfig{URL: "https://example.com/mcp"}
+		err := MergeServer(c, "my-remote", remoteServer)
+		if err == nil || !IsSkip(err) {
+			t.Fatalf("expected skip for Aider remote, got %v", err)
+		}
+
+		// 3. Remove the stdio server
+		if err := RemoveServer(c, "my-stdio"); err != nil {
+			t.Fatalf("RemoveServer: %v", err)
+		}
+		root = readYAMLRoot(t, path)
+		if root["model"] != "gpt-4" {
+			t.Error("model was dropped after remove")
+		}
+		rawList, _ = root["mcp-servers"].([]any)
+		names = make(map[string]bool)
+		for _, item := range rawList {
+			m, _ := item.(map[string]any)
+			if n, _ := m["name"].(string); n != "" {
+				names[n] = true
+			}
+		}
+		if names["my-stdio"] {
+			t.Error("my-stdio was not removed")
+		}
+		if !names["existing"] {
+			t.Error("existing was lost after remove")
+		}
+	})
 }

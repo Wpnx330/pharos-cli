@@ -19,11 +19,11 @@ var importClient string
 var importCmd = &cobra.Command{
 	Use:   "import",
 	Short: "Import existing MCP server configs into a pharos.lock",
-	Long: ui.Label.Render("pharos import") + ` reads MCP client configs (Claude Desktop, Cursor, VS Code, Windsurf, Gemini, Amazon Q, Cline, Roo Code, OpenCode, Hermes, generic)
+	Long: ui.Label.Render("pharos import") + ` reads MCP client configs (Claude Desktop, Cursor, VS Code, Windsurf, Gemini, Amazon Q, Cline, Roo Code, OpenCode, Hermes, Codex, Grok, Zed, Aider, generic)
 and resolves each listed server against the PHAROS registry, populating
 pharos.lock with resolved versions and integrity hashes.
 
-Use --client <id> to import from a specific client only (claude-desktop, cursor, vscode, windsurf, gemini, amazonq, roo-code, cline, opencode, hermes, generic).
+Use --client <id> to import from a specific client only (claude-desktop, cursor, vscode, windsurf, gemini, amazonq, roo-code, cline, opencode, hermes, codex, grok, zed, aider, generic).
 Use --as-unmanaged to track unresolved servers without dropping them.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		_, client := loadConfig()

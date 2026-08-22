@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Windsurf, Gemini CLI, Amazon Q Developer, and Roo Code. All use the
   `{"mcpServers": {}}` JSON format with safe patching that preserves existing
   config keys. Remote entries default to `type: "http"` for modern clients.
+- Auto-configuration support for 4 more MCP clients using new config formats:
+  Codex CLI and Grok Build (TOML `[mcp_servers]`), Zed (JSON `context_servers`),
+  and Aider (YAML `mcp-servers` list). Aider supports stdio only; the other
+  three support all 3 install kinds (remote HTTP, local HTTP, stdio).
 
 ## [1.0.0] - 2026-08-18
 

@@ -220,6 +220,10 @@ This means a buggy write can never corrupt an existing config — the original i
 | Gemini CLI | `~/.gemini/settings.json` (all OS, WSL2 Windows) | JSON (`{"mcpServers": {}}`). Remote `{url, type:"http"}`. Other settings keys preserved. |
 | Amazon Q Developer | `~/.aws/amazonq/mcp.json` (all OS, WSL2 Windows) | JSON (`{"mcpServers": {}}`). Remote `{url, type:"http"}`. |
 | Roo Code | `~/.../roo_mcp_settings.json` (Linux + Windows via WSL2) | JSON (`{"mcpServers": {}}`). Remote `{url}`. |
+| Codex CLI | `~/.codex/config.toml` (all OS, WSL2 Windows) | TOML (`[mcp_servers.<name>]`). Stdio: `{command, args, env}`. Remote: `{url}`. Other sections preserved. |
+| Grok Build | `~/.grok/config.toml` (all OS, WSL2 Windows) | TOML (`[mcp_servers.<name>]`). Stdio: `{command, args, env}`. Remote: `{url, headers}`. |
+| Zed | `~/.config/zed/settings.json` (Linux), `~/Library/Application Support/Zed/settings.json` (macOS), `%APPDATA%/Zed/settings.json` (Windows/WSL2) | JSON (`{"context_servers": {}}`). Stdio: `{command, args, env}`. Remote: `{url}`. Other settings preserved. |
+| Aider | `~/.aider.conf.yml` (all OS, WSL2 Windows) | YAML (`mcp-servers:` list). Stdio only: `{name, command, args, env}`. Remote servers skipped. |
 | Generic MCP | `~/.config/mcp/mcp.json` | JSON (`{"mcpServers": {}}`) |
 
 ## Development

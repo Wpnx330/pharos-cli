@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"github.com/BurntSushi/toml"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
@@ -26,7 +27,7 @@ var doctorCmd = &cobra.Command{
   • Registry connectivity
   • Installed server reachability
   • Lockfile integrity hash validation
-  • Client config JSON validity
+  • Client config syntax validity
 
 Reports any issues found.`,
 	Run: func(cmd *cobra.Command, args []string) {
@@ -78,10 +79,7 @@ Reports any issues found.`,
 			if !c.Existing {
 				continue
 			}
-			c := c // capture for closure
-			checks = append(checks, runCheck(fmt.Sprintf("Config: %s", c.Name), func() (string, error) {
-				return validateConfig(c)
-			}))
+			checks = append(checks, runConfigCheck(c))
 		}
 
 		// 5. Runtime executables — check which common MCP server runtimes
@@ -147,6 +145,7 @@ type doctorCheck struct {
 	Status string `json:"status"`
 	Detail string `json:"detail,omitempty"`
 	Error  string `json:"error,omitempty"`
+	Format string `json:"format,omitempty"`
 }
 
 // runCheck executes a check function and wraps the result.
@@ -163,26 +162,41 @@ func runCheck(name string, fn func() (string, error)) doctorCheck {
 	return c
 }
 
+func runConfigCheck(c clientconfig.Client) doctorCheck {
+	check := runCheck(fmt.Sprintf("Config: %s", c.Name), func() (string, error) {
+		return validateConfig(c)
+	})
+	check.Format = c.Format
+	return check
+}
+
 // validateConfig reads a client config file and verifies it's valid
-// for the client's format (JSON for mcpServers/array/opencode, YAML for
-// hermes).
+// for the client's format.
 func validateConfig(c clientconfig.Client) (string, error) {
 	data, err := os.ReadFile(c.Path)
 	if err != nil {
 		return "", err
 	}
-	if c.Format == clientconfig.FormatHermes {
+
+	switch c.Format {
+	case clientconfig.FormatHermes, clientconfig.FormatAider:
 		var v any
 		if err := yaml.Unmarshal(data, &v); err != nil {
 			return "", fmt.Errorf("invalid YAML: %w", err)
 		}
-		return "valid", nil
+	case clientconfig.FormatTOML:
+		var v map[string]any
+		if _, err := toml.Decode(string(data), &v); err != nil {
+			return "", fmt.Errorf("invalid TOML: %w", err)
+		}
+	default:
+		// mcpServers, array, OpenCode, and Zed configs are JSON-based.
+		var v any
+		if err := json.Unmarshal(data, &v); err != nil {
+			return "", fmt.Errorf("invalid JSON: %w", err)
+		}
 	}
-	// All other formats are JSON-based.
-	var v any
-	if err := json.Unmarshal(data, &v); err != nil {
-		return "", fmt.Errorf("invalid JSON: %w", err)
-	}
+
 	return "valid", nil
 }
 

@@ -19,6 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Codex CLI and Grok Build (TOML `[mcp_servers]`), Zed (JSON `context_servers`),
   and Aider (YAML `mcp-servers` list). Aider supports stdio only; the other
   three support all 3 install kinds (remote HTTP, local HTTP, stdio).
+- `pharos doctor` now validates client config files by format: JSON
+  (Claude Desktop, Cursor, VS Code, Windsurf, Gemini, Amazon Q, Roo Code,
+  OpenCode, Zed), YAML (Hermes Agent, Aider), and TOML (Codex CLI, Grok
+  Build). Previously only JSON and Hermes YAML were validated; TOML and
+  Aider configs were incorrectly parsed as JSON.
+
+### Fixed
+
+- API client now retries on HTTP 429 (Too Many Requests) with exponential
+  backoff (2s, 4s, 8s) up to 3 times, honoring the Retry-After header.
 
 ## [1.0.0] - 2026-08-18
 

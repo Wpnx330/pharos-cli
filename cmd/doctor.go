@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"github.com/BurntSushi/toml"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
@@ -26,7 +27,7 @@ var doctorCmd = &cobra.Command{
   • Registry connectivity
   • Installed server reachability
   • Lockfile integrity hash validation
-  • Client config JSON validity
+  • Client config validity (JSON, TOML, YAML)
 
 Reports any issues found.`,
 	Run: func(cmd *cobra.Command, args []string) {
@@ -164,26 +165,34 @@ func runCheck(name string, fn func() (string, error)) doctorCheck {
 }
 
 // validateConfig reads a client config file and verifies it's valid
-// for the client's format (JSON for mcpServers/array/opencode, YAML for
-// hermes).
+// for the client's format: JSON (mcpServers/array/opencode/zed), YAML
+// (hermes/aider), or TOML (codex/grok).
 func validateConfig(c clientconfig.Client) (string, error) {
 	data, err := os.ReadFile(c.Path)
 	if err != nil {
 		return "", err
 	}
-	if c.Format == clientconfig.FormatHermes {
+	switch c.Format {
+	case clientconfig.FormatTOML:
+		var v map[string]any
+		if err := toml.Unmarshal(data, &v); err != nil {
+			return "", fmt.Errorf("invalid TOML: %w", err)
+		}
+		return "valid (TOML)", nil
+	case clientconfig.FormatHermes, clientconfig.FormatAider:
 		var v any
 		if err := yaml.Unmarshal(data, &v); err != nil {
 			return "", fmt.Errorf("invalid YAML: %w", err)
 		}
-		return "valid", nil
+		return "valid (YAML)", nil
+	default:
+		// FormatMcpServers, FormatArray, FormatOpenCode, FormatZed — all JSON
+		var v any
+		if err := json.Unmarshal(data, &v); err != nil {
+			return "", fmt.Errorf("invalid JSON: %w", err)
+		}
+		return "valid (JSON)", nil
 	}
-	// All other formats are JSON-based.
-	var v any
-	if err := json.Unmarshal(data, &v); err != nil {
-		return "", fmt.Errorf("invalid JSON: %w", err)
-	}
-	return "valid", nil
 }
 
 func init() {

@@ -16,13 +16,18 @@ import (
 
 var initYes bool
 
+// initTransportChoices lists every transport variant `pharos init` offers.
+// Keep in sync with internal/install/kind.go's transport classification.
+var initTransportChoices = []string{"stdio", "http-sse", "streamable-http"}
+
 var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Create a pharos.json manifest in the current directory",
 	Long: ui.Label.Render("pharos init") + ` creates a pharos.json manifest for your MCP server package.
 
 It interactively prompts for name, version, description, transport, runtime,
-run command, and capabilities. Use --yes to accept defaults non-interactively.`,
+run command, and capabilities. Transports: stdio (default), http-sse, or
+streamable-http. Use --yes to accept defaults non-interactively.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		m := buildManifestInteractive()
 		if m == nil {
@@ -36,22 +41,28 @@ run command, and capabilities. Use --yes to accept defaults non-interactively.`,
 // stdinReader is a buffered reader over os.Stdin for text prompts.
 var stdinReader = bufio.NewReader(os.Stdin)
 
+// buildManifestYesDefaults returns the manifest produced by `pharos init --yes`
+// (defaults; stdio transport — unchanged from the pre-#19 behavior).
+func buildManifestYesDefaults() *manifest.Manifest {
+	return &manifest.Manifest{
+		Name:         "my-mcp-server",
+		Version:      "0.1.0",
+		Description:  "",
+		Transport:    "stdio",
+		Runtime:      "node",
+		Bin:          "node server.js",
+		Capabilities: []string{"tools"},
+		License:      "MIT",
+	}
+}
+
 // buildManifestInteractive collects manifest fields via interactive prompts.
 // Uses arrow-key selectors for fixed-option fields and text input for freeform fields.
 // Returns nil if the user cancels.
 // If initYes is true, all defaults are accepted without prompting.
 func buildManifestInteractive() *manifest.Manifest {
 	if initYes {
-		return &manifest.Manifest{
-			Name:         "my-mcp-server",
-			Version:      "0.1.0",
-			Description:  "",
-			Transport:    "stdio",
-			Runtime:      "node",
-			Bin:          "node server.js",
-			Capabilities: []string{"tools"},
-			License:      "MIT",
-		}
+		return buildManifestYesDefaults()
 	}
 
 	m := &manifest.Manifest{}
@@ -65,8 +76,8 @@ func buildManifestInteractive() *manifest.Manifest {
 	m.Version = textPrompt("Version", "0.1.0")
 	m.Description = textPrompt("Description", "")
 
-	// Transport — arrow-key select
-	m.Transport = selectPrompt("Transport", []string{"stdio", "http-sse"}, "stdio")
+	// Transport — arrow-key select (stdio | http-sse | streamable-http)
+	m.Transport = selectPrompt("Transport", initTransportChoices, "stdio")
 
 	// Runtime — arrow-key select
 	runtime := selectPrompt("Runtime", []string{"node", "python", "docker"}, "node")
@@ -219,12 +230,12 @@ func selectPromptWithOther(label string, options []string, def string) string {
 
 // multiSelectModel is a bubbletea program for multi-select with checkboxes.
 type multiSelectModel struct {
-	choices   []string
-	selected  map[int]bool
-	cursor    int
-	label     string
-	quitting  bool
-	result    []string
+	choices  []string
+	selected map[int]bool
+	cursor   int
+	label    string
+	quitting bool
+	result   []string
 }
 
 func (m multiSelectModel) Init() tea.Cmd { return nil }

@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `pharos update` now lands updated binaries via install's own pipeline and
   rewrites affected MCP client configs (`.bak`-backup, one generation) so
   clients launch the new version; added `--dry-run` visibility. (#20)
+- `pharos init` now offers the `streamable-http` transport in addition to
+  `stdio` and `http-sse` (#19).
 - MIT licence file, code of conduct, contributing guide, and issue templates.
 - README badges, a complete command list, and `curl` as the lead install method.
 - Auto-configuration support for 5 new MCP clients: VS Code (GitHub Copilot),

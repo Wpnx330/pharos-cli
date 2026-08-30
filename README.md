@@ -159,7 +159,7 @@ Credentials are stored at `~/.pharos/credentials.json` after `pharos login`.
 | `version` | yes | Semantic version |
 | `description` | no | Short description shown in search results |
 | `license` | no | SPDX license identifier |
-| `transport` | yes | `stdio`, `http-sse`, or `http` |
+| `transport` | yes | `stdio`, `http-sse`, `streamable-http`, or `http` |
 | `runtime` | no | Runtime hint: `npx`, `uvx`, `docker`, `binary`, `python` (auto-detected from command if omitted) |
 | `command` | no | Explicit launch command (e.g. `python -m src.server`). Overrides runtime-based construction. Falls back to `bin` field for backwards compat |
 | `entrypoint` | no | Alternative to `command` (Docker entrypoint) |

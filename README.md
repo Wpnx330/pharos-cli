@@ -63,7 +63,7 @@ pharos list                    # List locally installed packages
 pharos list --running          # Show only running servers (daemon-managed)
 pharos start <name>            # Start a locally installed MCP server
 pharos stop <name>             # Stop a running MCP server
-pharos update [name]           # Check for and apply updates to installed servers
+pharos update [name]           # Check for and apply updates to installed servers — installs the new version and rewrites affected client configs
 pharos lock                    # Resolve dependencies and write ./pharos.lock
 pharos import                  # Import existing MCP client configs into a pharos.lock
 pharos remove <name>           # Remove a locally installed package

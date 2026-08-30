@@ -7,6 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Wpnx330/pharos-cli/internal/clientconfig"
+	"github.com/Wpnx330/pharos-cli/internal/install"
 	"github.com/Wpnx330/pharos-cli/internal/lockfile"
 	"github.com/Wpnx330/pharos-cli/internal/ui"
 )
@@ -92,7 +94,8 @@ Use --dry-run to see what would change without modifying anything.`,
 				continue
 			}
 
-			// Perform the update — resolve manifest, download if stdio
+			// Perform the update: land the new artifact (K3/K2), rewrite every
+			// affected client config (issue #20), then bump the lockfile.
 			fmt.Printf("  %s  %s: %s → %s\n", ui.Label.Render("Updating"), name, entry.Version, latest)
 
 			vd := pkg.FindVersion(latest)
@@ -103,8 +106,41 @@ Use --dry-run to see what would change without modifying anything.`,
 				transport = vd.Manifest.Transport
 			}
 
-			// For stdio packages, the actual re-download would happen here.
-			// For now we update the lockfile entry.
+			storeDir, serr := install.DefaultStoreDir()
+			if serr != nil {
+				fmt.Fprintln(os.Stderr, ui.Error.Render("Cannot determine store directory:"), serr)
+				continue
+			}
+			if vd == nil {
+				notFound++
+				fmt.Printf("  %s  %s@%s — %s\n", ui.Error.Render("✗"), name, latest, ui.Muted.Render("manifest unavailable, skipping"))
+				continue
+			}
+
+			if kind := install.ClassifyManifest(vd.Manifest); kind != install.KindRemoteHTTP {
+				// Kind 2/3: land the new artifact via install's own pipeline so the
+				// rewritten configs point at a real binary.
+				mgr := install.NewManager(storeDir)
+				if !mgr.IsInstalled(name, latest) {
+					if _, ierr := mgr.InstallByKind(install.InstallOptions{
+						Name:              name,
+						Version:           latest,
+						TarballURL:        client.TarballURL(name, latest),
+						ExpectedIntegrity: vd.Manifest.Integrity,
+						Manifest:          vd.Manifest,
+					}); ierr != nil {
+						fmt.Fprintln(os.Stderr, ui.Error.Render("Update failed:"), ierr)
+						notFound++
+						continue
+					}
+				}
+			}
+
+			// Rewrite affected client configs with the NEW server config
+			// (same write path as install: clientconfig.MergeServer).
+			clientCfg := install.BuildClientConfig(vd.Manifest, storeDir)
+			upd, uerrs := rewriteClientsForUpdate(name, clientCfg, clientconfig.Detect())
+			printUpdateConfigResults(upd, uerrs)
 
 			lf.Set(name, lockfile.ServerEntry{
 				Version:     latest,

@@ -3,7 +3,7 @@
      App dev (CLI/registry/SDK) AND web dev both mirror progress here.
      Handoffs referencing this spec: TRON/temp/handoff-app-dev-v1.1.md,
      TRON/temp/handoff-web-dev-v1.1.md
-     Last updated: 2026-09-01 by TRON
+     Last updated: 2026-09-01 by TRON (web dev rows)
 ════════════════════════════════════════════════════════════════ -->
 
 # PHAROS v1.1 Spec — Parity Plus — STATE TRACKER
@@ -22,8 +22,10 @@
 | W4.2 | D1 boost plumbing | ⚪ pending | app dev | — |
 | W5   | A6 / C2 / A5 | ⚪ parked | app dev | — |
 | W6   | metrics + monetization | ⚪ parked (no selling before W4.1 + volume) | chris+app dev | — |
-| site | homepage registry copy (2 strings) | 🟡 QUEUED | web dev | — |
+| site | homepage registry copy (2 strings) | 🟢 DONE (Sep 1) — full 7-registry list live, 133,000+ counts, Badge/FilterBar label maps cover all sources, "Available on undefined" bug fixed | web dev | pharos-web e752bc3, deployed |
 | site | llm.txt serving (after W1.1) | ⚪ pending (blocked on W1.1) | web dev | — |
+| site | Sprint 1 DoD (star CTA, canonicals, sitemap+100 pkg URLs, schema SWA/FAQ/HowTo, llms.txt current, CWV spot) | 🟢 DONE (Sep 1) | web dev | pharos-web 252372b..cc9639d, deployed; GSC verify + clean-Windows install.ps1 test = Chris |
+
 
 ---
 # PHAROS v1.1 Feature Spec — Parity Plus

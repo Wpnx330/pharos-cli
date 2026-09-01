@@ -3,14 +3,14 @@
      App dev (CLI/registry/SDK) AND web dev both mirror progress here.
      Handoffs referencing this spec: TRON/temp/handoff-app-dev-v1.1.md,
      TRON/temp/handoff-web-dev-v1.1.md
-     Last updated: 2026-09-01 by TRON (web dev rows)
+     Last updated: 2026-09-01 19:15 ET by TRON (W1.1 shipped)
 ════════════════════════════════════════════════════════════════ -->
 
 # PHAROS v1.1 Spec — Parity Plus — STATE TRACKER
 
 | Wave | Items | State | Owner | Shipped in |
 |------|-------|-------|-------|------------|
-| W1.1 | A7 agent env contract + llm.txt | 🔵 IN PROGRESS | app dev | — |
+| W1.1 | A7 agent env contract + llm.txt | 🟢 DONE (Sep 1) — PHAROS_NON_INTERACTIVE/ASSUME_YES/JSON contract, 11 cmds gained --json, 926-line test harness incl. command-matrix + llm.txt golden, docs/llm.txt generated | app dev | pharos-cli db23a59 |
 | W1.2 | C5 install receipts | ⚪ pending | app dev | — |
 | W1.3 | B2 search signals (CLI display) | ⚪ pending (API half done) | app dev | — |
 | W1.4 | B3 doctor --diff | ⚪ pending (needs W1.2) | app dev | — |
@@ -23,7 +23,7 @@
 | W5   | A6 / C2 / A5 | ⚪ parked | app dev | — |
 | W6   | metrics + monetization | ⚪ parked (no selling before W4.1 + volume) | chris+app dev | — |
 | site | homepage registry copy (2 strings) | 🟢 DONE (Sep 1) — full 7-registry list live, 133,000+ counts, Badge/FilterBar label maps cover all sources, "Available on undefined" bug fixed | web dev | pharos-web e752bc3, deployed |
-| site | llm.txt serving (after W1.1) | ⚪ pending (blocked on W1.1) | web dev | — |
+| site | llm.txt serving (after W1.1) | 🟢 UNBLOCKED — docs/llm.txt is in pharos-cli repo @ db23a59; serve at /llm.txt + link from agent docs | web dev | — |
 | site | Sprint 1 DoD (star CTA, canonicals, sitemap+100 pkg URLs, schema SWA/FAQ/HowTo, llms.txt current, CWV spot) | 🟢 DONE (Sep 1) | web dev | pharos-web 252372b..cc9639d, deployed; GSC verify + clean-Windows install.ps1 test = Chris |
 
 

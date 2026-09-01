@@ -28,12 +28,12 @@ Use 'pharos unpublish' instead if you just want to hide a version temporarily.
 
 Requires --version <v> or --all.`,
 	Args: cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
 
 		if !purgeAll && purgeVersion == "" {
 			fmt.Fprintln(os.Stderr, ui.Error.Render("Error:"), "must specify --version <v> or --all")
-			return
+			return nil
 		}
 
 		_, client := loadConfig()
@@ -43,17 +43,23 @@ Requires --version <v> or --all.`,
 			pkg, err := client.GetPackage(name)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, ui.Error.Render("Failed to fetch package:"), err)
-				return
+				return nil
 			}
 			versions = pkg.VersionStrings()
 			if len(versions) == 0 {
 				fmt.Println(ui.Muted.Render("No versions found."))
-				return
+				return nil
 			}
 		}
 
 		// Confirm — purge is destructive
-		if !purgeYes {
+		if !purgeYes && !AssumeYes() {
+			// Agent contract: destructive command with no confirmation
+			// possible in non-interactive mode — abort with guidance rather
+			// than guessing.
+			if NonInteractive() {
+				return RequireNonInteractive("purge", "--yes or PHAROS_ASSUME_YES=1")
+			}
 			fmt.Printf("%s This will PERMANENTLY DELETE %s versions: %s\n",
 				ui.Error.Render("⚠"),
 				ui.PackageName.Render(name),
@@ -63,7 +69,7 @@ Requires --version <v> or --all.`,
 			fmt.Scanln(&confirm)
 			if strings.ToLower(strings.TrimSpace(confirm)) != "purge" {
 				fmt.Println(ui.Muted.Render("Cancelled."))
-				return
+				return nil
 			}
 		}
 
@@ -85,6 +91,7 @@ Requires --version <v> or --all.`,
 
 		fmt.Printf("\n%s Permanently removed. This action cannot be undone.\n",
 			ui.Muted.Render("ℹ"))
+		return nil
 	},
 }
 

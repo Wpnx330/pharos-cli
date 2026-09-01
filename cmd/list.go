@@ -40,7 +40,7 @@ var listCmd = &cobra.Command{
 			return
 		}
 		if len(pkgs) == 0 {
-			if listJSON {
+			if JSONRequested() {
 				fmt.Println("[]")
 				return
 			}
@@ -91,7 +91,7 @@ var listCmd = &cobra.Command{
 		}
 
 		if len(entries) == 0 {
-			if listJSON {
+			if JSONRequested() {
 				fmt.Println("[]")
 				return
 			}
@@ -119,7 +119,7 @@ var listCmd = &cobra.Command{
 			rows = append(rows, e.row)
 		}
 
-		if listJSON {
+		if JSONRequested() {
 			data, err := marshalListJSON(rows)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, ui.Error.Render("Failed to encode JSON:"), err)

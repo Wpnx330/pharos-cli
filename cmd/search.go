@@ -41,7 +41,7 @@ var searchCmd = &cobra.Command{
 			fmt.Println(ui.Muted.Render("No packages found."))
 			return
 		}
-		if jsonFlag {
+		if JSONRequested() {
 			data, _ := json.MarshalIndent(results, "", "  ")
 			fmt.Println(string(data))
 			return

@@ -35,7 +35,7 @@ Exit code is 1 if any vulnerable versions are found.`,
 
 		report := runAudit(client, servers)
 
-		if auditJSON {
+		if JSONRequested() {
 			data, _ := json.MarshalIndent(report, "", "  ")
 			fmt.Println(string(data))
 		} else {
@@ -50,19 +50,19 @@ Exit code is 1 if any vulnerable versions are found.`,
 
 // auditReport holds the results of scanning all servers.
 type auditReport struct {
-	Total      int           `json:"total_servers"`
-	Scanned    int           `json:"scanned"`
-	Vulnerable int           `json:"vulnerable_servers"`
-	Entries    []auditEntry  `json:"entries"`
-	HasVulns   bool          `json:"has_vulnerabilities"`
+	Total      int          `json:"total_servers"`
+	Scanned    int          `json:"scanned"`
+	Vulnerable int          `json:"vulnerable_servers"`
+	Entries    []auditEntry `json:"entries"`
+	HasVulns   bool         `json:"has_vulnerabilities"`
 }
 
 // auditEntry pairs a server with its advisories.
 type auditEntry struct {
-	Server     string          `json:"server"`
-	Version    string          `json:"version"`
-	Advisories []api.Advisory   `json:"advisories"`
-	Error      string          `json:"error,omitempty"`
+	Server     string         `json:"server"`
+	Version    string         `json:"version"`
+	Advisories []api.Advisory `json:"advisories"`
+	Error      string         `json:"error,omitempty"`
 }
 
 // serverInfo is a minimal server representation for audit scanning.

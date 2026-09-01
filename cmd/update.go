@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -14,6 +15,25 @@ import (
 )
 
 var updateDryRun bool
+var updateJSON bool
+
+// updateEntry is one server row in the update JSON report.
+type updateEntry struct {
+	Name   string `json:"name"`
+	From   string `json:"from,omitempty"`
+	To     string `json:"to,omitempty"`
+	Action string `json:"action"` // "updated" | "up_to_date" | "update_available" | "not_found" | "failed"
+}
+
+// updateReport is the JSON shape of `update --json`.
+type updateReport struct {
+	DryRun           bool          `json:"dry_run"`
+	Updated          int           `json:"updated"`
+	UpToDate         int           `json:"up_to_date"`
+	NotFound         int           `json:"not_found"`
+	UpdatesAvailable int           `json:"updates_available"`
+	Servers          []updateEntry `json:"servers"`
+}
 
 var updateCmd = &cobra.Command{
 	Use:   "update [name]",
@@ -23,24 +43,24 @@ With a name argument, updates only that server.
 
 Use --dry-run to see what would change without modifying anything.`,
 	Args: cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		_, client := loadConfig()
 
 		lockPath, err := lockfile.DefaultPath()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, ui.Error.Render("Cannot determine lockfile path:"), err)
-			return
+			return nil
 		}
 
 		lf, err := lockfile.Load(lockPath)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, ui.Error.Render("Failed to load lockfile:"), err)
-			return
+			return nil
 		}
 
 		if len(lf.Servers) == 0 {
 			fmt.Fprintln(os.Stderr, ui.Error.Render("No servers in lockfile."), ui.Muted.Render("Run `pharos import` or `pharos install` first."))
-			return
+			return nil
 		}
 
 		target := ""
@@ -48,11 +68,12 @@ Use --dry-run to see what would change without modifying anything.`,
 			target = args[0]
 			if !lf.Has(target) {
 				fmt.Fprintln(os.Stderr, ui.Error.Render("Server not in lockfile:"), target)
-				return
+				return nil
 			}
 		}
 
 		var updatesAvailable, upToDate, notFound, updated int
+		report := &updateReport{DryRun: updateDryRun, Servers: []updateEntry{}}
 
 		// Sort server names for deterministic output
 		names := make([]string, 0, len(lf.Servers))
@@ -70,7 +91,11 @@ Use --dry-run to see what would change without modifying anything.`,
 			pkg, err := client.GetPackage(name)
 			if err != nil {
 				notFound++
-				fmt.Printf("  %s  %s — %s\n", ui.Muted.Render("?"), name, ui.Muted.Render("not found in registry"))
+				report.NotFound++
+				report.Servers = append(report.Servers, updateEntry{Name: name, From: entry.Version, Action: "not_found"})
+				if !JSONRequested() {
+					fmt.Printf("  %s  %s — %s\n", ui.Muted.Render("?"), name, ui.Muted.Render("not found in registry"))
+				}
 				continue
 			}
 
@@ -84,19 +109,29 @@ Use --dry-run to see what would change without modifying anything.`,
 
 			if latest == entry.Version {
 				upToDate++
-				fmt.Printf("  %s  %s@%s %s\n", ui.Success.Render("✓"), name, entry.Version, ui.Muted.Render("(up to date)"))
+				report.UpToDate++
+				report.Servers = append(report.Servers, updateEntry{Name: name, From: entry.Version, To: latest, Action: "up_to_date"})
+				if !JSONRequested() {
+					fmt.Printf("  %s  %s@%s %s\n", ui.Success.Render("✓"), name, entry.Version, ui.Muted.Render("(up to date)"))
+				}
 				continue
 			}
 
 			updatesAvailable++
 			if updateDryRun {
-				fmt.Printf("  %s  %s: %s → %s\n", ui.Label.Render("→"), name, entry.Version, latest)
+				report.UpdatesAvailable++
+				report.Servers = append(report.Servers, updateEntry{Name: name, From: entry.Version, To: latest, Action: "update_available"})
+				if !JSONRequested() {
+					fmt.Printf("  %s  %s: %s → %s\n", ui.Label.Render("→"), name, entry.Version, latest)
+				}
 				continue
 			}
 
 			// Perform the update: land the new artifact (K3/K2), rewrite every
 			// affected client config (issue #20), then bump the lockfile.
-			fmt.Printf("  %s  %s: %s → %s\n", ui.Label.Render("Updating"), name, entry.Version, latest)
+			if !JSONRequested() {
+				fmt.Printf("  %s  %s: %s → %s\n", ui.Label.Render("Updating"), name, entry.Version, latest)
+			}
 
 			vd := pkg.FindVersion(latest)
 			integrity := ""
@@ -113,7 +148,11 @@ Use --dry-run to see what would change without modifying anything.`,
 			}
 			if vd == nil {
 				notFound++
-				fmt.Printf("  %s  %s@%s — %s\n", ui.Error.Render("✗"), name, latest, ui.Muted.Render("manifest unavailable, skipping"))
+				report.NotFound++
+				report.Servers = append(report.Servers, updateEntry{Name: name, From: entry.Version, To: latest, Action: "not_found"})
+				if !JSONRequested() {
+					fmt.Printf("  %s  %s@%s — %s\n", ui.Error.Render("✗"), name, latest, ui.Muted.Render("manifest unavailable, skipping"))
+				}
 				continue
 			}
 
@@ -131,6 +170,8 @@ Use --dry-run to see what would change without modifying anything.`,
 					}); ierr != nil {
 						fmt.Fprintln(os.Stderr, ui.Error.Render("Update failed:"), ierr)
 						notFound++
+						report.NotFound++
+						report.Servers = append(report.Servers, updateEntry{Name: name, From: entry.Version, To: latest, Action: "failed"})
 						continue
 					}
 				}
@@ -140,7 +181,9 @@ Use --dry-run to see what would change without modifying anything.`,
 			// (same write path as install: clientconfig.MergeServer).
 			clientCfg := install.BuildClientConfig(vd.Manifest, storeDir)
 			upd, uerrs := rewriteClientsForUpdate(name, clientCfg, clientconfig.Detect())
-			printUpdateConfigResults(upd, uerrs)
+			if !JSONRequested() {
+				printUpdateConfigResults(upd, uerrs)
+			}
 
 			lf.Set(name, lockfile.ServerEntry{
 				Version:     latest,
@@ -150,18 +193,27 @@ Use --dry-run to see what would change without modifying anything.`,
 				InstalledAt: entry.InstalledAt,
 			})
 			updated++
+			report.Updated++
+			report.Servers = append(report.Servers, updateEntry{Name: name, From: entry.Version, To: latest, Action: "updated"})
 		}
 
 		if updateDryRun {
+			if JSONRequested() {
+				return printUpdateJSON(report)
+			}
 			fmt.Printf("\n%s  %d update(s) available (dry run)\n", ui.Label.Render("Summary:"), updatesAvailable)
-			return
+			return nil
 		}
 
 		if updated > 0 {
 			if err := lf.Save(lockPath); err != nil {
 				fmt.Fprintln(os.Stderr, ui.Error.Render("Failed to save lockfile:"), err)
-				return
+				return nil
 			}
+		}
+
+		if JSONRequested() {
+			return printUpdateJSON(report)
 		}
 
 		fmt.Printf("\n%s  %d updated, %d up to date, %d not found\n",
@@ -169,10 +221,22 @@ Use --dry-run to see what would change without modifying anything.`,
 			updated,
 			upToDate,
 			notFound)
+		return nil
 	},
+}
+
+// printUpdateJSON emits the update report as JSON to stdout.
+func printUpdateJSON(report *updateReport) error {
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(data))
+	return nil
 }
 
 func init() {
 	updateCmd.Flags().BoolVar(&updateDryRun, "dry-run", false, "show what would change without applying updates")
+	updateCmd.Flags().BoolVar(&updateJSON, "json", false, "output as JSON")
 	rootCmd.AddCommand(updateCmd)
 }

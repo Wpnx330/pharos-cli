@@ -110,7 +110,7 @@ Reports any issues found.`,
 			}
 		}
 
-		if doctorJSON {
+		if JSONRequested() {
 			out := map[string]any{
 				"checks":   checks,
 				"failures": failures,

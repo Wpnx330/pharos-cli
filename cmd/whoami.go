@@ -32,7 +32,7 @@ var whoamiCmd = &cobra.Command{
 			return
 		}
 
-		if jsonFlag {
+		if JSONRequested() {
 			data, _ := json.MarshalIndent(user, "", "  ")
 			fmt.Println(string(data))
 			return

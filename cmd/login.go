@@ -29,14 +29,20 @@ After successful authentication, an API token is stored in ~/.pharos/credentials
 and used for all subsequent commands that require authentication.
 
 Use --manual to skip the browser flow and paste a token directly.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, _ := loadConfig()
 
 		if loginManual {
 			runManualLogin(cfg.Registry)
-			return
+			return nil
+		}
+		// Agent contract: the browser flow blocks waiting for the OAuth
+		// callback — point agents at the non-interactive alternatives.
+		if NonInteractive() {
+			return RequireNonInteractive("login", "--manual (token on stdin) or 'pharos config token <token>'")
 		}
 		runBrowserLogin(cfg.Registry)
+		return nil
 	},
 }
 

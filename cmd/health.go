@@ -22,7 +22,7 @@ var healthCmd = &cobra.Command{
 			fmt.Fprintln(cmd.ErrOrStderr(), ui.Error.Render("Registry unhealthy:"), err)
 			return
 		}
-		if jsonFlag {
+		if JSONRequested() {
 			out := map[string]any{
 				"status":  h.Status,
 				"version": h.Version,

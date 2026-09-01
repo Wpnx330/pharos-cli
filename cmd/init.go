@@ -28,13 +28,19 @@ var initCmd = &cobra.Command{
 It interactively prompts for name, version, description, transport, runtime,
 run command, and capabilities. Transports: stdio (default), http-sse, or
 streamable-http. Use --yes to accept defaults non-interactively.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// Agent contract: under PHAROS_NON_INTERACTIVE the interactive
+		// prompts can never be answered — require the non-interactive path.
+		if NonInteractive() && !initYes && !AssumeYes() {
+			return RequireNonInteractive("init", "--yes or PHAROS_ASSUME_YES=1")
+		}
 		m := buildManifestInteractive()
 		if m == nil {
-			return
+			return nil
 		}
 		writeManifest(m)
 		writeGitignore()
+		return nil
 	},
 }
 
@@ -59,9 +65,9 @@ func buildManifestYesDefaults() *manifest.Manifest {
 // buildManifestInteractive collects manifest fields via interactive prompts.
 // Uses arrow-key selectors for fixed-option fields and text input for freeform fields.
 // Returns nil if the user cancels.
-// If initYes is true, all defaults are accepted without prompting.
+// If initYes or PHAROS_ASSUME_YES is true, all defaults are accepted without prompting.
 func buildManifestInteractive() *manifest.Manifest {
-	if initYes {
+	if initYes || AssumeYes() {
 		return buildManifestYesDefaults()
 	}
 
@@ -110,7 +116,11 @@ func buildManifestInteractive() *manifest.Manifest {
 
 // textPrompt prints a label and default, then reads a full line from stdin.
 // If the user enters nothing (just Enter), the default is used.
+// Under PHAROS_NON_INTERACTIVE the default is returned without reading stdin.
 func textPrompt(label, def string) string {
+	if NonInteractive() {
+		return def
+	}
 	if def == "" {
 		fmt.Printf("%s  ", ui.Label.Render(label+":"))
 	} else {
@@ -182,7 +192,14 @@ func (m selectModel) View() string {
 }
 
 // selectPrompt shows an arrow-key selectable list and returns the chosen option.
+// Under PHAROS_NON_INTERACTIVE the default is returned and bubbletea is
+// never launched.
 func selectPrompt(label string, options []string, def string) string {
+	// Agent contract: never launch a TUI in non-interactive mode.
+	if NonInteractive() {
+		return def
+	}
+
 	// Find default index
 	defIdx := 0
 	for i, o := range options {
@@ -299,7 +316,14 @@ func (m multiSelectModel) View() string {
 }
 
 // multiSelectPrompt shows a checkbox list and returns the selected options.
+// Under PHAROS_NON_INTERACTIVE the defaults are returned and bubbletea is
+// never launched.
 func multiSelectPrompt(label string, options []string, defaults []string) []string {
+	// Agent contract: never launch a TUI in non-interactive mode.
+	if NonInteractive() {
+		return defaults
+	}
+
 	selected := make(map[int]bool)
 	defSet := make(map[string]bool)
 	for _, d := range defaults {

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -49,7 +50,7 @@ var daemonStopCmd = &cobra.Command{
 var daemonStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show daemon status and managed server details",
-	Run:   runDaemonStatus,
+	RunE:  runDaemonStatus,
 }
 
 var daemonLogCmd = &cobra.Command{
@@ -83,6 +84,8 @@ func init() {
 	daemonStartCmd.Flags().MarkHidden("daemon-internal")
 
 	daemonLogCmd.Flags().IntVarP(&daemonLogLines, "lines", "n", 50, "number of lines to show")
+
+	daemonStatusCmd.Flags().BoolVar(&daemonStatusJSON, "json", false, "output as JSON")
 
 	daemonAutostartCmd.Flags().BoolVar(&daemonAutostartOn, "on", false, "enable autostart on boot")
 	daemonAutostartCmd.Flags().BoolVar(&daemonAutostartOff, "off", false, "disable autostart on boot")
@@ -178,8 +181,9 @@ func runDaemonStop(cmd *cobra.Command, args []string) {
 }
 
 // runDaemonStatus queries the daemon and prints its status plus a table
-// of managed servers.
-func runDaemonStatus(cmd *cobra.Command, args []string) {
+// of managed servers. With --json (or PHAROS_JSON=1) the same information
+// is emitted as a single JSON object.
+func runDaemonStatus(cmd *cobra.Command, args []string) error {
 	status, err := daemon.Status()
 	if err != nil {
 		// Status returns an error when the daemon is not running (stub)
@@ -189,9 +193,16 @@ func runDaemonStatus(cmd *cobra.Command, args []string) {
 	}
 
 	if !status.Running {
+		if JSONRequested() {
+			return printDaemonStatusJSON(status)
+		}
 		fmt.Println(ui.Muted.Render("Daemon is not running."))
 		fmt.Printf("\n  %s  %s\n", ui.Muted.Render("Start it with:"), "pharos daemon start")
-		return
+		return nil
+	}
+
+	if JSONRequested() {
+		return printDaemonStatusJSON(status)
 	}
 
 	// Daemon summary
@@ -204,7 +215,7 @@ func runDaemonStatus(cmd *cobra.Command, args []string) {
 
 	if len(status.Servers) == 0 {
 		fmt.Printf("\n%s\n", ui.Muted.Render("No servers managed by daemon."))
-		return
+		return nil
 	}
 
 	// Server table
@@ -263,6 +274,63 @@ func runDaemonStatus(cmd *cobra.Command, args []string) {
 
 	fmt.Printf("\n%s\n", ui.Label.Render("Managed servers:"))
 	fmt.Print(ui.RenderTable(cols, rows))
+	return nil
+}
+
+// daemonStatusJSON holds the flag for `daemon status --json`.
+var daemonStatusJSON bool
+
+// daemonStatusOut is the JSON shape of `daemon status --json`. It shadows
+// internal/daemon's types so the wire format stays stable even if the
+// internal structs change.
+type daemonStatusOut struct {
+	Running   bool              `json:"running"`
+	PID       int               `json:"pid"`
+	Port      int               `json:"port,omitempty"`
+	StartedAt string            `json:"started_at,omitempty"`
+	Servers   []daemonServerOut `json:"servers"`
+}
+
+// daemonServerOut is one managed server in the status JSON.
+type daemonServerOut struct {
+	Name         string `json:"name"`
+	State        string `json:"state"`
+	Port         int    `json:"port,omitempty"`
+	Memory       int64  `json:"memory,omitempty"`
+	LastActivity string `json:"last_activity,omitempty"`
+	IdleTimeout  int    `json:"idle_timeout,omitempty"`
+}
+
+// printDaemonStatusJSON emits the daemon status as JSON to stdout.
+func printDaemonStatusJSON(status *daemon.DaemonStatus) error {
+	out := daemonStatusOut{
+		Running: status.Running,
+		PID:     status.PID,
+		Port:    status.Port,
+		Servers: make([]daemonServerOut, 0, len(status.Servers)),
+	}
+	if !status.StartedAt.IsZero() {
+		out.StartedAt = status.StartedAt.UTC().Format(time.RFC3339)
+	}
+	for _, s := range status.Servers {
+		srv := daemonServerOut{
+			Name:        s.Name,
+			State:       s.State,
+			Port:        s.Port,
+			Memory:      s.Memory,
+			IdleTimeout: s.IdleTimeout,
+		}
+		if !s.LastActivity.IsZero() {
+			srv.LastActivity = s.LastActivity.UTC().Format(time.RFC3339)
+		}
+		out.Servers = append(out.Servers, srv)
+	}
+	data, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(data))
+	return nil
 }
 
 // runDaemonLog shows recent daemon log output.

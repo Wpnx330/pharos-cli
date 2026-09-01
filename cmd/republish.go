@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 
@@ -10,6 +11,7 @@ import (
 )
 
 var republishVersion string
+var republishJSON bool
 
 var republishCmd = &cobra.Command{
 	Use:   "republish <name>",
@@ -24,12 +26,12 @@ Requires --version <v>.
 Example:
   pharos republish test-echo-server --version 0.2.0`,
 	Args: cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
 
 		if republishVersion == "" {
 			fmt.Fprintln(os.Stderr, ui.Error.Render("Error:"), "must specify --version <v>")
-			return
+			return nil
 		}
 
 		_, client := loadConfig()
@@ -39,15 +41,30 @@ Example:
 			// We show "not found" — purge is irreversible, and the version
 			// should appear as if it never existed from the user's perspective.
 			fmt.Fprintln(os.Stderr, ui.Error.Render("Error:"), fmt.Sprintf("version %s@%s not found", name, republishVersion))
-			return
+			return nil
+		}
+
+		if JSONRequested() {
+			data, err := json.MarshalIndent(map[string]string{
+				"name":    name,
+				"version": republishVersion,
+				"status":  "active",
+			}, "", "  ")
+			if err != nil {
+				return err
+			}
+			fmt.Println(string(data))
+			return nil
 		}
 
 		fmt.Printf("%s Republished %s@%s — now visible in search and direct lookup.\n",
 			ui.Success.Render("✓"), ui.PackageName.Render(name), republishVersion)
+		return nil
 	},
 }
 
 func init() {
 	republishCmd.Flags().StringVar(&republishVersion, "version", "", "version to republish (e.g. 0.2.0)")
+	republishCmd.Flags().BoolVar(&republishJSON, "json", false, "output as JSON")
 	rootCmd.AddCommand(republishCmd)
 }

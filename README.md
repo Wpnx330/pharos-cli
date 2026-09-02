@@ -250,7 +250,7 @@ Safe writes guarantee *pharos* never corrupts a config — but nothing stopped a
         • server 'hand-added' is not managed by pharos (not in pharos.lock) — unmanaged (hand-added?)
 ```
 
-Only compared fields (`command`, `args`, `env`, `url`, `type`) count; reformatting (key order, whitespace, empty containers) never counts as drift, and unknown user keys inside an entry are left alone. Clients pharos has never written to are skipped silently. Under `PHAROS_JSON=1` the findings appear on the drift checks in the doctor JSON report.
+Only compared fields (`command`, `args`, `env`, `url`, `type`) count; reformatting (key order, whitespace, empty containers) never counts as drift, and unknown user keys inside an entry are left alone. Numeric env/args spellings (`PORT = 8080` vs `"8080"`) are not drift, Grok remote `headers` are compared like `env`, and `--client` subset installs read as healthy for clients they were never written to (lockfile records which clients received each server). Clients pharos has never written to are skipped silently — including a client whose config file has been deleted outright (recreate it with `pharos install`; per-server MISSING findings are not emitted for a whole missing file). Under `PHAROS_JSON=1` the findings appear on the drift checks in the doctor JSON report.
 
 ### Supported client formats
 

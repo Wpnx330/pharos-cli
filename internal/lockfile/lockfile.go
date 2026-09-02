@@ -28,6 +28,10 @@ type ServerEntry struct {
 	Transport   string    `json:"transport"`
 	Resolved    string    `json:"resolved"`
 	InstalledAt time.Time `json:"installedAt"`
+	// Clients lists the client IDs this server's config was actually
+	// written to at install time (additive, optional). Empty/absent on
+	// legacy entries — consumers must then assume every client.
+	Clients []string `json:"clients,omitempty"`
 }
 
 // New creates an empty lockfile with the current schema version.

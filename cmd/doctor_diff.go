@@ -3,6 +3,8 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -44,6 +46,13 @@ import (
 //     no URL, or a client that cannot represent it — e.g. Claude Desktop
 //     remotes) is skipped for that client: pharos would not have written
 //     it there either.
+//   - A client whose config file has been deleted (but whose app
+//     directory remains, so it is still detected with Existing=false) is
+//     skipped silently before any comparison — even though a non-empty
+//     lockfile∩canonical makes this the most drastic MISSING case, the
+//     whole file's absence is deliberately not reported as per-server
+//     drift; recreating the config is a reinstall (`pharos install`),
+//     not a drift repair.
 
 // doctorDiff is bound to the --diff flag on `pharos doctor`.
 var doctorDiff bool
@@ -119,10 +128,14 @@ func runDriftChecks() ([]doctorCheck, string) {
 // the servers drift detection can verify. A lockfile that does not exist
 // (or an empty/canonical-less state) yields zero managed servers; a
 // corrupt one is an error so the failure is visible.
+//
+// The lockfile path is resolved read-only (os.Stat probes only): --diff
+// promises not to touch the filesystem, so the writability probe in
+// lockfile.DefaultPath (CreateTemp+remove) is deliberately not used.
 func loadDriftBaseline() (*lockfile.Lockfile, *canonical.Config, []string, error) {
-	lockPath, err := lockfile.DefaultPath()
-	if err != nil {
-		// Cannot even locate a lockfile — nothing to diff against.
+	lockPath, ok := driftLockPathReadOnly()
+	if !ok {
+		// No lockfile anywhere — nothing to diff against.
 		return nil, nil, nil, nil
 	}
 	lf, err := lockfile.Load(lockPath)
@@ -142,6 +155,27 @@ func loadDriftBaseline() (*lockfile.Lockfile, *canonical.Config, []string, error
 	}
 	sort.Strings(managed)
 	return lf, canon, managed, nil
+}
+
+// driftLockPathReadOnly mirrors lockfile.DefaultPath's resolution order —
+// ./pharos.lock in the current working directory first, then
+// ~/.pharos/pharos.lock — but picks a candidate only if it already
+// exists (pure os.Stat, no temp-file write test). ok=false when neither
+// location holds a lockfile.
+func driftLockPathReadOnly() (string, bool) {
+	if cwd, err := os.Getwd(); err == nil {
+		candidate := filepath.Join(cwd, "pharos.lock")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, true
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidate := filepath.Join(home, ".pharos", "pharos.lock")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, true
+		}
+	}
+	return "", false
 }
 
 // driftCheckForClient compares one client config against the baseline. The
@@ -166,7 +200,26 @@ func driftCheckForClient(c clientconfig.Client, lf *lockfile.Lockfile, canon *ca
 		}
 	}
 	if !relevant {
+		// Case-only rename fallback: a hand rename that merely changes
+		// case (drift-server → Drift-Server) must still surface — the
+		// MISSING/EXTRA pair below reports both spellings. Clients with
+		// no match in any case remain untouched (skipped silently).
+		for name := range servers {
+			if lockfileHasFold(lf, name) {
+				relevant = true
+				break
+			}
+		}
+	}
+	if !relevant {
 		return doctorCheck{}, false
+	}
+
+	// Grok stores remote-entry auth in a `headers` table instead of env;
+	// compare it with env semantics so hand-edited headers are visible.
+	headerKey := ""
+	if c.Format == clientconfig.FormatTOML && c.ID == clientconfig.ClientGrok {
+		headerKey = "headers"
 	}
 
 	var findings []doctorFinding
@@ -179,6 +232,14 @@ func driftCheckForClient(c clientconfig.Client, lf *lockfile.Lockfile, canon *ca
 			continue // no baseline for this client — cannot judge
 		}
 		if !present {
+			// Subset installs: when the lockfile records which clients
+			// the server was actually written to, a client outside that
+			// set never received it — its absence is healthy, not drift.
+			// Legacy entries (no clients record) keep reporting MISSING
+			// everywhere for back-compat.
+			if entry, ok := lf.Get(name); ok && len(entry.Clients) > 0 && !clientIDIn(entry.Clients, c.ID) {
+				continue
+			}
 			findings = append(findings, doctorFinding{
 				Server:   name,
 				Kind:     driftKindMissing,
@@ -188,7 +249,7 @@ func driftCheckForClient(c clientconfig.Client, lf *lockfile.Lockfile, canon *ca
 			continue
 		}
 		checked++
-		findings = append(findings, driftFieldFindings(name, expected, actual)...)
+		findings = append(findings, driftFieldFindings(name, expected, actual, headerKey)...)
 	}
 
 	extras := 0
@@ -257,13 +318,41 @@ func driftExpectedEntry(name string, srv canonical.Server, c clientconfig.Client
 	return raw, true
 }
 
+// lockfileHasFold reports whether the lockfile contains name up to case
+// differences (relevance probe only — reporting stays exact-case).
+func lockfileHasFold(lf *lockfile.Lockfile, name string) bool {
+	for locked := range lf.Servers {
+		if strings.EqualFold(locked, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// clientIDIn reports whether id is in the lockfile entry's Clients set.
+func clientIDIn(clients []string, id clientconfig.ClientID) bool {
+	for _, c := range clients {
+		if c == string(id) {
+			return true
+		}
+	}
+	return false
+}
+
 // driftFieldFindings diffs expected against actual for the compared
 // fields and returns one finding per divergence. Both raws are JSON
 // entry values (as produced by clientconfig.ExpectedEntry and
-// clientconfig.ReadServersFormat).
-func driftFieldFindings(name string, expected, actual json.RawMessage) []doctorFinding {
+// clientconfig.ReadServersFormat). headerKey, when non-empty, names an
+// additional field (e.g. Grok's remote `headers`) compared with env
+// semantics.
+func driftFieldFindings(name string, expected, actual json.RawMessage, headerKey string) []doctorFinding {
 	exp := entryFieldMap(expected)
 	act := entryFieldMap(actual)
+
+	fields := driftComparedFields
+	if headerKey != "" {
+		fields = append(append([]string{}, driftComparedFields...), headerKey)
+	}
 
 	var findings []doctorFinding
 	add := func(field string, ev, ae any) {
@@ -279,7 +368,7 @@ func driftFieldFindings(name string, expected, actual json.RawMessage) []doctorF
 		})
 	}
 
-	for _, field := range driftComparedFields {
+	for _, field := range fields {
 		ev := exp[field] // absent → nil
 		av := act[field]
 		if ev == nil && av == nil {
@@ -289,8 +378,8 @@ func driftFieldFindings(name string, expected, actual json.RawMessage) []doctorF
 			continue
 		}
 		switch field {
-		case "env":
-			findEnvDivergences(name, ev, av, add)
+		case "env", headerKey:
+			findEnvDivergences(name, field, ev, av, add)
 		case "args":
 			findArgDivergences(name, ev, av, add)
 		default:
@@ -302,12 +391,13 @@ func driftFieldFindings(name string, expected, actual json.RawMessage) []doctorF
 
 // findEnvDivergences reports per-key env differences (the common hand-edit:
 // a changed variable value), falling back to a single field finding when
-// either side is not an object.
-func findEnvDivergences(name string, ev, av any, add func(field string, exp, act any)) {
+// either side is not an object. key is the entry field being compared
+// ("env", or "headers" for Grok remotes).
+func findEnvDivergences(name, key string, ev, av any, add func(field string, exp, act any)) {
 	expMap, expOK := ev.(map[string]any)
 	actMap, actOK := av.(map[string]any)
 	if !expOK || !actOK {
-		add("env", ev, av)
+		add(key, ev, av)
 		return
 	}
 	keys := make([]string, 0, len(expMap)+len(actMap))
@@ -329,14 +419,14 @@ func findEnvDivergences(name string, ev, av any, add func(field string, exp, act
 		expVal, inExp := expMap[k]
 		actVal, inAct := actMap[k]
 		switch {
-		case inExp && inAct && reflect.DeepEqual(expVal, actVal):
+		case inExp && inAct && (reflect.DeepEqual(expVal, actVal) || driftLooseEqual(expVal, actVal)):
 			continue
 		case inExp && !inAct:
-			add("env."+k, expVal, nil)
+			add(key+"."+k, expVal, nil)
 		case !inExp && inAct:
-			add("env."+k, nil, actVal)
+			add(key+"."+k, nil, actVal)
 		default:
-			add("env."+k, expVal, actVal)
+			add(key+"."+k, expVal, actVal)
 		}
 	}
 }
@@ -355,7 +445,7 @@ func findArgDivergences(name string, ev, av any, add func(field string, exp, act
 		n = len(actArgs)
 	}
 	for i := 0; i < n; i++ {
-		if !reflect.DeepEqual(expArgs[i], actArgs[i]) {
+		if !reflect.DeepEqual(expArgs[i], actArgs[i]) && !driftLooseEqual(expArgs[i], actArgs[i]) {
 			add(fmt.Sprintf("args[%d]", i), expArgs[i], actArgs[i])
 			return
 		}
@@ -363,6 +453,35 @@ func findArgDivergences(name string, ev, av any, add func(field string, exp, act
 	if len(expArgs) != len(actArgs) {
 		add("args", ev, av)
 	}
+}
+
+// driftLooseEqual reports whether two differently-typed scalars represent
+// the same number: TOML/YAML configs read an unquoted `PORT = 8080` as a
+// JSON number while the canonical record stores the string "8080", and
+// that spelling difference is not drift. Only number-vs-string compares
+// are loosened — real type drift (objects, bools, changed strings) still
+// reports.
+func driftLooseEqual(ev, av any) bool {
+	if ev == nil || av == nil || reflect.TypeOf(ev) == reflect.TypeOf(av) {
+		return false
+	}
+	var num float64
+	var str any
+	switch e := ev.(type) {
+	case float64:
+		num, str = e, av
+	default:
+		a, ok := av.(float64)
+		if !ok {
+			return false
+		}
+		num, str = a, ev
+	}
+	s, ok := str.(string)
+	if !ok {
+		return false
+	}
+	return fmt.Sprintf("%v", num) == s
 }
 
 // entryFieldMap parses an entry's raw JSON into a field map with empty

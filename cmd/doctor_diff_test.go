@@ -618,8 +618,55 @@ func TestDoctorDrift_FormatRoundTrip(t *testing.T) {
 			if len(got.Findings) != 0 {
 				t.Errorf("expected no findings, got %+v", got.Findings)
 			}
+			// Checked-count pin: proves the derivation actually produced a
+			// compared entry (mutation guard — if driftExpectedEntry ever
+			// returns not-derivable, the check goes silent and this fails).
+			if got.Detail != "1 managed server(s) match" {
+				t.Errorf("detail = %q, want %q (derivation must produce exactly 1 compared entry)", got.Detail, "1 managed server(s) match")
+			}
 		})
 	}
+
+	// Aider remote round-trip: install never writes remotes to Aider
+	// (MergeServer → SkipError), so the derived expectation must take the
+	// same SkipError path — otherwise doctor reports a phantom MISSING.
+	t.Run("aider remote skipped (no phantom missing)", func(t *testing.T) {
+		home := driftIsolate(t)
+		c := clientconfig.Client{ID: clientconfig.ClientAider, Name: "Aider",
+			Path: filepath.Join(home, ".aider.conf.yml"), Format: clientconfig.FormatAider, Existing: true}
+		// Aider gets only the local stdio server; the remote one is
+		// managed in the lockfile but never written here.
+		plantDriftServer(t, c, "drift-local", driftStdioCfg)
+		plantDriftLockfile(t, map[string]lockfile.ServerEntry{
+			"drift-local":  driftLockEntry(),
+			"drift-remote": driftLockEntry(),
+		})
+		plantDriftCanonical(t, map[string]canonical.Server{
+			"drift-local":  driftStdioCanonical("drift-local", "node", []string{"server.js"}),
+			"drift-remote": driftRemoteCanonical("https://api.example.com/mcp"),
+		})
+		// The skip is real: MergeServer refuses the remote on Aider.
+		if err := clientconfig.MergeServer(c, "drift-remote", clientconfig.ServerConfig{URL: "https://api.example.com/mcp", Type: "http"}); !clientconfig.IsSkip(err) {
+			t.Fatalf("expected SkipError writing a remote to Aider, got %v", err)
+		}
+
+		checks, _ := runDriftChecks()
+		got := driftFindCheck(checks, "Config drift: Aider")
+		if got == nil {
+			t.Fatalf("drift check missing (checks: %+v)", checks)
+		}
+		if got.Status != "ok" {
+			t.Fatalf("status = %q (%q), want ok; findings: %+v", got.Status, got.Error, got.Findings)
+		}
+		for _, f := range got.Findings {
+			if f.Kind == "missing" && f.Server == "drift-remote" {
+				t.Errorf("aider remote must be skipped (SkipError path), got finding %+v", f)
+			}
+		}
+		if got.Detail != "1 managed server(s) match" {
+			t.Errorf("detail = %q, want only drift-local counted", got.Detail)
+		}
+	})
 }
 
 // plantCustomClient registers a custom client in ~/.pharos/config.json and
@@ -685,6 +732,321 @@ func TestDoctorDrift_ReformatIsNotDrift(t *testing.T) {
 	}
 	if got.Status != "ok" {
 		t.Errorf("status = %q (%q), want ok; findings: %+v", got.Status, got.Error, got.Findings)
+	}
+	// Checked-count pin: the re-derived entry was actually compared
+	// (mutation guard — a broken derivation would zero this out).
+	if got.Detail != "1 managed server(s) match" {
+		t.Errorf("detail = %q, want %q", got.Detail, "1 managed server(s) match")
+	}
+}
+
+// TestDoctorDrift_LockPathProbe pins the read-only lockfile resolution
+// used by --diff: cwd lockfile wins when present, ~/.pharos/pharos.lock
+// is the fallback, and neither existing means nothing to probe — all via
+// os.Stat, never a temp-file write test.
+func TestDoctorDrift_LockPathProbe(t *testing.T) {
+	home := driftIsolate(t)
+
+	// Neither location holds a lockfile.
+	if p, ok := driftLockPathReadOnly(); ok {
+		t.Errorf("expected no lockfile, got %q", p)
+	}
+
+	// Home lockfile (cwd stays empty) — the fallback.
+	dir := filepath.Join(home, ".pharos")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	homeLock := filepath.Join(dir, "pharos.lock")
+	if err := os.WriteFile(homeLock, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if p, ok := driftLockPathReadOnly(); !ok || p != homeLock {
+		t.Errorf("probe = %q,%v; want home lockfile %q", p, ok, homeLock)
+	}
+
+	// A cwd lockfile wins, mirroring DefaultPath's resolution order.
+	if err := os.WriteFile("pharos.lock", []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	absCwd, err := filepath.Abs("pharos.lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, ok := driftLockPathReadOnly(); !ok || p != absCwd {
+		t.Errorf("probe = %q,%v; want cwd lockfile %q", p, ok, absCwd)
+	}
+}
+
+// TestDriftLooseEqual pins the numeric-coercion rule: only a JSON number
+// vs a string with the same %v spelling counts as equal; every other
+// type combination stays strict (real type drift still reports).
+func TestDriftLooseEqual(t *testing.T) {
+	cases := []struct {
+		name   string
+		ev, av any
+		want   bool
+	}{
+		{"number vs same string", float64(8080), "8080", true},
+		{"string vs same number", "8080", float64(8080), true},
+		{"float vs same string", float64(1.5), "1.5", true},
+		{"number vs different string", float64(8080), "9090", false},
+		{"number vs non-numeric string", float64(8080), "abc", false},
+		{"negative number vs same string", float64(-1), "-1", true},
+		{"scientific float vs plain string", float64(100), "1e2", false},
+		{"both strings (DeepEqual's job)", "8080", "8080", false},
+		{"both numbers (DeepEqual's job)", float64(1), float64(1), false},
+		{"number vs bool", float64(1), true, false},
+		{"string vs bool", "true", true, false},
+		{"nil expected", nil, "8080", false},
+		{"nil actual", float64(1), nil, false},
+		{"number vs map", float64(1), map[string]any{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := driftLooseEqual(tc.ev, tc.av); got != tc.want {
+				t.Errorf("driftLooseEqual(%#v, %#v) = %v, want %v", tc.ev, tc.av, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDoctorDrift_DeletedConfigFileSkipped pins the documented F7
+// behavior: a client whose config file was deleted outright (app dir
+// still present, so it is still detected with Existing=false) is skipped
+// silently — no per-server MISSING findings for a whole missing file.
+func TestDoctorDrift_DeletedConfigFileSkipped(t *testing.T) {
+	home := driftIsolate(t)
+	c := driftGenericClient(home)
+	plantDriftServer(t, c, "drift-server", driftStdioCfg)
+	plantDriftLockfile(t, map[string]lockfile.ServerEntry{"drift-server": driftLockEntry()})
+	plantDriftCanonical(t, map[string]canonical.Server{
+		"drift-server": driftStdioCanonical("drift-server", "node", []string{"server.js"}),
+	})
+	// Delete the config file; the app dir (~/.config/mcp) remains.
+	if err := os.Remove(c.Path); err != nil {
+		t.Fatal(err)
+	}
+
+	checks, note := runDriftChecks()
+	if len(checks) != 0 {
+		t.Errorf("deleted config must be skipped silently, got checks %+v", checks)
+	}
+	if !strings.Contains(note, "nothing to compare") {
+		t.Errorf("note = %q, want a nothing-to-compare note", note)
+	}
+}
+
+// TestDoctorDrift_SubsetInstallNoPhantomMissing covers `--client` subset
+// installs: srv-a was written to Cursor only, srv-b to Generic only. The
+// lockfile's per-server Clients record must keep both clients quiet —
+// neither config is missing anything it never received.
+func TestDoctorDrift_SubsetInstallNoPhantomMissing(t *testing.T) {
+	home := driftIsolate(t)
+	cursor := clientconfig.Client{ID: clientconfig.ClientCursor, Name: "Cursor",
+		Path: filepath.Join(home, ".cursor", "mcp.json"), Format: clientconfig.FormatMcpServers, Existing: true}
+	generic := driftGenericClient(home)
+
+	plantDriftServer(t, cursor, "srv-a", driftStdioCfg)
+	plantDriftServer(t, generic, "srv-b", clientconfig.ServerConfig{
+		Command: "python3", Args: []string{"app.py"}, Env: map[string]string{"PHAROS_DRIFT": "one"},
+	})
+	lockA := driftLockEntry()
+	lockA.Clients = []string{"cursor"}
+	lockB := driftLockEntry()
+	lockB.Clients = []string{"generic"}
+	plantDriftLockfile(t, map[string]lockfile.ServerEntry{"srv-a": lockA, "srv-b": lockB})
+	plantDriftCanonical(t, map[string]canonical.Server{
+		"srv-a": driftStdioCanonical("srv-a", "node", []string{"server.js"}),
+		"srv-b": driftStdioCanonical("srv-b", "python3", []string{"app.py"}),
+	})
+
+	checks, _ := runDriftChecks()
+	for _, name := range []string{"Config drift: Cursor", "Config drift: Generic MCP"} {
+		got := driftFindCheck(checks, name)
+		if got == nil {
+			t.Fatalf("drift check %q missing: %+v", name, checks)
+		}
+		if got.Status != "ok" {
+			t.Errorf("%s: status = %q (%q), want ok; findings: %+v", name, got.Status, got.Error, got.Findings)
+		}
+		if len(got.Findings) != 0 {
+			t.Errorf("%s: expected 0 findings (subset install is healthy), got %+v", name, got.Findings)
+		}
+		if got.Detail != "1 managed server(s) match" {
+			t.Errorf("%s: detail = %q, want exactly the one received server counted", name, got.Detail)
+		}
+	}
+}
+
+// TestDoctorDrift_LegacyLockfileStillReportsMissing pins the back-compat
+// half of the subset-install rule: lockfile entries without a clients
+// record (pre-Clients lockfiles) keep reporting MISSING for every client.
+func TestDoctorDrift_LegacyLockfileStillReportsMissing(t *testing.T) {
+	home := driftIsolate(t)
+	cursor := clientconfig.Client{ID: clientconfig.ClientCursor, Name: "Cursor",
+		Path: filepath.Join(home, ".cursor", "mcp.json"), Format: clientconfig.FormatMcpServers, Existing: true}
+	plantDriftServer(t, cursor, "srv-a", driftStdioCfg)
+	// Both entries are legacy (no Clients record); srv-b is managed but
+	// absent from the Cursor config.
+	plantDriftLockfile(t, map[string]lockfile.ServerEntry{
+		"srv-a": driftLockEntry(),
+		"srv-b": driftLockEntry(),
+	})
+	plantDriftCanonical(t, map[string]canonical.Server{
+		"srv-a": driftStdioCanonical("srv-a", "node", []string{"server.js"}),
+		"srv-b": driftStdioCanonical("srv-b", "python3", []string{"app.py"}),
+	})
+
+	checks, _ := runDriftChecks()
+	got := driftFindCheck(checks, "Config drift: Cursor")
+	if got == nil {
+		t.Fatalf("drift check missing: %+v", checks)
+	}
+	if got.Status != "fail" {
+		t.Fatalf("status = %q, want fail (legacy entries report MISSING)", got.Status)
+	}
+	found := false
+	for _, f := range got.Findings {
+		if f.Kind == "missing" && f.Severity == "error" && f.Server == "srv-b" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected MISSING(error) for srv-b on a legacy entry, got %+v", got.Findings)
+	}
+}
+
+// TestDoctorDrift_CaseVariantRenameStillChecked: a case-only rename of
+// the only managed entry (drift-server → Drift-Server) must still
+// surface as MISSING (exact managed name) + EXTRA (the variant) instead
+// of silently vanishing.
+func TestDoctorDrift_CaseVariantRenameStillChecked(t *testing.T) {
+	home := driftIsolate(t)
+	c := driftGenericClient(home)
+	plantDriftServer(t, c, "drift-server", driftStdioCfg)
+	plantDriftLockfile(t, map[string]lockfile.ServerEntry{"drift-server": driftLockEntry()})
+	plantDriftCanonical(t, map[string]canonical.Server{
+		"drift-server": driftStdioCanonical("drift-server", "node", []string{"server.js"}),
+	})
+
+	handEditJSON(t, c.Path, func(root map[string]any) {
+		servers := root["mcpServers"].(map[string]any)
+		entry := servers["drift-server"]
+		delete(servers, "drift-server")
+		servers["Drift-Server"] = entry
+	})
+
+	checks, _ := runDriftChecks()
+	got := driftFindCheck(checks, "Config drift: Generic MCP")
+	if got == nil {
+		t.Fatalf("case-variant rename must still produce a drift check, got %+v", checks)
+	}
+	if got.Status != "fail" {
+		t.Fatalf("status = %q, want fail", got.Status)
+	}
+	missingOK, extraOK := false, false
+	for _, f := range got.Findings {
+		if f.Kind == "missing" && f.Severity == "error" && f.Server == "drift-server" {
+			missingOK = true
+		}
+		if f.Kind == "extra" && f.Severity == "info" && f.Server == "Drift-Server" {
+			extraOK = true
+		}
+	}
+	if !missingOK || !extraOK {
+		t.Errorf("findings = %+v, want MISSING(error, drift-server) + EXTRA(info, Drift-Server)", got.Findings)
+	}
+}
+
+// TestDoctorDrift_TOMLNumericEnvNotDrift: an unquoted numeric value in a
+// TOML config (PORT = 8080) reads back as a JSON number while the
+// canonical record stores the string "8080" — same number, not drift.
+// A genuinely different number still reports.
+func TestDoctorDrift_TOMLNumericEnvNotDrift(t *testing.T) {
+	home := driftIsolate(t)
+	c := clientconfig.Client{ID: clientconfig.ClientCodex, Name: "Codex CLI",
+		Path: filepath.Join(home, ".codex", "config.toml"), Format: clientconfig.FormatTOML, Existing: true}
+	plantDriftServer(t, c, "drift-server", clientconfig.ServerConfig{
+		Command: "node", Args: []string{"server.js"},
+		Env: map[string]string{"PORT": "8080", "PHAROS_DRIFT": "one"}, Type: "stdio",
+	})
+	canon := driftStdioCanonical("drift-server", "node", []string{"server.js"})
+	canon.Env = map[string]string{"PORT": "8080", "PHAROS_DRIFT": "one"}
+	plantDriftLockfile(t, map[string]lockfile.ServerEntry{"drift-server": driftLockEntry()})
+	plantDriftCanonical(t, map[string]canonical.Server{"drift-server": canon})
+
+	// Hand-edit: unquote the numeric env value (same number, new spelling).
+	unquoted := "[mcp_servers.drift-server]\ncommand = \"node\"\nargs = [\"server.js\"]\n\n[mcp_servers.drift-server.env]\nPORT = 8080\nPHAROS_DRIFT = \"one\"\n"
+	if err := os.WriteFile(c.Path, []byte(unquoted), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	checks, _ := runDriftChecks()
+	got := driftFindCheck(checks, "Config drift: Codex CLI")
+	if got == nil {
+		t.Fatalf("drift check missing: %+v", checks)
+	}
+	if got.Status != "ok" || len(got.Findings) != 0 {
+		t.Errorf("status/findings = %q/%+v, want ok/0 — numeric spelling is not drift", got.Status, got.Findings)
+	}
+	if got.Detail != "1 managed server(s) match" {
+		t.Errorf("detail = %q, want %q", got.Detail, "1 managed server(s) match")
+	}
+
+	// A genuinely different numeric value still drifts, as a number.
+	changed := "[mcp_servers.drift-server]\ncommand = \"node\"\nargs = [\"server.js\"]\n\n[mcp_servers.drift-server.env]\nPORT = 9090\nPHAROS_DRIFT = \"one\"\n"
+	if err := os.WriteFile(c.Path, []byte(changed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	checks, _ = runDriftChecks()
+	got = driftFindCheck(checks, "Config drift: Codex CLI")
+	if got == nil || got.Status != "fail" || len(got.Findings) != 1 {
+		t.Fatalf("expected exactly 1 numeric drift finding, got %+v", got)
+	}
+	f := got.Findings[0]
+	if f.Field != "env.PORT" || f.Expected != `"8080"` || f.Actual != "9090" {
+		t.Errorf("finding = %+v, want env.PORT \"8080\"→9090", f)
+	}
+}
+
+// TestDoctorDrift_GrokHeadersCompared: Grok stores remote auth in a
+// `headers` table (its env equivalent); hand-edited headers must be
+// compared with the same per-key semantics as env, in both directions.
+func TestDoctorDrift_GrokHeadersCompared(t *testing.T) {
+	home := driftIsolate(t)
+	c := clientconfig.Client{ID: clientconfig.ClientGrok, Name: "Grok Build",
+		Path: filepath.Join(home, ".grok", "config.toml"), Format: clientconfig.FormatTOML, Existing: true}
+	plantDriftServer(t, c, "drift-server", clientconfig.ServerConfig{
+		URL: "https://api.example.com/mcp", Env: map[string]string{"AUTH": "one"}, Type: "http",
+	})
+	canon := driftRemoteCanonical("https://api.example.com/mcp")
+	canon.Env = map[string]string{"AUTH": "one"}
+	plantDriftLockfile(t, map[string]lockfile.ServerEntry{"drift-server": driftLockEntry()})
+	plantDriftCanonical(t, map[string]canonical.Server{"drift-server": canon})
+
+	checks, _ := runDriftChecks()
+	got := driftFindCheck(checks, "Config drift: Grok Build")
+	if got == nil || got.Status != "ok" || len(got.Findings) != 0 {
+		t.Fatalf("clean grok remote with headers should pass, got %+v (findings %+v)", got, got.Findings)
+	}
+	if got.Detail != "1 managed server(s) match" {
+		t.Errorf("detail = %q, want %q", got.Detail, "1 managed server(s) match")
+	}
+
+	// Hand-edit the header value — must surface as headers.AUTH drift.
+	if err := os.WriteFile(c.Path, []byte("[mcp_servers.drift-server]\nurl = \"https://api.example.com/mcp\"\n\n[mcp_servers.drift-server.headers]\nAUTH = \"two\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	checks, _ = runDriftChecks()
+	got = driftFindCheck(checks, "Config drift: Grok Build")
+	if got == nil || got.Status != "fail" || len(got.Findings) != 1 {
+		t.Fatalf("expected 1 headers finding, got %+v", got)
+	}
+	f := got.Findings[0]
+	if f.Field != "headers.AUTH" || f.Expected != `"one"` || f.Actual != `"two"` {
+		t.Errorf("finding = %+v, want headers.AUTH \"one\"→\"two\"", f)
 	}
 }
 

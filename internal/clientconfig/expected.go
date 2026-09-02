@@ -31,8 +31,14 @@ import (
 // MergeServer wrote (modulo JSON key order, which is insignificant).
 //
 // Clients that cannot represent the server (Claude Desktop remotes, Aider
-// remotes) return a *SkipError.
+// remotes) return a *SkipError — the same skipMergeReason check the merge
+// path applies before writing, so expectations are only derived for
+// entries install would actually have written.
 func ExpectedEntry(c Client, name string, server ServerConfig) (json.RawMessage, error) {
+	if reason := skipMergeReason(c, server); reason != "" {
+		return nil, &SkipError{Reason: reason}
+	}
+
 	format := c.Format
 	if format == "" {
 		format = FormatMcpServers

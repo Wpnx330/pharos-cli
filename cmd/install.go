@@ -266,8 +266,10 @@ func runInstall(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	// Update lockfile.
-	if err := install.UpdateLockfile(lockPath, result, resolvedURL); err != nil {
+	// Update lockfile, recording which clients actually received the
+	// config (drift detection keys MISSING findings off this record).
+	writtenClients := writtenClientIDs(updated)
+	if err := install.UpdateLockfile(lockPath, result, resolvedURL, writtenClients); err != nil {
 		fmt.Fprintf(os.Stderr, "%s  %s\n", ui.Error.Render("Lockfile update failed:"), err)
 		rcpt.addError("lockfile update failed: %v", err)
 	} else {
@@ -370,15 +372,17 @@ func runInstall(cmd *cobra.Command, args []string) {
 				if depInstallResult != nil && depInstallResult.Transport != "" {
 					depTransport = depInstallResult.Transport
 				}
-				// Write client config for the dependency (unless --no-dep-config).
+				// Write client config for the dependency (unless
+				// --no-dep-config), then update the lockfile for it,
+				// recording the clients that actually received the config.
+				var depUpdated []clientconfig.Client
 				if !installSkipDepConfig {
 					depCfg := install.BuildClientConfig(depVD.Manifest, storeDir)
-					writeDepClientConfigs(rcpt, depName, depCfg, clientIDs)
+					depUpdated = writeDepClientConfigs(rcpt, depName, depCfg, clientIDs)
 				}
-				// Update lockfile for the dependency.
 				if err := install.UpdateLockfile(lockPath, &install.InstallResult{
 					Name: depName, Version: depVersion, Transport: depTransport, Kind: depKind,
-				}, depURL); err != nil {
+				}, depURL, writtenClientIDs(depUpdated)); err != nil {
 					rcpt.addError("dependency %s lockfile update failed: %v", depName, err)
 				} else {
 					rcpt.touchLock()
@@ -617,8 +621,10 @@ func printClientConfigResults(updated []clientconfig.Client, skipped []clientcon
 // primary's pre-run snapshotAllClients), so the action is "added" when
 // this run introduces the dep and "replaced" when the config already
 // referenced it. Dep write failures are recorded on the receipt (status
-// "partial") and do not abort the remaining dependencies.
-func writeDepClientConfigs(rcpt *receiptBuilder, depName string, depCfg clientconfig.ServerConfig, clientIDs []string) {
+// "partial") and do not abort the remaining dependencies. It returns the
+// clients the dep config was actually written to (for the lockfile's
+// Clients record).
+func writeDepClientConfigs(rcpt *receiptBuilder, depName string, depCfg clientconfig.ServerConfig, clientIDs []string) []clientconfig.Client {
 	rcpt.snapshotAllClients(depName)
 	updated, skipped, err := install.WriteClientConfigs(depName, depCfg, clientIDs)
 	if err != nil {
@@ -634,6 +640,26 @@ func writeDepClientConfigs(rcpt *receiptBuilder, depName string, depCfg clientco
 			rcpt.server(c.Name, depName, "added")
 		}
 	}
+	return updated
+}
+
+// writtenClientIDs extracts the deduped client IDs from the clients a
+// config write actually updated (the lockfile Clients record).
+func writtenClientIDs(updated []clientconfig.Client) []string {
+	if len(updated) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(updated))
+	seen := make(map[string]bool, len(updated))
+	for _, c := range updated {
+		id := string(c.ID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 // resolveClientSelection determines which MCP clients to write configs to.

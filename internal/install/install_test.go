@@ -11,11 +11,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wpnx330/pharos-cli/internal/api"
 	"github.com/Wpnx330/pharos-cli/internal/clientconfig"
+	"github.com/Wpnx330/pharos-cli/internal/lockfile"
 )
 
 func newTarballServer(t *testing.T, status int, body []byte) *httptest.Server {
@@ -1256,5 +1259,79 @@ func TestWriteClientConfigsCursorKind2LocalhostURL(t *testing.T) {
 	}
 	if _, hasCmd := entry["command"]; hasCmd {
 		t.Errorf("Cursor kind 2 must not write command, entry=%v", entry)
+	}
+}
+
+// TestUpdateLockfileRecordsWrittenClients pins the per-server Clients
+// record (additive lockfile field): fresh installs record the clients
+// actually written to, re-installs merge the set without duplicates or
+// loss, empty write lists keep the previous record, and legacy entries
+// (no Clients) stay legacy when nothing new is written.
+func TestUpdateLockfileRecordsWrittenClients(t *testing.T) {
+	isolateWindowsUsers(t)
+	t.Setenv("HOME", t.TempDir())
+	lockPath := filepath.Join(t.TempDir(), "pharos.lock")
+	res := &InstallResult{Name: "srv", Version: "1.0.0", Transport: "stdio"}
+
+	// Fresh install to two clients — record both, sorted.
+	if err := UpdateLockfile(lockPath, res, "https://x/srv.tgz", []string{"generic", "cursor"}); err != nil {
+		t.Fatal(err)
+	}
+	lf, err := lockfile.Load(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := lf.Get("srv")
+	if !ok {
+		t.Fatal("srv missing from lockfile after install")
+	}
+	if want := []string{"cursor", "generic"}; !reflect.DeepEqual(entry.Clients, want) {
+		t.Errorf("Clients = %v, want %v", entry.Clients, want)
+	}
+
+	// Re-install to a subset must merge (not lose the other client).
+	if err := UpdateLockfile(lockPath, res, "https://x/srv.tgz", []string{"cursor"}); err != nil {
+		t.Fatal(err)
+	}
+	lf, _ = lockfile.Load(lockPath)
+	entry, _ = lf.Get("srv")
+	if want := []string{"cursor", "generic"}; !reflect.DeepEqual(entry.Clients, want) {
+		t.Errorf("Clients after subset re-install = %v, want merged %v", entry.Clients, want)
+	}
+
+	// Re-install adding a new client extends the set, deduped: previous
+	// order preserved, new IDs appended sorted.
+	if err := UpdateLockfile(lockPath, res, "https://x/srv.tgz", []string{"cursor", "aider", "cursor"}); err != nil {
+		t.Fatal(err)
+	}
+	lf, _ = lockfile.Load(lockPath)
+	entry, _ = lf.Get("srv")
+	if want := []string{"cursor", "generic", "aider"}; !reflect.DeepEqual(entry.Clients, want) {
+		t.Errorf("Clients after extending re-install = %v, want %v", entry.Clients, want)
+	}
+
+	// An update with no client writes keeps the previous record.
+	if err := UpdateLockfile(lockPath, res, "https://x/srv.tgz", nil); err != nil {
+		t.Fatal(err)
+	}
+	lf, _ = lockfile.Load(lockPath)
+	entry, _ = lf.Get("srv")
+	if want := []string{"cursor", "generic", "aider"}; !reflect.DeepEqual(entry.Clients, want) {
+		t.Errorf("Clients after no-write update = %v, want preserved %v", entry.Clients, want)
+	}
+
+	// Legacy entry without a Clients record stays legacy on update.
+	legacy := lockfile.New()
+	legacy.Set("old", lockfile.ServerEntry{Version: "0.9.0", InstalledAt: time.Now().UTC()})
+	if err := legacy.Save(lockPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpdateLockfile(lockPath, &InstallResult{Name: "old", Version: "0.9.0", Transport: "stdio"}, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	lf, _ = lockfile.Load(lockPath)
+	entry, _ = lf.Get("old")
+	if len(entry.Clients) != 0 {
+		t.Errorf("legacy entry gained Clients %v, want none", entry.Clients)
 	}
 }

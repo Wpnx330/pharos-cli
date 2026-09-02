@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -749,19 +750,79 @@ func resolveWriteTargets(clientIDs []string) ([]clientconfig.Client, error) {
 }
 
 // UpdateLockfile writes/updates the lockfile with the install result.
-func UpdateLockfile(lockPath string, result *InstallResult, resolvedURL string) error {
+// clientIDs are the IDs of the clients this install actually wrote the
+// server's config to (possibly empty); they are merged into the entry's
+// Clients set — a re-install to a different client subset extends the
+// record rather than replacing it.
+func UpdateLockfile(lockPath string, result *InstallResult, resolvedURL string, clientIDs []string) error {
 	lf, err := lockfile.Load(lockPath)
 	if err != nil {
 		return err
 	}
-	lf.Set(result.Name, lockfile.ServerEntry{
+	entry := lockfile.ServerEntry{
 		Version:     result.Version,
 		Integrity:   result.Integrity,
 		Transport:   result.Transport,
 		Resolved:    resolvedURL,
 		InstalledAt: time.Now().UTC(),
-	})
+	}
+	if prev, ok := lf.Get(result.Name); ok {
+		entry.Clients = mergeClientIDs(prev.Clients, clientIDs)
+	} else {
+		entry.Clients = normalizeClientIDs(clientIDs)
+	}
+	lf.Set(result.Name, entry)
 	return lf.Save(lockPath)
+}
+
+// mergeClientIDs unions the previous and new client ID sets, preserving
+// the previous order and appending new IDs sorted for determinism.
+func mergeClientIDs(prev, next []string) []string {
+	if len(prev) == 0 {
+		return normalizeClientIDs(next)
+	}
+	if len(next) == 0 {
+		return prev
+	}
+	seen := make(map[string]bool, len(prev)+len(next))
+	merged := make([]string, 0, len(prev)+len(next))
+	for _, id := range prev {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		merged = append(merged, id)
+	}
+	fresh := make([]string, 0, len(next))
+	for _, id := range next {
+		if id != "" && !seen[id] {
+			seen[id] = true
+			fresh = append(fresh, id)
+		}
+	}
+	sort.Strings(fresh)
+	return append(merged, fresh...)
+}
+
+// normalizeClientIDs dedups, drops empties, and sorts a client ID set.
+func normalizeClientIDs(ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(ids))
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // --- path helpers ---

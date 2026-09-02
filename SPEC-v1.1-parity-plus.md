@@ -25,6 +25,7 @@
 | site | homepage registry copy (2 strings) | 🟢 DONE (Sep 1) — full 7-registry list live, 133,000+ counts, Badge/FilterBar label maps cover all sources, "Available on undefined" bug fixed | web dev | pharos-web e752bc3, deployed |
 | site | llm.txt serving (after W1.1) | 🟢 UNBLOCKED — docs/llm.txt is in pharos-cli repo @ db23a59; serve at /llm.txt + link from agent docs | web dev | — |
 | site | Sprint 1 DoD (star CTA, canonicals, sitemap+100 pkg URLs, schema SWA/FAQ/HowTo, llms.txt current, CWV spot) | 🟢 DONE (Sep 1) | web dev | pharos-web 252372b..cc9639d, deployed; GSC verify + clean-Windows install.ps1 test = Chris |
+| site | hero carousel overflow fix (CTA pushed slide 0 past min-h; OpenCode agent fix + reviewer pass, 3-viewport verified) | 🟢 DONE (Sep 1) | web dev | pending commit+deploy |
 
 
 ---

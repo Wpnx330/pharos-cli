@@ -27,6 +27,7 @@
 | site | Sprint 1 DoD (star CTA, canonicals, sitemap+100 pkg URLs, schema SWA/FAQ/HowTo, llms.txt current, CWV spot) | 🟢 DONE (Sep 1) | web dev | pharos-web 252372b..cc9639d, deployed; GSC verify + clean-Windows install.ps1 test = Chris |
 | site | hero carousel overflow fix (CTA pushed slide 0 past min-h; OpenCode agent fix + reviewer pass, 3-viewport verified) | 🟢 DONE (Sep 1) | web dev | pending commit+deploy |
 | site | /search instant-nav (shell+skeleton streams, was 11-20s cold freeze) | 🟢 DONE (Sep 2) | web dev | pharos-web 20a2c1e deployed; nav commit 53ms, skeleton at 30ms, results ~400ms |
+| site | search follow-ups: param-aware SSR, no cached failures, error boundaries, 8s timeouts, CLS | 🟢 DONE (Sep 2) | web dev | pharos-web b43317f deployed; deep-link SSR verified live; typed-search refetch wired |
 
 
 ---

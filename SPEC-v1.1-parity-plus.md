@@ -3,7 +3,7 @@
      App dev (CLI/registry/SDK) AND web dev both mirror progress here.
      Handoffs referencing this spec: TRON/temp/handoff-app-dev-v1.1.md,
      TRON/temp/handoff-web-dev-v1.1.md
-     Last updated: 2026-09-01 19:15 ET by TRON (W1.1 shipped)
+     Last updated: 2026-09-02 00:55 ET by TRON (W1.2 shipped)
 ════════════════════════════════════════════════════════════════ -->
 
 # PHAROS v1.1 Spec — Parity Plus — STATE TRACKER
@@ -11,7 +11,7 @@
 | Wave | Items | State | Owner | Shipped in |
 |------|-------|-------|-------|------------|
 | W1.1 | A7 agent env contract + llm.txt | 🟢 DONE (Sep 1) — PHAROS_NON_INTERACTIVE/ASSUME_YES/JSON contract, 11 cmds gained --json, 926-line test harness incl. command-matrix + llm.txt golden, docs/llm.txt generated | app dev | pharos-cli db23a59 |
-| W1.2 | C5 install receipts | ⚪ pending | app dev | — |
+| W1.2 | C5 install receipts | 🟢 DONE (Sep 2) — receipts on install/remove/update w/ before-after sha256 per client file, .bak provenance, lockfile row; JSON-mode single-doc; 16 new tests (732); live-binary QA'd | app dev | pharos-cli 835560e |
 | W1.3 | B2 search signals (CLI display) | ⚪ pending (API half done) | app dev | — |
 | W1.4 | B3 doctor --diff | ⚪ pending (needs W1.2) | app dev | — |
 | W2.1 | A2 pharos adopt | ⚪ pending | app dev | — |

@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,6 +29,7 @@ var doctorCmd = &cobra.Command{
   • Installed server reachability
   • Lockfile integrity hash validation
   • Client config validity (JSON, TOML, YAML)
+  • Client config drift vs the pharos.lock baseline (--diff)
 
 Reports any issues found.`,
 	Run: func(cmd *cobra.Command, args []string) {
@@ -85,6 +87,16 @@ Reports any issues found.`,
 			}))
 		}
 
+		// 4b. Config drift (--diff, W1.4): compare pharos-managed server
+		// entries in each client config against the pharos.lock +
+		// canonical baseline. Strictly read-only.
+		var driftNote string
+		if doctorDiff {
+			driftChecks, note := runDriftChecks()
+			checks = append(checks, driftChecks...)
+			driftNote = note
+		}
+
 		// 5. Runtime executables — check which common MCP server runtimes
 		// are available on PATH. These are advisory: a missing runtime
 		// only matters if you install a package that needs it.
@@ -119,19 +131,7 @@ Reports any issues found.`,
 			data, _ := json.MarshalIndent(out, "", "  ")
 			fmt.Println(string(data))
 		} else {
-			fmt.Println(ui.Label.Render("PHAROS Doctor — Health Check") + "\n")
-			for _, c := range checks {
-				var icon, detail string
-				if c.Status == "ok" {
-					icon = ui.Success.Render("✓")
-					detail = c.Detail
-				} else {
-					icon = ui.Error.Render("✗")
-					detail = c.Error
-				}
-				fmt.Printf("  %s  %-30s  %s\n", icon, c.Name, detail)
-			}
-			fmt.Println()
+			printDoctorChecks(os.Stdout, checks, driftNote)
 			if failures == 0 {
 				fmt.Println(ui.Success.Render("✓ All checks passed."))
 			} else {
@@ -142,12 +142,43 @@ Reports any issues found.`,
 	},
 }
 
-// doctorCheck represents the result of a single health check.
+// printDoctorChecks renders the human health report. Drift findings
+// (--diff) render as one indented bullet line each, in the same order as
+// the JSON report's findings array, so human and machine consumers see the
+// same findings. driftNote is the muted nothing-to-compare footnote for
+// --diff runs; it is only printed when the flag is set.
+func printDoctorChecks(w io.Writer, checks []doctorCheck, driftNote string) {
+	fmt.Fprintln(w, ui.Label.Render("PHAROS Doctor — Health Check")+"\n")
+	for _, c := range checks {
+		var icon, detail string
+		if c.Status == "ok" {
+			icon = ui.Success.Render("✓")
+			detail = c.Detail
+		} else {
+			icon = ui.Error.Render("✗")
+			detail = c.Error
+		}
+		fmt.Fprintf(w, "  %s  %-30s  %s\n", icon, c.Name, detail)
+		for _, f := range c.Findings {
+			fmt.Fprintf(w, "        • %s\n", f.Message)
+		}
+	}
+	fmt.Fprintln(w)
+	if doctorDiff && driftNote != "" {
+		fmt.Fprintln(w, ui.Muted.Render(driftNote))
+		fmt.Fprintln(w)
+	}
+}
+
+// doctorCheck represents the result of a single health check. Findings is
+// populated only by the drift checks (--diff) and is omitted otherwise, so
+// the JSON shape stays additive for existing consumers.
 type doctorCheck struct {
-	Name   string `json:"name"`
-	Status string `json:"status"`
-	Detail string `json:"detail,omitempty"`
-	Error  string `json:"error,omitempty"`
+	Name     string          `json:"name"`
+	Status   string          `json:"status"`
+	Detail   string          `json:"detail,omitempty"`
+	Error    string          `json:"error,omitempty"`
+	Findings []doctorFinding `json:"findings,omitempty"`
 }
 
 // runCheck executes a check function and wraps the result.

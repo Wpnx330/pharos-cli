@@ -88,9 +88,9 @@ var llmNotes = map[string]llmNote{
 		ni:     "no prompts; --on/--off run the platform service manager",
 	},
 	"pharos doctor": {
-		output: "JSON: {checks: [{name, status, detail}], failures, healthy}. Plain: per-check pass/fail list",
+		output: "JSON: {checks: [{name, status, detail, findings?}], failures, healthy}; with --diff each \"Config drift: <client>\" check may carry findings: [{server, kind: missing|modified|extra, severity: error|info, field, expected, actual, message}]. Plain: per-check pass/fail list, drift findings as indented bullet lines",
 		env:    "PHAROS_JSON=1 or --json",
-		ni:     "no prompts; the registry connectivity check requires network access",
+		ni:     "no prompts; the registry connectivity check requires network access; --diff is read-only",
 	},
 	"pharos health": {
 		output: "JSON: {status, version, latency}. Plain: three labeled lines",

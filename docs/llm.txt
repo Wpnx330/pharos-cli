@@ -190,11 +190,12 @@ NON-INTERACTIVE: no prompts
 SHORT: Diagnose PHAROS CLI health — registry, installed servers, configs
 USAGE: pharos doctor [flags]
 FLAGS:
+  --diff <bool> (default: false) compare pharos-managed server entries in client configs against the pharos.lock baseline (read-only)
   --help <bool> (default: false) help for doctor
   --json <bool> (default: false) output as JSON
-OUTPUT: JSON: {checks: [{name, status, detail}], failures, healthy}. Plain: per-check pass/fail list
+OUTPUT: JSON: {checks: [{name, status, detail, findings?}], failures, healthy}; with --diff each "Config drift: <client>" check may carry findings: [{server, kind: missing|modified|extra, severity: error|info, field, expected, actual, message}]. Plain: per-check pass/fail list, drift findings as indented bullet lines
 ENV: PHAROS_JSON=1 or --json
-NON-INTERACTIVE: no prompts; the registry connectivity check requires network access
+NON-INTERACTIVE: no prompts; the registry connectivity check requires network access; --diff is read-only
 
 # COMMAND: pharos health
 SHORT: Check the PHAROS registry health

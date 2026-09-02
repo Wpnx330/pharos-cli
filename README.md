@@ -120,6 +120,7 @@ One-line list only. Full flags and examples: https://discoverpharos.dev/cli/docs
 - `--frozen` — Install strictly from lockfile; refuse if missing or mismatched (install)
 - `--idle-timeout` — **Per-server** minutes of inactivity before auto-unloading that server's HTTP/SSE process (default: 60, 0 = never unload). Set at install time; stored per-server in `~/.pharos/mcp.json` (install)
 - `--running` — Show only running daemon-managed servers (list)
+- `--diff` — Compare pharos-managed server entries in client configs against the pharos.lock baseline; read-only drift report (doctor)
 
 ## Search Results
 
@@ -238,6 +239,18 @@ Clients that are skipped record nothing (absence = untouched). `update` sets `ba
 `status` is `"ok"`, or `"partial"` when `errors` is non-empty. `errors` lists non-fatal failures (client config write failures, lockfile save failures) as strings naming the affected client or file; the itemized `files`/`servers` entries still list every side effect that did happen. In the human summary the same information prints as a `⚠ completed with N warnings` section.
 
 **Unknown key preservation**: For JSON-based clients (OpenCode, Cursor, Claude Desktop, Cline, Generic MCP), Pharos uses a map-based reader/writer that preserves all existing top-level keys. If your OpenCode config has `model`, `theme`, or `tab_size` settings, they survive Pharos installs and removes untouched.
+
+### Config drift detection
+
+Safe writes guarantee *pharos* never corrupts a config — but nothing stopped a hand edit from drifting one *out from under* pharos, invisibly. `pharos doctor --diff` (read-only) compares every pharos-managed server entry in each client config against the baseline pharos recorded at install time (`pharos.lock` + `~/.pharos/mcp.json`), and reports `missing`, `modified` (naming the field), or `extra` (unmanaged, hand-added — informational) findings:
+
+```
+  ✗  Config drift: Generic MCP     2 drift finding(s) in this config
+        • server 'context7' modified: env.API_KEY: expected "abc", got "xyz"
+        • server 'hand-added' is not managed by pharos (not in pharos.lock) — unmanaged (hand-added?)
+```
+
+Only compared fields (`command`, `args`, `env`, `url`, `type`) count; reformatting (key order, whitespace, empty containers) never counts as drift, and unknown user keys inside an entry are left alone. Clients pharos has never written to are skipped silently. Under `PHAROS_JSON=1` the findings appear on the drift checks in the doctor JSON report.
 
 ### Supported client formats
 

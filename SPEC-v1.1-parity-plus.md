@@ -29,6 +29,7 @@
 | site | /search instant-nav (shell+skeleton streams, was 11-20s cold freeze) | 🟢 DONE (Sep 2) | web dev | pharos-web 20a2c1e deployed; nav commit 53ms, skeleton at 30ms, results ~400ms |
 | site | search follow-ups: param-aware SSR, no cached failures, error boundaries, 8s timeouts, CLS | 🟢 DONE (Sep 2) | web dev | pharos-web b43317f deployed; deep-link SSR verified live; typed-search refetch wired |
 | site | Sprint 2 Wave A: /servers hub + 13 category pages, SoftwareApplication/Breadcrumb/ItemList/FAQPage JSON-LD, sitemap 1027 URLs, install.ps1 PS5.1 fix | 🟢 BUILT+QA (Sep 2) | web dev | reviewer PASS 7/7; pending deploy |
+| site | Sprint 2 Wave B: cornerstone Best MCP Servers 2026 + PHAROS vs mcpm.sh comparison, FAQ JSON-LD, footer/llms.txt wiring | 🟢 BUILT+QA (Sep 2) | web dev | reviewer PASS 6/6, follow-ups closed; pending deploy |
 
 
 ---

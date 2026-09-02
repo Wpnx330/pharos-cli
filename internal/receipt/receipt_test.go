@@ -122,7 +122,8 @@ func TestJSONRoundTrip(t *testing.T) {
 
 // TestJSONStableKeyOrder pins the field order of the emitted document:
 // two renders are byte-identical and the top-level keys appear in
-// declaration order (command, package, version, timestamp, files, servers).
+// declaration order (command, package, version, timestamp, status, files,
+// servers).
 func TestJSONStableKeyOrder(t *testing.T) {
 	r := testReceipt()
 	first, err := r.JSON()
@@ -137,7 +138,7 @@ func TestJSONStableKeyOrder(t *testing.T) {
 		t.Error("JSON() is not byte-stable between calls")
 	}
 	s := string(first)
-	order := []string{`"command"`, `"package"`, `"version"`, `"timestamp"`, `"files"`, `"servers"`}
+	order := []string{`"command"`, `"package"`, `"version"`, `"timestamp"`, `"status"`, `"files"`, `"servers"`}
 	last := -1
 	for _, key := range order {
 		idx := strings.Index(s, key)
@@ -255,5 +256,112 @@ func TestShortHash(t *testing.T) {
 	}
 	if got := ShortHash(""); got != "" {
 		t.Errorf("ShortHash(empty) = %q", got)
+	}
+}
+
+// TestStatusRoundTrip pins the status field: it serializes on every
+// receipt, appears exactly as set, and round-trips losslessly for both
+// "ok" and "partial".
+func TestStatusRoundTrip(t *testing.T) {
+	for _, status := range []string{"ok", "partial"} {
+		r := testReceipt()
+		r.Status = status
+		data, err := r.JSON()
+		if err != nil {
+			t.Fatalf("JSON(status=%s): %v", status, err)
+		}
+		if !strings.Contains(string(data), `"status": "`+status+`"`) {
+			t.Errorf("status %q missing from output:\n%s", status, data)
+		}
+		var got Receipt
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("unmarshal(status=%s): %v", status, err)
+		}
+		if got.Status != status {
+			t.Errorf("status round-trip = %q, want %q", got.Status, status)
+		}
+	}
+}
+
+// TestStatusAlwaysPresentInJSON: even a zero-value receipt renders the
+// status key (defaulting to "ok") — consumers can rely on it always being
+// present in the document.
+func TestStatusAlwaysPresentInJSON(t *testing.T) {
+	r := Receipt{Command: "update", Package: "x", Timestamp: "2026-09-02T12:00:00Z"}
+	data, err := r.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+	if !strings.Contains(string(data), `"status": "ok"`) {
+		t.Errorf("status key missing from zero-value receipt:\n%s", data)
+	}
+}
+
+// TestErrorsOmittedWhenClean: a receipt without errors must not emit the
+// errors key at all (omitempty) — absence means the run was clean.
+func TestErrorsOmittedWhenClean(t *testing.T) {
+	r := testReceipt() // Errors left nil
+	data, err := r.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+	if strings.Contains(string(data), `"errors"`) {
+		t.Errorf("errors key must be omitted when there are no errors:\n%s", data)
+	}
+}
+
+// TestErrorsSerializeAndRoundTrip: populated errors serialize as a string
+// array next to status "partial" and round-trip losslessly.
+func TestErrorsSerializeAndRoundTrip(t *testing.T) {
+	r := testReceipt()
+	r.Status = "partial"
+	r.Errors = []string{
+		"lockfile save failed: permission denied",
+		"dependency dep-server config write failed: read-only dir",
+	}
+	data, err := r.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+	if !strings.Contains(string(data), `"errors": [`) {
+		t.Errorf("errors array missing from output:\n%s", data)
+	}
+	var got Receipt
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Status != "partial" {
+		t.Errorf("status = %q, want partial", got.Status)
+	}
+	if len(got.Errors) != len(r.Errors) {
+		t.Fatalf("errors = %+v, want %+v", got.Errors, r.Errors)
+	}
+	for i := range r.Errors {
+		if got.Errors[i] != r.Errors[i] {
+			t.Errorf("errors[%d] = %q, want %q", i, got.Errors[i], r.Errors[i])
+		}
+	}
+}
+
+// TestSummaryWarningsSection: a receipt carrying errors prints the
+// "⚠ completed with N warnings" section with one line per error, in
+// singular form for a single error.
+func TestSummaryWarningsSection(t *testing.T) {
+	one := Receipt{Command: "update", Package: "pkg", Errors: []string{"lockfile save failed: boom"}}
+	got := one.Summary()
+	if !strings.Contains(got, "⚠ completed with 1 warning\n") && !strings.Contains(got, "⚠ completed with 1 warning") {
+		t.Errorf("summary missing singular warning header:\n%s", got)
+	}
+	if !strings.Contains(got, "· lockfile save failed: boom") {
+		t.Errorf("summary missing the error line:\n%s", got)
+	}
+	two := Receipt{Command: "install", Package: "pkg", Errors: []string{"a failed", "b failed"}}
+	if s := two.Summary(); !strings.Contains(s, "⚠ completed with 2 warnings") {
+		t.Errorf("summary missing plural warning header:\n%s", s)
+	}
+	// No errors → no warnings section at all.
+	clean := testReceipt().Summary()
+	if strings.Contains(clean, "⚠") {
+		t.Errorf("clean receipt must not print a warnings section:\n%s", clean)
 	}
 }

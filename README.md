@@ -213,6 +213,7 @@ Every mutating command (`install`, `remove`, `update`) ends with a deterministic
   "package": "context7",
   "version": "1.0.0",
   "timestamp": "2026-09-02T12:00:00Z",
+  "status": "ok",
   "files": [
     {
       "path": "/home/u/.config/mcp/mcp.json",
@@ -228,7 +229,9 @@ Every mutating command (`install`, `remove`, `update`) ends with a deterministic
 }
 ```
 
-Clients that are skipped record nothing (absence = untouched). `update` sets `backup_path` when a `.bak` generation was taken; install/update add a `lockfile` file entry.
+Clients that are skipped record nothing (absence = untouched). `update` sets `backup_path` when a `.bak` generation was taken; install/update add a `lockfile` file entry, and install/remove add a `canonical` file entry for the Pharos canonical config (`~/.pharos/mcp.json`) whenever it was written. `remove` deliberately records **no** lockfile entry — receipts track client config files, and the removed version is carried on the receipt's top-level `version` field instead. Dependency installs record their own `servers` entries and file rows like the primary package does.
+
+`status` is `"ok"`, or `"partial"` when `errors` is non-empty. `errors` lists non-fatal failures (client config write failures, lockfile save failures) as strings naming the affected client or file; the itemized `files`/`servers` entries still list every side effect that did happen. In the human summary the same information prints as a `⚠ completed with N warnings` section.
 
 **Unknown key preservation**: For JSON-based clients (OpenCode, Cursor, Claude Desktop, Cline, Generic MCP), Pharos uses a map-based reader/writer that preserves all existing top-level keys. If your OpenCode config has `model`, `theme`, or `tab_size` settings, they survive Pharos installs and removes untouched.
 

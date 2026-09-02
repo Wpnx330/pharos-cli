@@ -47,10 +47,19 @@ type fileTouch struct {
 type receiptBuilder struct {
 	rec       receipt.Receipt
 	before    map[string]string // path → sha256 before the run ("" = absent)
-	hasServer map[string]bool   // path → server present before the run
+	hasServer map[string]bool   // path NUL server → present at snapshot time
+	backedUp  map[string]bool   // path → a pre-run .bak generation was taken this run
 	touched   []fileTouch
 	seenPath  map[string]bool
 	lockPath  string
+	canonPath string
+}
+
+// serverStateKey keys the pre-write server-presence map by path and
+// server name, so dependency installs (which resolve after the primary)
+// can snapshot their own name without clobbering the primary's state.
+func serverStateKey(path, server string) string {
+	return path + "\x00" + server
 }
 
 // newReceiptBuilder starts a receipt for one command run. The timestamp is
@@ -62,11 +71,13 @@ func newReceiptBuilder(command, pkg, version string) *receiptBuilder {
 			Package:   pkg,
 			Version:   version,
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
+			Status:    "ok",
 			Files:     []receipt.FileChange{},
 			Servers:   []receipt.ServerChange{},
 		},
 		before:    map[string]string{},
 		hasServer: map[string]bool{},
+		backedUp:  map[string]bool{},
 		seenPath:  map[string]bool{},
 	}
 }
@@ -102,19 +113,31 @@ func (b *receiptBuilder) snapshotPath(path string) {
 	b.before[path] = hash
 }
 
-// snapshotClient records the pre-run hash of a client config plus whether it
-// already references serverName, which later decides "added" vs "replaced".
+// snapshotClient records the pre-run hash of a client config plus whether
+// it already references serverName, which later decides "added" vs
+// "replaced".
 func (b *receiptBuilder) snapshotClient(c clientconfig.Client, serverName string) {
 	if b == nil {
 		return
 	}
 	b.snapshotPath(c.Path)
-	if _, ok := b.hasServer[c.Path]; ok {
+	key := serverStateKey(c.Path, serverName)
+	if _, ok := b.hasServer[key]; ok {
 		return
 	}
 	servers, err := clientconfig.ReadServersFormat(c.Path, c.Format)
 	_, has := servers[serverName] // nil map reads are fine
-	b.hasServer[c.Path] = err == nil && has
+	b.hasServer[key] = err == nil && has
+}
+
+// serverWasPresent reports whether the named server existed in the client
+// config when it was last snapshotted — the pre-write state that decides
+// "added" vs "replaced".
+func (b *receiptBuilder) serverWasPresent(path, serverName string) bool {
+	if b == nil {
+		return false
+	}
+	return b.hasServer[serverStateKey(path, serverName)]
 }
 
 // snapshotAllClients records pre-run state for every known client path —
@@ -157,6 +180,28 @@ func (b *receiptBuilder) server(clientName, name, action string) {
 	})
 }
 
+// addError records a non-fatal failure. Any recorded error flips the
+// receipt status to "partial" at finish() — the itemized side effects
+// still happened as listed, but the run did not fully succeed.
+func (b *receiptBuilder) addError(format string, a ...any) {
+	if b == nil {
+		return
+	}
+	b.rec.Errors = append(b.rec.Errors, fmt.Sprintf(format, a...))
+}
+
+// backupTaken reports whether path already has its pre-run generation
+// settled this run — either an explicit .bak was taken, or the file was
+// written (created) by this run. A later rewrite in the same run must not
+// re-backup: the .bak would capture intermediate content instead of the
+// pre-run generation the receipt's before_sha256 claims.
+func (b *receiptBuilder) backupTaken(path string) bool {
+	if b == nil {
+		return false
+	}
+	return b.backedUp[path] || b.seenPath[path]
+}
+
 // noteLock records the lockfile path and its pre-run hash.
 func (b *receiptBuilder) noteLock(path string) {
 	if b == nil || path == "" {
@@ -173,6 +218,26 @@ func (b *receiptBuilder) touchLock() {
 		return
 	}
 	b.touch(b.lockPath, "lockfile", "")
+}
+
+// noteCanonical records the canonical config path and its pre-run hash
+// (noteLock-style).
+func (b *receiptBuilder) noteCanonical(path string) {
+	if b == nil || path == "" {
+		return
+	}
+	b.canonPath = path
+	b.snapshotPath(path)
+}
+
+// touchCanonical adds the canonical config row; call after a successful
+// canonical.AddServer / RemoveServer. Absence means the canonical file
+// was not written (absence = untouched).
+func (b *receiptBuilder) touchCanonical() {
+	if b == nil {
+		return
+	}
+	b.touch(b.canonPath, "canonical", "")
 }
 
 // finish computes after-hashes and assembles the final Receipt.
@@ -198,6 +263,10 @@ func (b *receiptBuilder) finish() *receipt.Receipt {
 			AfterSHA:  after,
 			Backup:    ft.backup,
 		})
+	}
+	b.rec.Status = "ok"
+	if len(b.rec.Errors) > 0 {
+		b.rec.Status = "partial"
 	}
 	return &b.rec
 }

@@ -79,11 +79,24 @@ func rewriteClientsForUpdate(pkgID string, serverCfg clientconfig.ServerConfig, 
 		b.snapshotPath(c.Path)
 		backupPath := ""
 		if c.Existing {
-			if err := backupConfigFile(c.Path); err != nil {
+			if b.backupTaken(c.Path) {
+				// This run already settled the .bak generation for this
+				// file (an earlier server's rewrite took it). Re-backing
+				// up would capture the INTERMEDIATE content written by
+				// that rewrite, while the receipt's before_sha256 claims
+				// the pre-run generation — so keep the existing .bak.
+				if b.backedUp[c.Path] {
+					backupPath = c.Path + ".bak"
+				}
+			} else if err := backupConfigFile(c.Path); err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", c.Name, err))
 				continue
+			} else {
+				if b != nil {
+					b.backedUp[c.Path] = true
+				}
+				backupPath = c.Path + ".bak"
 			}
-			backupPath = c.Path + ".bak"
 		}
 
 		if err := clientconfig.MergeServer(c, pkgID, serverCfg); err != nil {

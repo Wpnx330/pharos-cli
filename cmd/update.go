@@ -225,6 +225,13 @@ Use --dry-run to see what would change without modifying anything.`,
 		if updated > 0 {
 			if err := lf.Save(lockPath); err != nil {
 				fmt.Fprintln(os.Stderr, ui.Error.Render("Failed to save lockfile:"), err)
+				// W1.2: the configs were rewritten and .baks taken — the
+				// built receipt must still be emitted (status "partial",
+				// lockfile row simply absent, error recorded) instead of
+				// being dropped with a bare return.
+				rcpt.addError("lockfile save failed: %v", err)
+				finalizeReceipt()
+				rcpt.emit()
 				return nil
 			}
 			rcpt.touchLock()

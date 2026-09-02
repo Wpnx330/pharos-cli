@@ -104,9 +104,13 @@ var removeCmd = &cobra.Command{
 		}
 
 		// 2. Remove from canonical config (~/.pharos/mcp.json)
+		if canonPath, cerr := canonical.FilePath(); cerr == nil {
+			rcpt.noteCanonical(canonPath)
+		}
 		if canonRemoved, err := canonical.RemoveServer(name); err != nil {
 			fmt.Fprintf(os.Stderr, "%s  %v\n", ui.Error.Render("Warning: failed to update canonical config:"), err)
 		} else if canonRemoved {
+			rcpt.touchCanonical()
 			removed = true
 			progressf("%s\n", ui.Success.Render("✓ Removed from canonical config"))
 		}
@@ -147,6 +151,7 @@ var removeCmd = &cobra.Command{
 				lf.Remove(name)
 				if err := lf.Save(lockPath); err != nil {
 					fmt.Fprintln(os.Stderr, ui.Error.Render("Failed to update lockfile:"), err)
+					rcpt.addError("lockfile update failed: %v", err)
 				} else {
 					removed = true
 					progressf("%s  %s\n", ui.Success.Render("✓ Removed from lockfile:"), lockPath)

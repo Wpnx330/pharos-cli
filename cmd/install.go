@@ -206,12 +206,15 @@ func runInstall(cmd *cobra.Command, args []string) {
 	// Resolve which clients to write to.
 	clientIDs := resolveClientSelection()
 
-	// W1.2 receipt: snapshot every known client config plus the lockfile
-	// before any writes, so before-hashes are exact whichever clients
-	// WriteClientConfigs ends up touching.
+	// W1.2 receipt: snapshot every known client config, the canonical
+	// config, and the lockfile before any writes, so before-hashes are
+	// exact whichever files the run ends up touching.
 	rcpt := newReceiptBuilder("install", name, resolvedVersion)
 	rcpt.snapshotAllClients(name)
 	rcpt.noteLock(lockPath)
+	if canonPath, cerr := canonical.FilePath(); cerr == nil {
+		rcpt.noteCanonical(canonPath)
+	}
 
 	// Write to the canonical Pharos config first (~/.pharos/mcp.json).
 	// This is the single source of truth; client configs are synced from it.
@@ -241,6 +244,8 @@ func runInstall(cmd *cobra.Command, args []string) {
 	}
 	if err := canonical.AddServer(name, canonSrv); err != nil {
 		fmt.Fprintf(os.Stderr, "%s  %v\n", ui.Error.Render("Warning: failed to write canonical config:"), err)
+	} else {
+		rcpt.touchCanonical()
 	}
 
 	// Write to selected MCP clients.
@@ -248,12 +253,13 @@ func runInstall(cmd *cobra.Command, args []string) {
 	updated, skipped, err := install.WriteClientConfigs(name, clientCfg, clientIDs)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, ui.Error.Render("Config write failed:"), err)
+		rcpt.addError("config write failed: %v", err)
 		// Don't return — still update lockfile.
 	}
 	printClientConfigResults(updated, skipped)
 	for _, c := range updated {
 		rcpt.touch(c.Path, c.Name, "")
-		if rcpt.hasServer[c.Path] {
+		if rcpt.serverWasPresent(c.Path, name) {
 			rcpt.server(c.Name, name, "replaced")
 		} else {
 			rcpt.server(c.Name, name, "added")
@@ -263,6 +269,7 @@ func runInstall(cmd *cobra.Command, args []string) {
 	// Update lockfile.
 	if err := install.UpdateLockfile(lockPath, result, resolvedURL); err != nil {
 		fmt.Fprintf(os.Stderr, "%s  %s\n", ui.Error.Render("Lockfile update failed:"), err)
+		rcpt.addError("lockfile update failed: %v", err)
 	} else {
 		rcpt.touchLock()
 		progressf("%s  %s\n", ui.Muted.Render("Lockfile updated:"), lockPath)
@@ -344,7 +351,7 @@ func runInstall(cmd *cobra.Command, args []string) {
 					// --no-dep-config was passed.
 					if !installSkipDepConfig {
 						depCfg := install.BuildClientConfig(depVD.Manifest, storeDir)
-						_, _, _ = install.WriteClientConfigs(depName, depCfg, clientIDs)
+						writeDepClientConfigs(rcpt, depName, depCfg, clientIDs)
 					}
 					continue
 				}
@@ -366,12 +373,16 @@ func runInstall(cmd *cobra.Command, args []string) {
 				// Write client config for the dependency (unless --no-dep-config).
 				if !installSkipDepConfig {
 					depCfg := install.BuildClientConfig(depVD.Manifest, storeDir)
-					_, _, _ = install.WriteClientConfigs(depName, depCfg, clientIDs)
+					writeDepClientConfigs(rcpt, depName, depCfg, clientIDs)
 				}
 				// Update lockfile for the dependency.
-				_ = install.UpdateLockfile(lockPath, &install.InstallResult{
+				if err := install.UpdateLockfile(lockPath, &install.InstallResult{
 					Name: depName, Version: depVersion, Transport: depTransport, Kind: depKind,
-				}, depURL)
+				}, depURL); err != nil {
+					rcpt.addError("dependency %s lockfile update failed: %v", depName, err)
+				} else {
+					rcpt.touchLock()
+				}
 				progressf("  %s  %s@%s\n", ui.Success.Render("✓"), depName, depVersion)
 				installed++
 			}
@@ -467,6 +478,16 @@ func installFromLockfile(name, versionSpec, lockPath string, clientIDs []string)
 	if transport == "" {
 		transport = "stdio"
 	}
+
+	// W1.2 receipt: snapshot every known client config and the canonical
+	// config before any writes. Frozen installs write client configs but
+	// never the lockfile, so no lockfile row is recorded.
+	rcpt := newReceiptBuilder("install", name, entry.Version)
+	rcpt.snapshotAllClients(name)
+	if canonPath, cerr := canonical.FilePath(); cerr == nil {
+		rcpt.noteCanonical(canonPath)
+	}
+
 	canonSrv := canonical.Server{
 		Transport:   transport,
 		Enabled:     true,
@@ -492,22 +513,20 @@ func installFromLockfile(name, versionSpec, lockPath string, clientIDs []string)
 	}
 	if err := canonical.AddServer(name, canonSrv); err != nil {
 		fmt.Fprintf(os.Stderr, "%s  %v\n", ui.Error.Render("Warning: failed to write canonical config:"), err)
+	} else {
+		rcpt.touchCanonical()
 	}
-
-	// W1.2 receipt: frozen installs write client configs but never the
-	// lockfile, so no lockfile row is recorded.
-	rcpt := newReceiptBuilder("install", name, entry.Version)
-	rcpt.snapshotAllClients(name)
 
 	// Write client config.
 	updated, skipped, err := install.WriteClientConfigs(name, clientCfg, clientIDs)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, ui.Error.Render("Config write failed:"), err)
+		rcpt.addError("config write failed: %v", err)
 	}
 	printClientConfigResults(updated, skipped)
 	for _, c := range updated {
 		rcpt.touch(c.Path, c.Name, "")
-		if rcpt.hasServer[c.Path] {
+		if rcpt.serverWasPresent(c.Path, name) {
 			rcpt.server(c.Name, name, "replaced")
 		} else {
 			rcpt.server(c.Name, name, "added")
@@ -589,6 +608,31 @@ func printClientConfigResults(updated []clientconfig.Client, skipped []clientcon
 	}
 	for _, s := range skipped {
 		progressf("  %s  %s  skipped: %s\n", ui.Muted.Render("—"), s.Client.Name, s.Reason)
+	}
+}
+
+// writeDepClientConfigs writes one dependency's MCP client configs and
+// records every write on the receipt. The dep's server-entry presence is
+// snapshotted just before the write (the dep-level equivalent of the
+// primary's pre-run snapshotAllClients), so the action is "added" when
+// this run introduces the dep and "replaced" when the config already
+// referenced it. Dep write failures are recorded on the receipt (status
+// "partial") and do not abort the remaining dependencies.
+func writeDepClientConfigs(rcpt *receiptBuilder, depName string, depCfg clientconfig.ServerConfig, clientIDs []string) {
+	rcpt.snapshotAllClients(depName)
+	updated, skipped, err := install.WriteClientConfigs(depName, depCfg, clientIDs)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, ui.Error.Render("Config write failed:"), err)
+		rcpt.addError("dependency %s config write failed: %v", depName, err)
+	}
+	printClientConfigResults(updated, skipped)
+	for _, c := range updated {
+		rcpt.touch(c.Path, c.Name, "")
+		if rcpt.serverWasPresent(c.Path, depName) {
+			rcpt.server(c.Name, depName, "replaced")
+		} else {
+			rcpt.server(c.Name, depName, "added")
+		}
 	}
 }
 

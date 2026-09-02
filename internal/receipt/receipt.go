@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 )
@@ -34,19 +35,28 @@ type ServerChange struct {
 }
 
 // Receipt is the deterministic record of what a mutation command changed.
+// Status is "ok" or "partial"; "partial" means one or more non-fatal
+// failures were recorded in Errors while the itemized side effects below
+// still happened as listed.
 type Receipt struct {
 	Command   string         `json:"command"` // "install" | "remove" | "update"
 	Package   string         `json:"package"`
 	Version   string         `json:"version,omitempty"`
 	Timestamp string         `json:"timestamp"` // RFC3339 UTC
+	Status    string         `json:"status"`    // "ok" | "partial"
 	Files     []FileChange   `json:"files"`
 	Servers   []ServerChange `json:"servers"`
+	Errors    []string       `json:"errors,omitempty"` // non-fatal failures; non-empty ⇒ status "partial"
 }
 
 // JSON renders the receipt as stable JSON: fixed field order (struct
 // declaration order), 2-space indent, and empty arrays instead of null
-// so the document is always a complete, parseable receipt.
+// so the document is always a complete, parseable receipt. Status is
+// always present: an unset status renders as "ok".
 func (r Receipt) JSON() ([]byte, error) {
+	if r.Status == "" {
+		r.Status = "ok"
+	}
 	if r.Files == nil {
 		r.Files = []FileChange{}
 	}
@@ -80,6 +90,17 @@ func (r Receipt) Summary() string {
 			b.WriteString("  (backup: ")
 			b.WriteString(f.Backup)
 			b.WriteString(")")
+		}
+	}
+	if len(r.Errors) > 0 {
+		unit := "warnings"
+		if len(r.Errors) == 1 {
+			unit = "warning"
+		}
+		fmt.Fprintf(&b, "\n⚠ completed with %d %s", len(r.Errors), unit)
+		for _, e := range r.Errors {
+			b.WriteString("\n    · ")
+			b.WriteString(e)
 		}
 	}
 	return b.String()

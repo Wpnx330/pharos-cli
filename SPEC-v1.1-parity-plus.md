@@ -3,7 +3,7 @@
      App dev (CLI/registry/SDK) AND web dev both mirror progress here.
      Handoffs referencing this spec: TRON/temp/handoff-app-dev-v1.1.md,
      TRON/temp/handoff-web-dev-v1.1.md
-     Last updated: 2026-09-02 02:45 ET by TRON (W1.2 fix-loop closed)
+     Last updated: 2026-09-02 08:55 ET by TRON (W1.3 shipped)
 ════════════════════════════════════════════════════════════════ -->
 
 # PHAROS v1.1 Spec — Parity Plus — STATE TRACKER
@@ -12,7 +12,7 @@
 |------|-------|-------|-------|------------|
 | W1.1 | A7 agent env contract + llm.txt | 🟢 DONE (Sep 1) — PHAROS_NON_INTERACTIVE/ASSUME_YES/JSON contract, 11 cmds gained --json, 926-line test harness incl. command-matrix + llm.txt golden, docs/llm.txt generated | app dev | pharos-cli db23a59 |
 | W1.2 | C5 install receipts | 🟢 DONE (Sep 2) — receipts v2: status/errors partial-failure honesty, dep rows, canonical row, .bak H0 provenance; adversarial review 4 MAJORs → fixed 6f1b3cf; 737 tests green; live-binary QA'd | app dev | pharos-cli 835560e + 6f1b3cf |
-| W1.3 | B2 search signals (CLI display) | ⚪ pending (API half done) | app dev | — |
+| W1.3 | B2 search signals (CLI) | 🟢 DONE (Sep 2) — OWNER/CATEGORY cols + humanized downloads + (stale) suffix; --json carries publisher/category/tools_count/version_status; info Owner/Category guarded; +19 tests (suite green); live-binary QA'd | app dev | pharos-cli c244862 |
 | W1.4 | B3 doctor --diff | ⚪ pending (needs W1.2) | app dev | — |
 | W2.1 | A2 pharos adopt | ⚪ pending | app dev | — |
 | W2.2 | A1 profiles (opt-in) | ⚪ pending | app dev | — |

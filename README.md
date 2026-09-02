@@ -203,6 +203,33 @@ All MCP client config writes (install and remove) go through a safe write patter
 
 This means a buggy write can never corrupt an existing config — the original is only replaced after the new version passes validation.
 
+### Install receipts
+
+Every mutating command (`install`, `remove`, `update`) ends with a deterministic receipt of what changed: per-file before/after SHA-256 and per-client server changes (`added` / `replaced` / `removed`). Run with `PHAROS_JSON=1` (or `--json` where available) and the receipt JSON is the only stdout output — machine-checkable and replayable:
+
+```json
+{
+  "command": "install",
+  "package": "context7",
+  "version": "1.0.0",
+  "timestamp": "2026-09-02T12:00:00Z",
+  "files": [
+    {
+      "path": "/home/u/.config/mcp/mcp.json",
+      "client": "Generic MCP",
+      "action": "modified",
+      "before_sha256": "8653057a…",
+      "after_sha256": "76ba7142…"
+    }
+  ],
+  "servers": [
+    { "client": "Generic MCP", "name": "context7", "action": "added" }
+  ]
+}
+```
+
+Clients that are skipped record nothing (absence = untouched). `update` sets `backup_path` when a `.bak` generation was taken; install/update add a `lockfile` file entry.
+
 **Unknown key preservation**: For JSON-based clients (OpenCode, Cursor, Claude Desktop, Cline, Generic MCP), Pharos uses a map-based reader/writer that preserves all existing top-level keys. If your OpenCode config has `model`, `theme`, or `tab_size` settings, they survive Pharos installs and removes untouched.
 
 ### Supported client formats

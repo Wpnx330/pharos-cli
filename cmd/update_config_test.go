@@ -110,7 +110,7 @@ func TestUpdateRewritesAffectedClientOnly(t *testing.T) {
 		rewriteTestClient(clientconfig.ClientCursor, with, clientconfig.FormatMcpServers, true),
 		rewriteTestClient(clientconfig.ClientClaudeDesktop, without, clientconfig.FormatMcpServers, true),
 	}
-	updated, errs := rewriteClientsForUpdate("test-srv", newTestServerCfg(), clients)
+	updated, errs := rewriteClientsForUpdate("test-srv", newTestServerCfg(), clients, nil)
 	if len(errs) != 0 {
 		t.Fatalf("unexpected errs: %v", errs)
 	}
@@ -146,11 +146,11 @@ func TestUpdateRewriteIdempotent(t *testing.T) {
 	p := writeUpdateTempConfig(t, dir, "c.json", updateTestServerJSON)
 	cli := []clientconfig.Client{rewriteTestClient(clientconfig.ClientCursor, p, clientconfig.FormatMcpServers, true)}
 
-	if _, errs := rewriteClientsForUpdate("test-srv", newTestServerCfg(), cli); len(errs) != 0 {
+	if _, errs := rewriteClientsForUpdate("test-srv", newTestServerCfg(), cli, nil); len(errs) != 0 {
 		t.Fatalf("first: %v", errs)
 	}
 	one, _ := os.ReadFile(p)
-	if _, errs := rewriteClientsForUpdate("test-srv", newTestServerCfg(), cli); len(errs) != 0 {
+	if _, errs := rewriteClientsForUpdate("test-srv", newTestServerCfg(), cli, nil); len(errs) != 0 {
 		t.Fatalf("second: %v", errs)
 	}
 	two, _ := os.ReadFile(p)
@@ -169,7 +169,7 @@ func TestUpdateRewriteContinuesOnBadConfig(t *testing.T) {
 		rewriteTestClient(clientconfig.ClientClaudeDesktop, bad, clientconfig.FormatMcpServers, true),
 		rewriteTestClient(clientconfig.ClientCursor, good, clientconfig.FormatMcpServers, true),
 	}
-	updated, errs := rewriteClientsForUpdate("test-srv", newTestServerCfg(), clients)
+	updated, errs := rewriteClientsForUpdate("test-srv", newTestServerCfg(), clients, nil)
 	if len(updated) != 1 || updated[0] != good {
 		t.Fatalf("good config must still be rewritten; got %v", updated)
 	}

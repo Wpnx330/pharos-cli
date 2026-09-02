@@ -50,7 +50,11 @@ func backupConfigFile(path string) error {
 // rewritten file. Per-client errors are collected, not fatal: one bad
 // config file must not abort the others. Returns the paths of rewritten
 // configs and any per-client errors.
-func rewriteClientsForUpdate(pkgID string, serverCfg clientconfig.ServerConfig, clients []clientconfig.Client) ([]string, []error) {
+//
+// When b is non-nil (W1.2), each successful rewrite is recorded on the
+// receipt as a FileChange (with backup_path when .bak was taken) and a
+// ServerChange("replaced").
+func rewriteClientsForUpdate(pkgID string, serverCfg clientconfig.ServerConfig, clients []clientconfig.Client, b *receiptBuilder) ([]string, []error) {
 	var updated []string
 	var errs []error
 	seen := make(map[string]bool) // by ID: one path per client
@@ -72,11 +76,14 @@ func rewriteClientsForUpdate(pkgID string, serverCfg clientconfig.ServerConfig, 
 			continue // bystander: references another server or none
 		}
 
+		b.snapshotPath(c.Path)
+		backupPath := ""
 		if c.Existing {
 			if err := backupConfigFile(c.Path); err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", c.Name, err))
 				continue
 			}
+			backupPath = c.Path + ".bak"
 		}
 
 		if err := clientconfig.MergeServer(c, pkgID, serverCfg); err != nil {
@@ -90,14 +97,18 @@ func rewriteClientsForUpdate(pkgID string, serverCfg clientconfig.ServerConfig, 
 			seen[string(c.ID)] = true
 		}
 		updated = append(updated, c.Path)
+		b.touch(c.Path, c.Name, backupPath)
+		b.server(c.Name, pkgID, "replaced")
 	}
 	return updated, errs
 }
 
 // printUpdateConfigResults mirrors install's per-client result reporting.
+// Output routing (stdout vs stderr under JSON mode) lives in progressf so
+// the function is safe for any caller.
 func printUpdateConfigResults(updated []string, errs []error) {
 	for _, p := range updated {
-		fmt.Printf("  %s  %s\n", ui.Success.Render("✓"), p)
+		progressf("  %s  %s\n", ui.Success.Render("✓"), p)
 	}
 	for _, e := range errs {
 		fmt.Fprintf(os.Stderr, "  %s  %v\n", ui.Error.Render("✗"), e)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -56,6 +57,19 @@ Use --dry-run to see what would change without modifying anything.`,
 		if err != nil {
 			fmt.Fprintln(os.Stderr, ui.Error.Render("Failed to load lockfile:"), err)
 			return nil
+		}
+
+		// W1.2 receipt: the lockfile's pre-run hash is captured now; the row
+		// is only added if an update is actually applied and saved.
+		rcpt := newReceiptBuilder("update", "", "")
+		rcpt.noteLock(lockPath)
+		var updatedNames []string
+		var singleLatest string
+		finalizeReceipt := func() {
+			rcpt.setPackage(strings.Join(updatedNames, ","))
+			if len(updatedNames) == 1 {
+				rcpt.setVersion(singleLatest)
+			}
 		}
 
 		if len(lf.Servers) == 0 {
@@ -178,9 +192,10 @@ Use --dry-run to see what would change without modifying anything.`,
 			}
 
 			// Rewrite affected client configs with the NEW server config
-			// (same write path as install: clientconfig.MergeServer).
+			// (same write path as install: clientconfig.MergeServer). The
+			// builder captures each rewritten file + a "replaced" server row.
 			clientCfg := install.BuildClientConfig(vd.Manifest, storeDir)
-			upd, uerrs := rewriteClientsForUpdate(name, clientCfg, clientconfig.Detect())
+			upd, uerrs := rewriteClientsForUpdate(name, clientCfg, clientconfig.Detect(), rcpt)
 			if !JSONRequested() {
 				printUpdateConfigResults(upd, uerrs)
 			}
@@ -193,6 +208,8 @@ Use --dry-run to see what would change without modifying anything.`,
 				InstalledAt: entry.InstalledAt,
 			})
 			updated++
+			updatedNames = append(updatedNames, name)
+			singleLatest = latest
 			report.Updated++
 			report.Servers = append(report.Servers, updateEntry{Name: name, From: entry.Version, To: latest, Action: "updated"})
 		}
@@ -210,9 +227,18 @@ Use --dry-run to see what would change without modifying anything.`,
 				fmt.Fprintln(os.Stderr, ui.Error.Render("Failed to save lockfile:"), err)
 				return nil
 			}
+			rcpt.touchLock()
 		}
 
 		if JSONRequested() {
+			if updated > 0 {
+				// W1.2: when a receipt exists the receipt JSON is the only
+				// stdout document; the update report stays for the
+				// nothing-updated paths below.
+				finalizeReceipt()
+				rcpt.emit()
+				return nil
+			}
 			return printUpdateJSON(report)
 		}
 
@@ -221,6 +247,10 @@ Use --dry-run to see what would change without modifying anything.`,
 			updated,
 			upToDate,
 			notFound)
+		if updated > 0 {
+			finalizeReceipt()
+			rcpt.emit()
+		}
 		return nil
 	},
 }

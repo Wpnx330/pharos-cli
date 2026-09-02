@@ -33,6 +33,10 @@ var removeCmd = &cobra.Command{
 		name := args[0]
 		removed := false
 
+		// W1.2 receipt: package identity is known up front; the resolved
+		// version is filled in later from the lockfile when available.
+		rcpt := newReceiptBuilder("remove", name, "")
+
 		// 0. Dependency protection — block removal if other installed
 		// packages declare this one as a dependency, unless --force.
 		home, err := os.UserHomeDir()
@@ -92,9 +96,9 @@ var removeCmd = &cobra.Command{
 				}
 				removed = true
 				if plan.DeleteTarball {
-					fmt.Printf("%s  %s\n", ui.Success.Render("✓ Removed from store:"), pkgDir)
+					progressf("%s  %s\n", ui.Success.Render("✓ Removed from store:"), pkgDir)
 				} else {
-					fmt.Printf("%s  %s\n", ui.Success.Render("✓ Removed bookmark metadata:"), pkgDir)
+					progressf("%s  %s\n", ui.Success.Render("✓ Removed bookmark metadata:"), pkgDir)
 				}
 			}
 		}
@@ -104,7 +108,7 @@ var removeCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "%s  %v\n", ui.Error.Render("Warning: failed to update canonical config:"), err)
 		} else if canonRemoved {
 			removed = true
-			fmt.Printf("%s\n", ui.Success.Render("✓ Removed from canonical config"))
+			progressf("%s\n", ui.Success.Render("✓ Removed from canonical config"))
 		}
 
 		// 3. Remove from all detected client configs (patch, never replace).
@@ -119,25 +123,33 @@ var removeCmd = &cobra.Command{
 			if _, exists := rawServers[name]; !exists {
 				continue
 			}
+			rcpt.snapshotPath(c.Path)
 			if err := clientconfig.RemoveServer(c, name); err != nil {
 				fmt.Fprintf(os.Stderr, "%s  %s: %v\n", ui.Error.Render("Failed to update config:"), c.Name, err)
 				continue
 			}
+			rcpt.touch(c.Path, c.Name, "")
+			rcpt.server(c.Name, name, "removed")
 			removed = true
-			fmt.Printf("%s  %s (%s)\n", ui.Success.Render("✓ Removed from config:"), name, c.Name)
+			progressf("%s  %s (%s)\n", ui.Success.Render("✓ Removed from config:"), name, c.Name)
 		}
 
-		// 4. Remove from lockfile
+		// 4. Remove from lockfile. The lockfile row is deliberately NOT part
+		// of the receipt (receipts track client config files); the removed
+		// version is recorded on the receipt instead.
 		lockPath, err := lockfile.DefaultPath()
 		if err == nil {
 			lf, err := lockfile.Load(lockPath)
 			if err == nil && lf.Has(name) {
+				if entry, ok := lf.Get(name); ok {
+					rcpt.setVersion(entry.Version)
+				}
 				lf.Remove(name)
 				if err := lf.Save(lockPath); err != nil {
 					fmt.Fprintln(os.Stderr, ui.Error.Render("Failed to update lockfile:"), err)
 				} else {
 					removed = true
-					fmt.Printf("%s  %s\n", ui.Success.Render("✓ Removed from lockfile:"), lockPath)
+					progressf("%s  %s\n", ui.Success.Render("✓ Removed from lockfile:"), lockPath)
 				}
 			}
 		}
@@ -147,7 +159,10 @@ var removeCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		fmt.Printf("\n%s  %s\n", ui.Success.Render("✓ Removed:"), ui.PackageName.Render(name))
+		progressf("\n%s  %s\n", ui.Success.Render("✓ Removed:"), ui.PackageName.Render(name))
+
+		// W1.2: deterministic receipt of everything this remove changed.
+		rcpt.emit()
 	},
 }
 
@@ -215,12 +230,12 @@ func rewriteHermesConfig(path string, servers map[string]json.RawMessage) error 
 // entry carrying a "name" field.
 func rewriteArrayConfig(path string, servers map[string]json.RawMessage) error {
 	type entry struct {
-		Name    string          `json:"name"`
-		Command string          `json:"command,omitempty"`
-		Args    []string        `json:"args,omitempty"`
+		Name    string            `json:"name"`
+		Command string            `json:"command,omitempty"`
+		Args    []string          `json:"args,omitempty"`
 		Env     map[string]string `json:"env,omitempty"`
-		URL     string          `json:"url,omitempty"`
-		Type    string          `json:"type,omitempty"`
+		URL     string            `json:"url,omitempty"`
+		Type    string            `json:"type,omitempty"`
 	}
 	entries := make([]entry, 0, len(servers))
 	for name, raw := range servers {
@@ -265,9 +280,9 @@ func rewriteArrayConfig(path string, servers map[string]json.RawMessage) error {
 // installedMeta is a local representation of .pharos-installed.json that
 // includes dependency information if the metadata file carries it.
 type installedMeta struct {
-	Name         string                 `json:"name"`
-	Version      string                 `json:"version"`
-	Dependencies []manifest.Dependency  `json:"dependencies,omitempty"`
+	Name         string                `json:"name"`
+	Version      string                `json:"version"`
+	Dependencies []manifest.Dependency `json:"dependencies,omitempty"`
 }
 
 // findDependents returns the sorted names of installed packages that

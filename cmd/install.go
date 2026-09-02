@@ -89,7 +89,7 @@ func runInstall(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	fmt.Printf("%s  %s\n", ui.Label.Render("Fetching package info..."), name)
+	progressf("%s  %s\n", ui.Label.Render("Fetching package info..."), name)
 	pkg, err := client.GetPackage(name)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, ui.Error.Render("Failed to fetch package:"), err)
@@ -162,17 +162,17 @@ func runInstall(cmd *cobra.Command, args []string) {
 	switch kind {
 	case install.KindRemoteHTTP:
 		resolvedURL = manifest.Endpoint
-		fmt.Printf("%s  %s@%s (%s, kind 1 remote)\n", ui.Label.Render("Registering remote server..."), name, resolvedVersion, transport)
+		progressf("%s  %s@%s (%s, kind 1 remote)\n", ui.Label.Render("Registering remote server..."), name, resolvedVersion, transport)
 	case install.KindLocalHTTP:
 		resolvedURL = client.TarballURL(name, resolvedVersion)
-		fmt.Printf("%s  %s@%s (%s, kind 2 local HTTP)\n", ui.Label.Render("Installing..."), name, resolvedVersion, transport)
+		progressf("%s  %s@%s (%s, kind 2 local HTTP)\n", ui.Label.Render("Installing..."), name, resolvedVersion, transport)
 	default:
 		resolvedURL = client.TarballURL(name, resolvedVersion)
-		fmt.Printf("%s  %s@%s (%s, kind 3 stdio)\n", ui.Label.Render("Installing..."), name, resolvedVersion, transport)
+		progressf("%s  %s@%s (%s, kind 3 stdio)\n", ui.Label.Render("Installing..."), name, resolvedVersion, transport)
 	}
 
 	if mgr.IsInstalled(name, resolvedVersion) {
-		fmt.Printf("%s  %s\n", ui.Muted.Render("Already installed:"), fmt.Sprintf("%s@%s", name, resolvedVersion))
+		progressf("%s  %s\n", ui.Muted.Render("Already installed:"), fmt.Sprintf("%s@%s", name, resolvedVersion))
 	} else {
 		result, err = mgr.InstallByKind(install.InstallOptions{
 			Name:              name,
@@ -206,6 +206,13 @@ func runInstall(cmd *cobra.Command, args []string) {
 	// Resolve which clients to write to.
 	clientIDs := resolveClientSelection()
 
+	// W1.2 receipt: snapshot every known client config plus the lockfile
+	// before any writes, so before-hashes are exact whichever clients
+	// WriteClientConfigs ends up touching.
+	rcpt := newReceiptBuilder("install", name, resolvedVersion)
+	rcpt.snapshotAllClients(name)
+	rcpt.noteLock(lockPath)
+
 	// Write to the canonical Pharos config first (~/.pharos/mcp.json).
 	// This is the single source of truth; client configs are synced from it.
 	canonSrv := canonical.Server{
@@ -237,19 +244,28 @@ func runInstall(cmd *cobra.Command, args []string) {
 	}
 
 	// Write to selected MCP clients.
-	fmt.Printf("%s\n", ui.Label.Render("Writing MCP client configs..."))
+	progressf("%s\n", ui.Label.Render("Writing MCP client configs..."))
 	updated, skipped, err := install.WriteClientConfigs(name, clientCfg, clientIDs)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, ui.Error.Render("Config write failed:"), err)
 		// Don't return — still update lockfile.
 	}
 	printClientConfigResults(updated, skipped)
+	for _, c := range updated {
+		rcpt.touch(c.Path, c.Name, "")
+		if rcpt.hasServer[c.Path] {
+			rcpt.server(c.Name, name, "replaced")
+		} else {
+			rcpt.server(c.Name, name, "added")
+		}
+	}
 
 	// Update lockfile.
 	if err := install.UpdateLockfile(lockPath, result, resolvedURL); err != nil {
 		fmt.Fprintf(os.Stderr, "%s  %s\n", ui.Error.Render("Lockfile update failed:"), err)
 	} else {
-		fmt.Printf("%s  %s\n", ui.Muted.Render("Lockfile updated:"), lockPath)
+		rcpt.touchLock()
+		progressf("%s  %s\n", ui.Muted.Render("Lockfile updated:"), lockPath)
 	}
 
 	// Report install telemetry for http/sse packages. stdio packages are
@@ -264,7 +280,7 @@ func runInstall(cmd *cobra.Command, args []string) {
 	// After the primary package is installed, check if it declares
 	// dependencies. If so, resolve and install them recursively.
 	if len(manifest.Dependencies) > 0 {
-		fmt.Printf("\n%s\n", ui.Label.Render("Resolving dependencies..."))
+		progressf("\n%s\n", ui.Label.Render("Resolving dependencies..."))
 		r := resolver.New(client)
 		depResult, err := r.ResolveAll(manifest.Dependencies)
 		if err != nil {
@@ -321,7 +337,7 @@ func runInstall(cmd *cobra.Command, args []string) {
 				}
 
 				if mgr.IsInstalled(depName, depVersion) {
-					fmt.Printf("  %s  %s\n", ui.Muted.Render("Already installed:"), fmt.Sprintf("%s@%s", depName, depVersion))
+					progressf("  %s  %s\n", ui.Muted.Render("Already installed:"), fmt.Sprintf("%s@%s", depName, depVersion))
 					skipped++
 					// Even if already installed, write client configs so the
 					// dependency is accessible to MCP clients. Skip if
@@ -356,19 +372,22 @@ func runInstall(cmd *cobra.Command, args []string) {
 				_ = install.UpdateLockfile(lockPath, &install.InstallResult{
 					Name: depName, Version: depVersion, Transport: depTransport, Kind: depKind,
 				}, depURL)
-				fmt.Printf("  %s  %s@%s\n", ui.Success.Render("✓"), depName, depVersion)
+				progressf("  %s  %s@%s\n", ui.Success.Render("✓"), depName, depVersion)
 				installed++
 			}
 			if installed > 0 || skipped > 0 {
-				fmt.Printf("%s  %d installed, %d already present\n",
+				progressf("%s  %d installed, %d already present\n",
 					ui.Muted.Render("Dependencies:"), installed, skipped)
 			}
 		}
 	}
 
 	// Success summary.
-	fmt.Printf("\n%s  %s\n", ui.Success.Render("✓ Installed:"), fmt.Sprintf("%s@%s (%s, kind %s)", name, resolvedVersion, transport, kind))
-	fmt.Printf("%s    %s\n", ui.Muted.Render("Usage:"), fmt.Sprintf("pharos info %s", name))
+	progressf("\n%s  %s\n", ui.Success.Render("✓ Installed:"), fmt.Sprintf("%s@%s (%s, kind %s)", name, resolvedVersion, transport, kind))
+	progressf("%s    %s\n", ui.Muted.Render("Usage:"), fmt.Sprintf("pharos info %s", name))
+
+	// W1.2: deterministic receipt of everything this install changed.
+	rcpt.emit()
 
 	// Auto-start daemon only for kind 2 (we host the HTTP process locally).
 	// Kind 1 is a publisher URL bookmark — do not pretend we run it.
@@ -419,9 +438,9 @@ func installFromLockfile(name, versionSpec, lockPath string, clientIDs []string)
 	}
 
 	if mgr.IsInstalled(name, entry.Version) {
-		fmt.Printf("%s  %s\n", ui.Muted.Render("Already installed:"), fmt.Sprintf("%s@%s", name, entry.Version))
+		progressf("%s  %s\n", ui.Muted.Render("Already installed:"), fmt.Sprintf("%s@%s", name, entry.Version))
 	} else {
-		fmt.Printf("%s  %s@%s (from lockfile, kind %s)\n", ui.Label.Render("Installing..."), name, entry.Version, kind)
+		progressf("%s  %s@%s (from lockfile, kind %s)\n", ui.Label.Render("Installing..."), name, entry.Version, kind)
 		tarballURL := entry.Resolved
 		if kind != install.KindRemoteHTTP && tarballURL == "" {
 			tarballURL = client.TarballURL(name, entry.Version)
@@ -475,14 +494,30 @@ func installFromLockfile(name, versionSpec, lockPath string, clientIDs []string)
 		fmt.Fprintf(os.Stderr, "%s  %v\n", ui.Error.Render("Warning: failed to write canonical config:"), err)
 	}
 
+	// W1.2 receipt: frozen installs write client configs but never the
+	// lockfile, so no lockfile row is recorded.
+	rcpt := newReceiptBuilder("install", name, entry.Version)
+	rcpt.snapshotAllClients(name)
+
 	// Write client config.
 	updated, skipped, err := install.WriteClientConfigs(name, clientCfg, clientIDs)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, ui.Error.Render("Config write failed:"), err)
 	}
 	printClientConfigResults(updated, skipped)
+	for _, c := range updated {
+		rcpt.touch(c.Path, c.Name, "")
+		if rcpt.hasServer[c.Path] {
+			rcpt.server(c.Name, name, "replaced")
+		} else {
+			rcpt.server(c.Name, name, "added")
+		}
+	}
 
-	fmt.Printf("\n%s  %s\n", ui.Success.Render("✓ Installed (frozen):"), fmt.Sprintf("%s@%s (kind %s)", name, entry.Version, kind))
+	progressf("\n%s  %s\n", ui.Success.Render("✓ Installed (frozen):"), fmt.Sprintf("%s@%s (kind %s)", name, entry.Version, kind))
+
+	// W1.2: deterministic receipt of everything this frozen install changed.
+	rcpt.emit()
 
 	if kind == install.KindLocalHTTP {
 		ensureDaemonRunning(name)
@@ -546,13 +581,14 @@ func checkRuntimeRequirement(m api.Manifest, transport string) string {
 }
 
 // printClientConfigResults prints a success check only for clients that
-// were actually written. Skips are never shown as ✓.
+// were actually written. Skips are never shown as ✓. Progress goes to
+// stderr under JSON mode to keep stdout a pure receipt document.
 func printClientConfigResults(updated []clientconfig.Client, skipped []clientconfig.SkippedClient) {
 	for _, c := range updated {
-		fmt.Printf("  %s  %s\n", ui.Success.Render("✓"), c.Name)
+		progressf("  %s  %s\n", ui.Success.Render("✓"), c.Name)
 	}
 	for _, s := range skipped {
-		fmt.Printf("  %s  %s  skipped: %s\n", ui.Muted.Render("—"), s.Client.Name, s.Reason)
+		progressf("  %s  %s  skipped: %s\n", ui.Muted.Render("—"), s.Client.Name, s.Reason)
 	}
 }
 

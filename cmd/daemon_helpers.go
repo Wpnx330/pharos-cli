@@ -29,10 +29,10 @@ func ensureDaemonRunning(name string) {
 			fmt.Fprintf(os.Stderr, "  %s  could not reload daemon: %v\n",
 				ui.Muted.Render("⚠"), err)
 		} else if name != "" {
-			fmt.Printf("  %s  daemon reloaded — starting backing process for %s\n",
+			progressf("  %s  daemon reloaded — starting backing process for %s\n",
 				ui.Muted.Render("·"), name)
 		} else {
-			fmt.Printf("  %s  daemon reloaded (new server now managed)\n",
+			progressf("  %s  daemon reloaded (new server now managed)\n",
 				ui.Muted.Render("·"))
 		}
 		waitForKind2Listen(defaultKind2ListenPort, 5*time.Second)
@@ -40,7 +40,7 @@ func ensureDaemonRunning(name string) {
 	}
 
 	// Daemon is not running — start it in the background
-	fmt.Printf("  %s  starting daemon for HTTP/SSE server management...\n",
+	progressf("  %s  starting daemon for HTTP/SSE server management...\n",
 		ui.Muted.Render("·"))
 
 	exe, err := os.Executable()
@@ -67,7 +67,7 @@ func ensureDaemonRunning(name string) {
 	for time.Now().Before(deadline) {
 		s, _ := daemon.Status()
 		if s != nil && s.Running {
-			fmt.Printf("  %s  daemon started (PID %d) — server will be managed automatically\n",
+			progressf("  %s  daemon started (PID %d) — server will be managed automatically\n",
 				ui.Success.Render("✓"), s.PID)
 			// Start() consumes a pre-queued load request. Re-issue in case
 			// Start() already passed consumeLoadRequests before we queued.
@@ -78,7 +78,7 @@ func ensureDaemonRunning(name string) {
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	fmt.Printf("  %s  daemon starting in background — run 'pharos daemon status' to verify\n",
+	progressf("  %s  daemon starting in background — run 'pharos daemon status' to verify\n",
 		ui.Muted.Render("·"))
 }
 

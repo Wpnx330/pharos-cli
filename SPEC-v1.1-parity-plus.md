@@ -30,6 +30,7 @@
 | site | search follow-ups: param-aware SSR, no cached failures, error boundaries, 8s timeouts, CLS | 🟢 DONE (Sep 2) | web dev | pharos-web b43317f deployed; deep-link SSR verified live; typed-search refetch wired |
 | site | Sprint 2 Wave A: /servers hub + 13 category pages, SoftwareApplication/Breadcrumb/ItemList/FAQPage JSON-LD, sitemap 1027 URLs, install.ps1 PS5.1 fix | 🟢 BUILT+QA (Sep 2) | web dev | reviewer PASS 7/7; pending deploy |
 | site | Sprint 2 Wave B: cornerstone Best MCP Servers 2026 + PHAROS vs mcpm.sh comparison, FAQ JSON-LD, footer/llms.txt wiring | 🟢 BUILT+QA (Sep 2) | web dev | reviewer PASS 6/6, follow-ups closed; pending deploy |
+| site | Sprint 2 Wave C: client install guides (hub + Cursor/Claude Desktop/Claude Code/VS Code), GEO pass llms-full, cross-links, footer Guides group | 🟢 BUILT+QA (Sep 2) | web dev | reviewer PASS 7/7, follow-ups closed; pending deploy |
 
 
 ---

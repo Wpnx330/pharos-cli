@@ -102,14 +102,21 @@ func searchNextPageHint(query string, page int, registry, transport, nextCursor 
 
 // searchTableColumns is the human table header for `pharos search`.
 // TRANSPORT and REGISTRY sit after VERSION so a hit's protocol and
-// originating catalog are visible without --json.
+// originating catalog are visible without --json. OWNER (publisher
+// namespace) and CATEGORY are the trust/signal columns from spec B2;
+// they share the desktop budget with DESCRIPTION, whose MaxWidth
+// shrinks to compensate. Narrow terminals are handled by the same
+// per-column MaxWidth truncation as before (the table renderer has no
+// terminal-width presets — MaxWidth discipline is the narrow-mode plan).
 func searchTableColumns() []ui.TableColumn {
 	return []ui.TableColumn{
 		{Title: "NAME", Width: 20, MaxWidth: 0},
-		{Title: "VERSION", Width: 10, MaxWidth: 10},
+		{Title: "VERSION", Width: 10, MaxWidth: 18},
 		{Title: "TRANSPORT", Width: 16, MaxWidth: 24},
 		{Title: "REGISTRY", Width: 10, MaxWidth: 16},
-		{Title: "DESCRIPTION", Width: 30, MaxWidth: 50},
+		{Title: "OWNER", Width: 10, MaxWidth: 18},
+		{Title: "CATEGORY", Width: 10, MaxWidth: 16},
+		{Title: "DESCRIPTION", Width: 24, MaxWidth: 40},
 		{Title: "DOWNLOADS", Width: 10, MaxWidth: 10},
 	}
 }
@@ -139,10 +146,50 @@ func formatSearchTransport(transports []string) string {
 func searchTableRow(r api.SearchResult) ui.TableRow {
 	return ui.TableRow{
 		ui.PackageName.Render(r.Name),
-		r.Version,
+		searchVersionCell(r.Version, r.VersionStatus),
 		formatSearchTransport(r.Transport),
 		searchCellOrDash(r.SourceRegistry),
+		searchCellOrDash(string(r.Publisher)),
+		searchCellOrDash(r.Category),
 		r.Description,
-		strconv.FormatInt(r.Downloads, 10),
+		formatSearchDownloads(r.Downloads),
 	}
+}
+
+// searchVersionCell appends the registry's version_status to the version
+// when it carries information, e.g. "1.2.3 (stale)". Empty and "active"
+// (the normal case) render the bare version. Kept plain-text so the
+// VERSION column stays grep- and test-friendly.
+func searchVersionCell(version, status string) string {
+	status = strings.TrimSpace(status)
+	if status == "" || status == "active" {
+		return version
+	}
+	if version == "" {
+		return "(" + status + ")"
+	}
+	return version + " (" + status + ")"
+}
+
+// formatSearchDownloads humanizes a 30-day download count for the table:
+// 950 -> "950", 1234 -> "1.2k", 1000 -> "1k", 5300000 -> "5.3m",
+// 1000000000 -> "1b". Fits the DOWNLOADS column without scientific
+// notation. --json always emits the raw downloads30d integer.
+func formatSearchDownloads(n int64) string {
+	switch {
+	case n < 1000:
+		return strconv.FormatInt(n, 10)
+	case n < 1_000_000:
+		return trimDownloadsDecimal(float64(n)/1e3) + "k"
+	case n < 1_000_000_000:
+		return trimDownloadsDecimal(float64(n)/1e6) + "m"
+	default:
+		return trimDownloadsDecimal(float64(n)/1e9) + "b"
+	}
+}
+
+// trimDownloadsDecimal formats with one decimal and drops a trailing ".0".
+func trimDownloadsDecimal(v float64) string {
+	s := strconv.FormatFloat(v, 'f', 1, 64)
+	return strings.TrimSuffix(s, ".0")
 }

@@ -158,7 +158,7 @@ var llmNotes = map[string]llmNote{
 		ni:     "no prompts; --version is required",
 	},
 	"pharos search": {
-		output: "JSON: registry search response {results: [...], nextCursor, total}. Plain: results table + hint footer",
+		output: "JSON: registry search response {results: [...], nextCursor, total}; each result also carries the trust signals publisher (flattened namespace string), category, tools_count, version_status when the registry sends them. Plain: results table (NAME VERSION TRANSPORT REGISTRY OWNER CATEGORY DESCRIPTION DOWNLOADS; version_status shown as a \" (stale)\"-style suffix only when not \"active\") + hint footer",
 		env:    "PHAROS_JSON=1 or --json",
 		ni:     "no prompts; requires registry access",
 	},

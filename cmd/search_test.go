@@ -10,7 +10,7 @@ import (
 
 func TestSearchTableColumnsOrder(t *testing.T) {
 	cols := searchTableColumns()
-	want := []string{"NAME", "VERSION", "TRANSPORT", "REGISTRY", "DESCRIPTION", "DOWNLOADS"}
+	want := []string{"NAME", "VERSION", "TRANSPORT", "REGISTRY", "OWNER", "CATEGORY", "DESCRIPTION", "DOWNLOADS"}
 	if len(cols) != len(want) {
 		t.Fatalf("column count = %d, want %d (%v)", len(cols), len(want), titlesOf(cols))
 	}
@@ -30,6 +30,28 @@ func TestSearchTableColumnsTransportAndRegistryAfterVersion(t *testing.T) {
 	}
 }
 
+func TestSearchTableNewSignalColumnsHaveMaxWidthCaps(t *testing.T) {
+	// Narrow-mode plan: the renderer has no terminal-width presets, so the
+	// new OWNER/CATEGORY columns rely on per-column MaxWidth caps like the
+	// rest of the table. VERSION widens to fit the version_status suffix.
+	for _, c := range searchTableColumns() {
+		switch c.Title {
+		case "VERSION":
+			if c.MaxWidth != 18 {
+				t.Errorf("VERSION MaxWidth = %d, want 18 (room for \" (stale)\" suffix)", c.MaxWidth)
+			}
+		case "OWNER":
+			if c.MaxWidth != 18 {
+				t.Errorf("OWNER MaxWidth = %d, want 18", c.MaxWidth)
+			}
+		case "CATEGORY":
+			if c.MaxWidth != 16 {
+				t.Errorf("CATEGORY MaxWidth = %d, want 16", c.MaxWidth)
+			}
+		}
+	}
+}
+
 func TestSearchTableRowPopulatedTransportAndRegistry(t *testing.T) {
 	row := searchTableRow(api.SearchResult{
 		Name:           "MoodMNKY MCP Server Stack",
@@ -38,9 +60,11 @@ func TestSearchTableRowPopulatedTransportAndRegistry(t *testing.T) {
 		Downloads:      0,
 		Transport:      []string{"stdio"},
 		SourceRegistry: "mcp.io",
+		Publisher:      "moodmnky",
+		Category:       "lifestyle",
 	})
-	if len(row) != 6 {
-		t.Fatalf("row cells = %d, want 6: %#v", len(row), row)
+	if len(row) != 8 {
+		t.Fatalf("row cells = %d, want 8: %#v", len(row), row)
 	}
 	if row[1] != "0.0.0" {
 		t.Errorf("VERSION = %q, want API value 0.0.0 (do not invent a version)", row[1])
@@ -51,14 +75,133 @@ func TestSearchTableRowPopulatedTransportAndRegistry(t *testing.T) {
 	if row[3] != "mcp.io" {
 		t.Errorf("REGISTRY = %q, want mcp.io", row[3])
 	}
-	if row[4] != "MoodMNKY MCP Server Stack" && row[4] != "MoodMNKY MCP server stack" {
-		// Description is passed through; renderer truncates via MaxWidth.
-		if row[4] == "" {
-			t.Error("DESCRIPTION is empty")
+	if row[4] != "moodmnky" {
+		t.Errorf("OWNER = %q, want moodmnky (flattened publisher.namespace)", row[4])
+	}
+	if row[5] != "lifestyle" {
+		t.Errorf("CATEGORY = %q, want lifestyle", row[5])
+	}
+	if row[6] == "" {
+		t.Error("DESCRIPTION is empty")
+	}
+	if row[7] != "0" {
+		t.Errorf("DOWNLOADS = %q, want 0", row[7])
+	}
+}
+
+func TestSearchTableRowVersionStatusSuffix(t *testing.T) {
+	row := searchTableRow(api.SearchResult{
+		Name:          "stale-hit",
+		Version:       "1.2.3",
+		VersionStatus: "stale",
+	})
+	if row[1] != "1.2.3 (stale)" {
+		t.Errorf("VERSION = %q, want \"1.2.3 (stale)\" (status shown only when != active)", row[1])
+	}
+}
+
+func TestSearchTableRowVersionStatusActiveOmitted(t *testing.T) {
+	for _, status := range []string{"active", "", "  "} {
+		row := searchTableRow(api.SearchResult{
+			Name:          "healthy",
+			Version:       "2.0.0",
+			VersionStatus: status,
+		})
+		if row[1] != "2.0.0" {
+			t.Errorf("VERSION with status %q = %q, want bare 2.0.0", status, row[1])
 		}
 	}
-	if row[5] != "0" {
-		t.Errorf("DOWNLOADS = %q, want 0", row[5])
+}
+
+func TestSearchVersionCell(t *testing.T) {
+	tests := []struct {
+		name    string
+		version string
+		status  string
+		want    string
+	}{
+		{name: "active stays bare", version: "1.0.0", status: "active", want: "1.0.0"},
+		{name: "empty status stays bare", version: "1.0.0", status: "", want: "1.0.0"},
+		{name: "stale suffix", version: "1.2.3", status: "stale", want: "1.2.3 (stale)"},
+		{name: "deprecated suffix", version: "0.9.0", status: "deprecated", want: "0.9.0 (deprecated)"},
+		{name: "status with spaces trimmed", version: "1.0.0", status: " yanked ", want: "1.0.0 (yanked)"},
+		{name: "empty version shows status alone", version: "", status: "stale", want: "(stale)"},
+		{name: "both empty", version: "", status: "", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := searchVersionCell(tt.version, tt.status); got != tt.want {
+				t.Errorf("searchVersionCell(%q, %q) = %q, want %q", tt.version, tt.status, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormatSearchDownloads(t *testing.T) {
+	tests := []struct {
+		name string
+		in   int64
+		want string
+	}{
+		{name: "zero", in: 0, want: "0"},
+		{name: "under a thousand stays raw", in: 950, want: "950"},
+		{name: "one thousand trims .0", in: 1000, want: "1k"},
+		{name: "one decimal k", in: 1234, want: "1.2k"},
+		{name: "tens of k", in: 34500, want: "34.5k"},
+		{name: "millions", in: 5300000, want: "5.3m"},
+		{name: "million trims .0", in: 1000000, want: "1m"},
+		{name: "billions", in: 2000000000, want: "2b"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := formatSearchDownloads(tt.in); got != tt.want {
+				t.Errorf("formatSearchDownloads(%d) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSearchTableRowEmptyOwnerAndCategoryUseDash(t *testing.T) {
+	row := searchTableRow(api.SearchResult{
+		Name:    "legacy-hit",
+		Version: "1.2.3",
+	})
+	if row[4] != listDash {
+		t.Errorf("empty OWNER = %q, want %q", row[4], listDash)
+	}
+	if row[5] != listDash {
+		t.Errorf("empty CATEGORY = %q, want %q", row[5], listDash)
+	}
+	if row[1] != "1.2.3" {
+		t.Errorf("VERSION without status = %q, want 1.2.3", row[1])
+	}
+}
+
+func TestSearchTableRendersSignalColumnsWithTruncation(t *testing.T) {
+	// Integration through the real renderer: long OWNER/CATEGORY cells are
+	// truncated (MaxWidth discipline) instead of blowing up row width.
+	r := api.SearchResult{
+		Name:          "long-namespace-hit",
+		Version:       "1.0.0",
+		Publisher:     "io.github.very-long-namespace-name",
+		Category:      "developer-tools-integrations",
+		Downloads:     1234,
+		VersionStatus: "stale",
+	}
+	out := ui.RenderTable(searchTableColumns(), []ui.TableRow{searchTableRow(r)})
+	for _, header := range []string{"OWNER", "CATEGORY", "DOWNLOADS"} {
+		if !strings.Contains(out, header) {
+			t.Errorf("rendered table missing %q header:\n%s", header, out)
+		}
+	}
+	if !strings.Contains(out, "1.2k") {
+		t.Errorf("DOWNLOADS not humanized in table:\n%s", out)
+	}
+	if !strings.Contains(out, "(stale)") {
+		t.Errorf("version_status suffix missing from table:\n%s", out)
+	}
+	if !strings.Contains(out, "…") {
+		t.Errorf("long OWNER/CATEGORY cells were not truncated:\n%s", out)
 	}
 }
 

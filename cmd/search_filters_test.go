@@ -22,11 +22,14 @@ import (
 // prints — against a stand-in registry. No network, so they run in CI.
 
 // searchCorpus is the fixture catalog the stand-in registry filters over.
+// echo-stdio carries the spec B2 trust signals (publisher/category/
+// tools_count/version_status); echo-legacy omits them all to cover the
+// empty-signal display path.
 var searchCorpus = []api.SearchResult{
 	{Name: "echo-http", Version: "1.0.0", Description: "echo over http", Transport: []string{"http"}, SourceRegistry: "pharos"},
-	{Name: "echo-http-mirror", Version: "1.1.0", Description: "echo over http", Transport: []string{"http"}, SourceRegistry: "mcp.io"},
-	{Name: "echo-stdio", Version: "2.0.0", Description: "echo over stdio", Transport: []string{"stdio"}, SourceRegistry: "pharos"},
-	{Name: "echo-dual", Version: "3.0.0", Description: "echo over both", Transport: []string{"stdio", "http"}, SourceRegistry: "mcp.io"},
+	{Name: "echo-http-mirror", Version: "1.1.0", Description: "echo over http", Transport: []string{"http"}, SourceRegistry: "mcp.io", Downloads: 1234},
+	{Name: "echo-stdio", Version: "2.0.0", Description: "echo over stdio", Transport: []string{"stdio"}, SourceRegistry: "pharos", Publisher: "acme-tools", Category: "developer-tools", ToolsCount: 5},
+	{Name: "echo-dual", Version: "3.0.0", Description: "echo over both", Transport: []string{"stdio", "http"}, SourceRegistry: "mcp.io", VersionStatus: "stale"},
 	{Name: "echo-legacy", Version: "0.0.1", Description: "echo, no metadata", SourceRegistry: "mcp.io"},
 }
 
@@ -263,6 +266,70 @@ func TestSearchFilters(t *testing.T) {
 			t.Errorf("http-only package rendered under --transport stdio: %s", out)
 		}
 	})
+}
+
+// TestSearchJSONRoundTripsSignalFields asserts the spec B2 signals survive
+// the CLI's --json echo: fixture hits with publisher/category/tools_count/
+// version_status parse back out of the printed document unchanged.
+func TestSearchJSONRoundTripsSignalFields(t *testing.T) {
+	var queries []url.Values
+	srv := startTestRegistry(t, &queries)
+	pointCLIAtRegistry(t, srv.URL)
+
+	results := decodeResults(t, runSearch(t, "echo", "--json"))
+
+	byName := make(map[string]api.SearchResult, len(results))
+	for _, r := range results {
+		byName[r.Name] = r
+	}
+	r := byName["echo-stdio"]
+	if r.Publisher != "acme-tools" {
+		t.Errorf("--json publisher = %q, want acme-tools round-tripped", r.Publisher)
+	}
+	if r.Category != "developer-tools" {
+		t.Errorf("--json category = %q, want developer-tools round-tripped", r.Category)
+	}
+	if r.ToolsCount != 5 {
+		t.Errorf("--json tools_count = %d, want 5 round-tripped", r.ToolsCount)
+	}
+	d := byName["echo-dual"]
+	if d.VersionStatus != "stale" {
+		t.Errorf("--json version_status = %q, want stale round-tripped", d.VersionStatus)
+	}
+	legacy := byName["echo-legacy"]
+	if legacy.Publisher != "" || legacy.Category != "" || legacy.ToolsCount != 0 || legacy.VersionStatus != "" {
+		t.Errorf("--json legacy signals = %q/%q/%d/%q, want all empty",
+			legacy.Publisher, legacy.Category, legacy.ToolsCount, legacy.VersionStatus)
+	}
+}
+
+// TestSearchTableShowsSignalColumns asserts the human table surfaces the
+// new trust signals: OWNER, CATEGORY, the humanized DOWNLOADS count, and
+// the version_status suffix (only when the status is not "active").
+func TestSearchTableShowsSignalColumns(t *testing.T) {
+	var queries []url.Values
+	srv := startTestRegistry(t, &queries)
+	pointCLIAtRegistry(t, srv.URL)
+
+	out := runSearch(t, "echo")
+
+	for _, want := range []string{"OWNER", "CATEGORY"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("table header %q missing from output:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, "acme-tools") {
+		t.Errorf("OWNER value missing from table:\n%s", out)
+	}
+	if !strings.Contains(out, "developer-tools") {
+		t.Errorf("CATEGORY value missing from table:\n%s", out)
+	}
+	if !strings.Contains(out, "1.2k") {
+		t.Errorf("humanized DOWNLOADS missing from table:\n%s", out)
+	}
+	if !strings.Contains(out, "3.0.0 (stale)") {
+		t.Errorf("version_status suffix missing from table:\n%s", out)
+	}
 }
 
 // decodeResults parses the --json envelope the search command prints.

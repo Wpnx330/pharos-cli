@@ -91,6 +91,15 @@ var infoCmd = &cobra.Command{
 			}
 			printMeta("Source", source)
 
+			// Trust signals — shown only when the registry sends them
+			// (synced rows may omit both).
+			if pkg.Publisher != "" {
+				printMeta("Owner", string(pkg.Publisher))
+			}
+			if pkg.Category != "" {
+				printMeta("Category", pkg.Category)
+			}
+
 			// Dependencies — show declared dependency constraints
 			if len(latestManifest.Dependencies) > 0 {
 				var deps []string
@@ -102,7 +111,7 @@ var infoCmd = &cobra.Command{
 
 			// Verified — always show
 			printMeta("Verified", ui.Muted.Render("No"))
-			}
+		}
 
 		// License — show "Not specified" when empty; fall back to the
 		// latest version's manifest if the packages table has no value.

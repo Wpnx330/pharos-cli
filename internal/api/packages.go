@@ -7,10 +7,10 @@ import (
 
 // VersionInfo describes a single published version of a package.
 type VersionInfo struct {
-	Version   string `json:"version"`
-	CreatedAt string `json:"created_at"`
-	Status    string `json:"status"`
-	Deprecated bool  `json:"deprecated"`
+	Version    string `json:"version"`
+	CreatedAt  string `json:"created_at"`
+	Status     string `json:"status"`
+	Deprecated bool   `json:"deprecated"`
 }
 
 // PackageDetail is the full package metadata returned by the package
@@ -29,6 +29,13 @@ type PackageDetail struct {
 	LastSyncedAt string            `json:"last_synced_at"`
 	DistTags     map[string]string `json:"dist_tags"`
 	Versions     []VersionDetail   `json:"versions"`
+	// Publisher is the owner namespace flattened from the publisher
+	// object (same tolerant parse as search hits). Rendered by
+	// `pharos info` when the registry sends it; absent keys stay empty.
+	Publisher Publisher `json:"publisher,omitempty"`
+	// Category is the registry catalog category, shown by `pharos info`
+	// when present.
+	Category string `json:"category,omitempty"`
 }
 
 // VersionDetail is a version entry embedded in PackageDetail.
@@ -76,13 +83,13 @@ type Dependency struct {
 
 // Manifest is the package manifest embedded in each version.
 type Manifest struct {
-	Name         string            `json:"name"`
-	Version      string            `json:"version"`
-	Transport    string            `json:"transport"`
-	Description  string            `json:"description"`
-	License      string            `json:"license,omitempty"`
-	Repository   Repository        `json:"repository,omitempty"`
-	Capabilities []string          `json:"capabilities"`
+	Name         string     `json:"name"`
+	Version      string     `json:"version"`
+	Transport    string     `json:"transport"`
+	Description  string     `json:"description"`
+	License      string     `json:"license,omitempty"`
+	Repository   Repository `json:"repository,omitempty"`
+	Capabilities []string   `json:"capabilities"`
 	// Runtime hint for stdio servers: "npx", "uvx", "docker", "binary", "python".
 	Runtime string `json:"runtime,omitempty"`
 	// Package is the npm/pip/docker image name to pass to the runtime.

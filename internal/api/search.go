@@ -12,6 +12,11 @@ import (
 // Transport and SourceRegistry are present on live registry hits
 // (transport is an array of strings, e.g. ["stdio"]). Version is
 // printed as received — synced metadata-only rows often send "0.0.0".
+//
+// Publisher, Category, ToolsCount and VersionStatus are trust/signal
+// fields the live registry already sends with every hit; they are
+// parsed tolerantly (absent keys deserialize empty) and are display-only —
+// search gains no new flags.
 type SearchResult struct {
 	Name           string   `json:"name"`
 	Version        string   `json:"version"`
@@ -21,6 +26,44 @@ type SearchResult struct {
 	Downloads      int64    `json:"downloads30d"`
 	Transport      []string `json:"transport"`
 	SourceRegistry string   `json:"source_registry"`
+	// Publisher is the owner namespace flattened from the registry's
+	// publisher object ({ "namespace": "...", ... }).
+	Publisher Publisher `json:"publisher,omitempty"`
+	// Category is the registry catalog category, e.g. "productivity".
+	Category string `json:"category,omitempty"`
+	// ToolsCount is the number of tools the server exposes.
+	ToolsCount int `json:"tools_count,omitempty"`
+	// VersionStatus is the lifecycle status of the served version,
+	// e.g. "active", "stale", "deprecated".
+	VersionStatus string `json:"version_status,omitempty"`
+}
+
+// Publisher is the publisher namespace flattened from the registry's
+// publisher object. Live hits send { "namespace": "...", ... }; the
+// parse also accepts a bare string and ignores null or any other
+// shape (absent data stays the empty string, never an error).
+type Publisher string
+
+// UnmarshalJSON flattens the publisher field: object form extracts
+// "namespace", string form is taken as-is, null and unparseable
+// shapes leave the value empty without failing the enclosing document.
+func (p *Publisher) UnmarshalJSON(data []byte) error {
+	if s := strings.TrimSpace(string(data)); s == "" || s == "null" {
+		return nil
+	}
+	var obj struct {
+		Namespace string `json:"namespace"`
+	}
+	if err := json.Unmarshal(data, &obj); err == nil {
+		*p = Publisher(obj.Namespace)
+		return nil
+	}
+	var str string
+	if err := json.Unmarshal(data, &str); err == nil {
+		*p = Publisher(str)
+		return nil
+	}
+	return nil
 }
 
 // SearchResponse is the response envelope for the search endpoint.

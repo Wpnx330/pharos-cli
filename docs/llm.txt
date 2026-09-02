@@ -387,7 +387,7 @@ FLAGS:
   --page <int> (default: 1) page number
   --registry <string> (default: ) filter by source registry (e.g. mcp.io, pharos)
   --transport <string> (default: ) filter by transport (e.g. stdio, http-sse)
-OUTPUT: JSON: registry search response {results: [...], nextCursor, total}. Plain: results table + hint footer
+OUTPUT: JSON: registry search response {results: [...], nextCursor, total}; each result also carries the trust signals publisher (flattened namespace string), category, tools_count, version_status when the registry sends them. Plain: results table (NAME VERSION TRANSPORT REGISTRY OWNER CATEGORY DESCRIPTION DOWNLOADS; version_status shown as a " (stale)"-style suffix only when not "active") + hint footer
 ENV: PHAROS_JSON=1 or --json
 NON-INTERACTIVE: no prompts; requires registry access
 

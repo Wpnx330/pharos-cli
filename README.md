@@ -121,6 +121,10 @@ One-line list only. Full flags and examples: https://discoverpharos.dev/cli/docs
 - `--idle-timeout` — **Per-server** minutes of inactivity before auto-unloading that server's HTTP/SSE process (default: 60, 0 = never unload). Set at install time; stored per-server in `~/.pharos/mcp.json` (install)
 - `--running` — Show only running daemon-managed servers (list)
 
+## Search Results
+
+The search table shows the trust signals the registry already provides: `OWNER` (publisher namespace), `CATEGORY` (registry catalog category), and `DOWNLOADS` (30-day downloads, humanized — `1234` renders as `1.2k`). A non-`active` `version_status` is flagged inline on the version, e.g. `1.2.3 (stale)`; `active` versions stay bare. Missing values render as `—`. `--json` carries the same fields (`publisher`, `category`, `tools_count`, `version_status`) per result.
+
 ## Configuration
 
 Config is stored at `~/.pharos/config.json`:

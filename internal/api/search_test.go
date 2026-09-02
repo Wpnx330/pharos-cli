@@ -31,6 +31,39 @@ const searchHitMissingTransportJSON = `{
   "downloads30d": 7
 }`
 
+// searchHitSignalsJSON matches the trust/signal fields the live
+// registry sends on every hit: publisher is an object (flattened to
+// its namespace), plus category, tools_count and version_status.
+const searchHitSignalsJSON = `{
+  "name": "context7",
+  "version": "1.0.0",
+  "title": "Context7",
+  "description": "up-to-date code docs",
+  "score": 0.9,
+  "downloads30d": 12345,
+  "transport": ["http-sse"],
+  "source_registry": "mcp.io",
+  "publisher": {"namespace": "upstash", "other": "ignored"},
+  "category": "documentation",
+  "tools_count": 3,
+  "version_status": "active"
+}`
+
+// searchHitNullPublisherJSON guards the live shape where publisher is
+// absent or null — the flatten must leave Publisher empty, not panic.
+const searchHitNullPublisherJSON = `{
+  "name": "anon-hit",
+  "version": "0.0.0",
+  "publisher": null
+}`
+
+// searchHitStringPublisherJSON accepts a bare string publisher for
+// older/cached payloads.
+const searchHitStringPublisherJSON = `{
+  "name": "string-pub",
+  "publisher": "legacy-owner"
+}`
+
 func TestSearchResultUnmarshalProductionTransportAndRegistry(t *testing.T) {
 	var got SearchResult
 	if err := json.Unmarshal([]byte(productionSearchHitJSON), &got); err != nil {
@@ -72,6 +105,92 @@ func TestSearchResultUnmarshalMissingTransportAndRegistry(t *testing.T) {
 	}
 }
 
+func TestSearchResultUnmarshalSignalFields(t *testing.T) {
+	var got SearchResult
+	if err := json.Unmarshal([]byte(searchHitSignalsJSON), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Publisher != "upstash" {
+		t.Errorf("Publisher = %q, want flattened publisher.namespace upstash", got.Publisher)
+	}
+	if got.Category != "documentation" {
+		t.Errorf("Category = %q, want documentation", got.Category)
+	}
+	if got.ToolsCount != 3 {
+		t.Errorf("ToolsCount = %d, want 3", got.ToolsCount)
+	}
+	if got.VersionStatus != "active" {
+		t.Errorf("VersionStatus = %q, want active", got.VersionStatus)
+	}
+}
+
+func TestSearchResultUnmarshalNullPublisherDoesNotPanic(t *testing.T) {
+	var got SearchResult
+	if err := json.Unmarshal([]byte(searchHitNullPublisherJSON), &got); err != nil {
+		t.Fatalf("unmarshal with null publisher: %v", err)
+	}
+	if got.Publisher != "" {
+		t.Errorf("Publisher = %q, want empty when publisher is null", got.Publisher)
+	}
+	if got.Name != "anon-hit" {
+		t.Errorf("Name = %q, want anon-hit", got.Name)
+	}
+}
+
+func TestSearchResultUnmarshalMissingPublisherIsEmpty(t *testing.T) {
+	var got SearchResult
+	if err := json.Unmarshal([]byte(searchHitMissingTransportJSON), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Publisher != "" || got.Category != "" || got.ToolsCount != 0 || got.VersionStatus != "" {
+		t.Errorf("signal fields = %q/%q/%d/%q, want all empty when keys absent",
+			got.Publisher, got.Category, got.ToolsCount, got.VersionStatus)
+	}
+}
+
+func TestSearchResultUnmarshalStringPublisher(t *testing.T) {
+	var got SearchResult
+	if err := json.Unmarshal([]byte(searchHitStringPublisherJSON), &got); err != nil {
+		t.Fatalf("unmarshal string publisher: %v", err)
+	}
+	if got.Publisher != "legacy-owner" {
+		t.Errorf("Publisher = %q, want legacy-owner (bare string tolerated)", got.Publisher)
+	}
+}
+
+func TestSearchResultUnmarshalGarbagePublisherIsTolerated(t *testing.T) {
+	raw := `{"name":"odd","publisher":[1,2]}`
+	var got SearchResult
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("unmarshal array publisher: %v", err)
+	}
+	if got.Publisher != "" {
+		t.Errorf("Publisher = %q, want empty for unparseable shape", got.Publisher)
+	}
+	if got.Name != "odd" {
+		t.Errorf("Name = %q, want odd (row must still parse)", got.Name)
+	}
+}
+
+func TestSearchResultMarshalRoundTripsSignalFields(t *testing.T) {
+	var got SearchResult
+	if err := json.Unmarshal([]byte(searchHitSignalsJSON), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	out, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var back SearchResult
+	if err := json.Unmarshal(out, &back); err != nil {
+		t.Fatalf("re-unmarshal: %v", err)
+	}
+	if back.Publisher != "upstash" || back.Category != "documentation" || back.ToolsCount != 3 {
+		t.Errorf("round-trip = %q/%q/%d, want upstash/documentation/3",
+			back.Publisher, back.Category, back.ToolsCount)
+	}
+}
+
 func TestSearchResponseUnmarshalResultsEnvelope(t *testing.T) {
 	raw := `{
   "results": [` + productionSearchHitJSON + `],
@@ -87,6 +206,23 @@ func TestSearchResponseUnmarshalResultsEnvelope(t *testing.T) {
 	}
 	if resp.Results[0].SourceRegistry != "mcp.io" {
 		t.Errorf("nested SourceRegistry = %q", resp.Results[0].SourceRegistry)
+	}
+}
+
+func TestSearchResponseUnmarshalSignalFieldsThroughEnvelope(t *testing.T) {
+	raw := `{
+  "results": [` + searchHitSignalsJSON + `],
+  "nextCursor": "",
+  "total": 1
+}`
+	var resp SearchResponse
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	r := resp.Results[0]
+	if r.Publisher != "upstash" || r.Category != "documentation" || r.ToolsCount != 3 || r.VersionStatus != "active" {
+		t.Errorf("envelope signals = %q/%q/%d/%q, want upstash/documentation/3/active",
+			r.Publisher, r.Category, r.ToolsCount, r.VersionStatus)
 	}
 }
 

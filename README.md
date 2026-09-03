@@ -273,6 +273,8 @@ Only compared fields (`command`, `args`, `env`, `url`, `type`) count; reformatti
 | Aider | `~/.aider.conf.yml` (all OS, WSL2 Windows) | YAML (`mcp-servers:` list). Stdio only: `{name, command, args, env}`. Remote servers skipped. |
 | Generic MCP | `~/.config/mcp/mcp.json` | JSON (`{"mcpServers": {}}`) |
 
+**Microsoft Store (MSIX) Claude Desktop**: Claude Desktop installed from the Microsoft Store is an MSIX package. Depending on app version, the Store build may materialize its config under the MSIX `LocalCache` path (`%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\claude_desktop_config.json`, probed per Windows user under WSL2 too) or the classic `%APPDATA%\Claude\` path; pharos probes both, classic first, as two independent entries when both exist, so a dual install surfaces as two entries: *Claude Desktop* and *Claude Desktop (Microsoft Store)*. A Store-installed Claude that has never been launched has no `LocalCache\Roaming\Claude` directory yet and is intentionally not detected — launch it once, then `pharos install` will offer to create its config.
+
 ## Development
 
 ```bash

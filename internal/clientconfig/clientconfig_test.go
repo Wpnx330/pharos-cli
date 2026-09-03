@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -2615,4 +2616,223 @@ mcp-servers:
 			t.Error("existing was lost after remove")
 		}
 	})
+}
+
+// writeMSIXPackage creates <packagesRoot>/<family>/LocalCache/Roaming/
+// Claude with an empty claude_desktop_config.json inside, mimicking a
+// launched Microsoft Store (MSIX) Claude Desktop install. Returns the
+// package directory path.
+func writeMSIXPackage(t *testing.T, packagesRoot, family string) string {
+	t.Helper()
+	claudeDir := filepath.Join(packagesRoot, family, "LocalCache", "Roaming", "Claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(claudeDir, "claude_desktop_config.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(packagesRoot, family)
+}
+
+func TestMSIXClaudeDesktopCandidates_Windows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-only: exercises the %LOCALAPPDATA% MSIX branch")
+	}
+	home := t.TempDir()
+	local := filepath.Join(home, "AppData", "Local")
+	packages := filepath.Join(local, "Packages")
+	writeMSIXPackage(t, packages, "Claude_pzs8sxrjxfjjc")
+
+	t.Run("env LOCALAPPDATA", func(t *testing.T) {
+		t.Setenv("LOCALAPPDATA", local)
+		got := msixClaudeDesktopCandidates(home)
+		if len(got) != 1 {
+			t.Fatalf("got %d candidates, want 1: %+v", len(got), got)
+		}
+		c := got[0]
+		if c.ID != ClientClaudeDesktop {
+			t.Errorf("ID = %q, want %q", c.ID, ClientClaudeDesktop)
+		}
+		if c.Name != "Claude Desktop (Microsoft Store)" {
+			t.Errorf("Name = %q, want %q", c.Name, "Claude Desktop (Microsoft Store)")
+		}
+		wantPath := filepath.Join(packages, "Claude_pzs8sxrjxfjjc", "LocalCache", "Roaming", "Claude", "claude_desktop_config.json")
+		if c.Path != wantPath {
+			t.Errorf("Path = %q, want %q", c.Path, wantPath)
+		}
+		if c.Format != FormatMcpServers {
+			t.Errorf("Format = %q, want %q", c.Format, FormatMcpServers)
+		}
+	})
+
+	t.Run("fallback to home/AppData/Local", func(t *testing.T) {
+		t.Setenv("LOCALAPPDATA", "")
+		got := msixClaudeDesktopCandidates(home)
+		if len(got) != 1 {
+			t.Fatalf("got %d candidates, want 1: %+v", len(got), got)
+		}
+		wantPath := filepath.Join(packages, "Claude_pzs8sxrjxfjjc", "LocalCache", "Roaming", "Claude", "claude_desktop_config.json")
+		if got[0].Path != wantPath {
+			t.Errorf("Path = %q, want %q", got[0].Path, wantPath)
+		}
+	})
+}
+
+func TestMSIXClaudeDesktopCandidates_NeverLaunched(t *testing.T) {
+	cases := []struct {
+		name  string
+		build func(t *testing.T, pkg string)
+	}{
+		{"bare package dir", func(t *testing.T, pkg string) {
+			if err := os.MkdirAll(pkg, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"LocalCache only", func(t *testing.T, pkg string) {
+			if err := os.MkdirAll(filepath.Join(pkg, "LocalCache"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"LocalCache/Roaming only", func(t *testing.T, pkg string) {
+			if err := os.MkdirAll(filepath.Join(pkg, "LocalCache", "Roaming"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			packages := filepath.Join(root, "Packages")
+			tc.build(t, filepath.Join(packages, "Claude_pzs8sxrjxfjjc"))
+			if got := msixScan(packages); len(got) != 0 {
+				t.Fatalf("got %d candidates, want 0: %+v", len(got), got)
+			}
+		})
+	}
+}
+
+func TestMSIXClaudeDesktopCandidates_PrefixMatch(t *testing.T) {
+	cases := []struct {
+		family string
+		want   bool
+	}{
+		{family: "Claude_abc", want: true},
+		{family: "Claudette_xyz", want: false},
+		{family: "Claude-Anything_abc", want: false},
+		{family: "MyClaude_def", want: false},
+	}
+	root := t.TempDir()
+	packages := filepath.Join(root, "Packages")
+	for _, tc := range cases {
+		writeMSIXPackage(t, packages, tc.family)
+	}
+
+	got := msixScan(packages)
+	var wantPaths []string
+	for _, tc := range cases {
+		if tc.want {
+			wantPaths = append(wantPaths, filepath.Join(packages, tc.family, "LocalCache", "Roaming", "Claude", "claude_desktop_config.json"))
+		}
+	}
+	if len(got) != len(wantPaths) {
+		t.Fatalf("got %d candidates (%+v), want %d", len(got), got, len(wantPaths))
+	}
+	gotPaths := make(map[string]bool, len(got))
+	for _, c := range got {
+		gotPaths[c.Path] = true
+	}
+	for _, want := range wantPaths {
+		if !gotPaths[want] {
+			t.Errorf("missing candidate for %q; got %v", want, gotPaths)
+		}
+	}
+}
+
+func TestMSIXClaudeDesktopCandidates_MultiUser_WSL2(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux-only: exercises the WSL2 windowsUserDirs MSIX branch")
+	}
+	root := isolateWindowsUsers(t)
+	u1 := filepath.Join(root, "u1")
+	u2 := filepath.Join(root, "u2")
+	for _, u := range []string{u1, u2} {
+		if err := os.MkdirAll(u, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeMSIXPackage(t, filepath.Join(u1, "AppData", "Local", "Packages"), "Claude_pzs8sxrjxfjjc")
+
+	got := msixClaudeDesktopCandidates("home-ignored-on-linux")
+	if len(got) != 1 {
+		t.Fatalf("got %d candidates, want 1 (only u1 has MSIX Claude): %+v", len(got), got)
+	}
+	wantPath := filepath.Join(u1, "AppData", "Local", "Packages", "Claude_pzs8sxrjxfjjc", "LocalCache", "Roaming", "Claude", "claude_desktop_config.json")
+	if got[0].Path != wantPath {
+		t.Errorf("Path = %q, want %q", got[0].Path, wantPath)
+	}
+	if got[0].Name != "Claude Desktop (Microsoft Store)" {
+		t.Errorf("Name = %q, want %q", got[0].Name, "Claude Desktop (Microsoft Store)")
+	}
+}
+
+func TestDetectDualClaudeInstall(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		t.Skip("MSIX detection applies to windows and WSL2 only")
+	}
+	isolateWindowsUsers(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	var classicDir string
+	switch runtime.GOOS {
+	case "windows":
+		appdata := filepath.Join(home, "AppData", "Roaming")
+		t.Setenv("APPDATA", appdata)
+		classicDir = filepath.Join(appdata, "Claude")
+	default:
+		classicDir = filepath.Join(home, ".config", "Claude")
+	}
+	if err := os.MkdirAll(classicDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var packages string
+	if runtime.GOOS == "windows" {
+		local := filepath.Join(home, "AppData", "Local")
+		t.Setenv("LOCALAPPDATA", local)
+		packages = filepath.Join(local, "Packages")
+	} else {
+		userDir := filepath.Join(windowsUsersRoot(), "u1")
+		if err := os.MkdirAll(userDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		packages = filepath.Join(userDir, "AppData", "Local", "Packages")
+	}
+	writeMSIXPackage(t, packages, "Claude_pzs8sxrjxfjjc")
+
+	var detected []Client
+	for _, c := range Detect() {
+		if c.ID == ClientClaudeDesktop {
+			detected = append(detected, c)
+		}
+	}
+	if len(detected) != 2 {
+		t.Fatalf("got %d Claude Desktop detections, want 2 (classic + MSIX): %+v", len(detected), detected)
+	}
+	if detected[0].Name != "Claude Desktop" {
+		t.Errorf("classic candidate must be index 0 (load-bearing for DetectByID/ConfigPath/resolveWriteTargets), got %q at index 0: %+v", detected[0].Name, detected)
+	}
+	names := make(map[string]bool, len(detected))
+	for _, c := range detected {
+		names[c.Name] = true
+	}
+	if !names["Claude Desktop"] {
+		t.Errorf("classic candidate missing from detections: %v", detected)
+	}
+	if !names["Claude Desktop (Microsoft Store)"] {
+		t.Errorf("MSIX candidate missing from detections: %v", detected)
+	}
+	if names["Claude Desktop"] && names["Claude Desktop (Microsoft Store)"] && len(names) != 2 {
+		t.Errorf("unexpected extra Claude Desktop variants: %v", detected)
+	}
 }

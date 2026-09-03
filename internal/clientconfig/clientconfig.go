@@ -220,6 +220,9 @@ func candidatePaths() []Client {
 			Path:   filepath.Join(appdata, "Claude", "claude_desktop_config.json"),
 			Format: FormatMcpServers,
 		})
+		// Microsoft Store (MSIX) install: additive candidate — the
+		// classic path above still wins as the primary.
+		clients = append(clients, msixClaudeDesktopCandidates(home)...)
 	default:
 		// Linux: some users run Claude via electron; check XDG config.
 		clients = append(clients, Client{
@@ -241,6 +244,9 @@ func candidatePaths() []Client {
 				})
 			}
 		}
+		// WSL2: Microsoft Store (MSIX) Claude Desktop packages under
+		// each Windows profile's AppData/Local/Packages.
+		clients = append(clients, msixClaudeDesktopCandidates(home)...)
 	}
 
 	// Cursor: ~/.cursor/mcp.json (Linux/macOS/Windows user home)
@@ -534,6 +540,65 @@ func windowsUserDirs() []string {
 		dirs = append(dirs, filepath.Join(root, name))
 	}
 	return dirs
+}
+
+// msixClaudeDesktopCandidates scans %LOCALAPPDATA%\Packages (or the WSL2
+// /mnt/c/Users/<u>/AppData/Local/Packages equivalent) for MSIX-packaged
+// Claude Desktop (package family Claude_<publisher-hash>) and returns a
+// candidate per matching package whose LocalCache\Roaming\Claude dir
+// exists. The package family prefix is the stable public identity; the
+// publisher-hash suffix is globbed (Claude_*). Only the Roaming/Claude
+// leaf is probed — package dirs without it are Store-installed-but-
+// never-launched and must NOT surface as detected (a never-launched app
+// has no config to manage; creating one there is wrong). Depending on
+// app version, the Store build may materialize its config under
+// LocalCache\Roaming\Claude; these candidates are probed additively —
+// the classic %APPDATA%\Claude path remains primary.
+func msixClaudeDesktopCandidates(home string) []Client {
+	switch runtime.GOOS {
+	case "windows":
+		local := os.Getenv("LOCALAPPDATA")
+		if local == "" {
+			local = filepath.Join(home, "AppData", "Local")
+		}
+		return msixScan(filepath.Join(local, "Packages"))
+	case "linux":
+		// WSL2: scan every Windows profile; home is ignored here for
+		// signature symmetry — windowsUserDirs is the source of truth.
+		var clients []Client
+		for _, wu := range windowsUserDirs() {
+			clients = append(clients, msixScan(filepath.Join(wu, "AppData", "Local", "Packages"))...)
+		}
+		return clients
+	default:
+		return nil
+	}
+}
+
+// msixScan scans one MSIX Packages root directory for Claude Desktop
+// package-family dirs (glob "Claude_*") whose LocalCache/Roaming/Claude
+// directory exists, returning one client candidate per hit. It is the
+// scan core behind msixClaudeDesktopCandidates, factored out so both the
+// Windows (%LOCALAPPDATA%) and WSL2 (/mnt/c/Users/<u>) roots are
+// testable without a real Windows filesystem.
+func msixScan(root string) []Client {
+	matches, err := filepath.Glob(filepath.Join(root, "Claude_*"))
+	if err != nil {
+		return nil
+	}
+	var clients []Client
+	for _, pkg := range matches {
+		if !dirExists(filepath.Join(pkg, "LocalCache", "Roaming", "Claude")) {
+			continue
+		}
+		clients = append(clients, Client{
+			ID:     ClientClaudeDesktop,
+			Name:   "Claude Desktop (Microsoft Store)",
+			Path:   filepath.Join(pkg, "LocalCache", "Roaming", "Claude", "claude_desktop_config.json"),
+			Format: FormatMcpServers,
+		})
+	}
+	return clients
 }
 
 // clineCandidatePaths returns Cline client entries for the current OS.

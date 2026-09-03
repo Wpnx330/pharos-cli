@@ -14,6 +14,7 @@
 | W1.2 | C5 install receipts | 🟢 DONE (Sep 2) — receipts v2: status/errors partial-failure honesty, dep rows, canonical row, .bak H0 provenance; adversarial review 4 MAJORs → fixed 6f1b3cf; 737 tests green; live-binary QA'd | app dev | pharos-cli 835560e + 6f1b3cf |
 | W1.3 | B2 search signals (CLI) | 🟢 DONE (Sep 2) — OWNER/CATEGORY cols + humanized downloads + (stale) suffix; --json carries publisher/category/tools_count/version_status; info Owner/Category guarded; +19 tests (suite green); live-binary QA'd | app dev | pharos-cli c244862 |
 | W1.4 | B3 doctor --diff | 🟢 DONE (Sep 2) — b15d358 + adversarial-review remediation 4f13e10 (F1-F8: aider skip-merge, per-client lockfile record, case-fold relevance, test-honesty pins, numeric env, Grok headers, docs, read-only probe); +9 tests; live QA: subset install clean, case-rename surfaces MISSING+EXTRA | app dev | pharos-cli b15d358 + 4f13e10 |
+| W1.4.1 | MSIX Claude Desktop (Store) detection | 🟢 DONE (Sep 3, d651bff) — additive Claude_* MSIX probe (Win+WSL2), classic-first union, never-launched skip; review F1-F3 fixed (README premise hedged, order asserted, windows CI matrix); live QA on sandboxed MSIX tree | app dev | pharos-cli d651bff |
 | W2.1 | A2 pharos adopt | ⚪ pending | app dev | — |
 | W2.2 | A1 profiles (opt-in) | ⚪ pending | app dev | — |
 | W3.1 | A3 brew/scoop | ⚪ pending (signing Q open) | app dev | — |

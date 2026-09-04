@@ -21,6 +21,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // SchemaVersion is the profiles.json schema version.
@@ -119,12 +120,39 @@ func Load() (*State, error) {
 	return &st, nil
 }
 
+// serializeSave returns an unlock func that serializes Save calls for the
+// same resolved path within this process. Keyed per path so distinct test
+// sandboxes (different HOMEs) never block each other.
+var (
+	saveMu    sync.Mutex
+	saveLocks = map[string]*sync.Mutex{}
+)
+
+func serializeSave(path string) func() {
+	saveMu.Lock()
+	m, ok := saveLocks[path]
+	if !ok {
+		m = &sync.Mutex{}
+		saveLocks[path] = m
+	}
+	saveMu.Unlock()
+	m.Lock()
+	return m.Unlock
+}
+
 // Save writes profiles.json, creating ~/.pharos as needed.
+//
+// Concurrency: saves for the same path are serialized in-process (the
+// temp+rename swap below is not safely concurrent on Windows, where
+// rename-over-open-file is exclusive). Cross-process writers remain
+// last-writer-wins on the whole file — there is deliberately no lock file.
 func (s *State) Save() error {
 	path, err := FilePath()
 	if err != nil {
 		return err
 	}
+	unlock := serializeSave(path)
+	defer unlock()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create pharos dir: %w", err)
 	}

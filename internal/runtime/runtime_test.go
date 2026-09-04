@@ -14,12 +14,14 @@ import (
 	"time"
 )
 
-// useTempHome sets HOME to a per-test temp dir so ~/.pharos/run/ operations
-// are isolated. Returns the temp dir.
+// useTempHome points HOME and USERPROFILE at a per-test temp dir so
+// ~/.pharos/run/ operations are isolated on every GOOS (os.UserHomeDir
+// reads USERPROFILE on windows). Returns the temp dir.
 func useTempHome(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
 	return dir
 }
 
@@ -212,6 +214,7 @@ func TestStart_AlreadyRunningReturnsError(t *testing.T) {
 }
 
 func TestStart_BackgroundStartsProcessAndWritesPID(t *testing.T) {
+	skipIfHelpersMissing(t)
 	home := useTempHome(t)
 	work := t.TempDir()
 
@@ -257,6 +260,7 @@ func TestStart_BackgroundStartsProcessAndWritesPID(t *testing.T) {
 }
 
 func TestStart_ImmediateExitReturnsErrorAndRemovesPID(t *testing.T) {
+	skipIfHelpersMissing(t)
 	useTempHome(t)
 	work := t.TempDir()
 
@@ -293,6 +297,7 @@ func TestStart_ImmediateExitReturnsErrorAndRemovesPID(t *testing.T) {
 }
 
 func TestStart_StaysUpThenStop(t *testing.T) {
+	skipIfHelpersMissing(t)
 	useTempHome(t)
 	work := t.TempDir()
 
@@ -362,8 +367,13 @@ func TestStart_WaitsForPortThenSucceeds(t *testing.T) {
 	ln.Close()
 
 	// Compile a tiny helper first so Start's listen wait is not racing `go run`.
+	// windows exec.LookPath only resolves PATHEXT executables, so the
+	// built helper carries a .exe suffix there.
 	helper := filepath.Join(work, "listen.go")
 	bin := filepath.Join(work, "listenbin")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
 	src := fmt.Sprintf(`package main
 import ("net"; "time")
 func main() {
@@ -805,6 +815,7 @@ func TestRunningPIDs_NoDir(t *testing.T) {
 }
 
 func TestRunningPIDs_ReturnsAliveOnly(t *testing.T) {
+	skipIfHelpersMissing(t)
 	useTempHome(t)
 
 	work := t.TempDir()
@@ -974,6 +985,7 @@ func TestProcessStatus_JSONOmitsZeroFields(t *testing.T) {
 // --- Start foreground mode (lightweight) ---
 
 func TestStart_ForegroundRunsAndExits(t *testing.T) {
+	skipIfHelpersMissing(t)
 	useTempHome(t)
 
 	// A command that exits immediately on its own.
@@ -992,6 +1004,7 @@ func TestStart_ForegroundRunsAndExits(t *testing.T) {
 }
 
 func TestStart_ForegroundFailureReturnsError(t *testing.T) {
+	skipIfHelpersMissing(t)
 	useTempHome(t)
 
 	// 'false' exits with status 1.
@@ -1038,16 +1051,28 @@ func writePathExe(t *testing.T, dir, name, body string) string {
 
 const spawnArgLogger = "#!/bin/sh\n{\n  printf 'exe=%s\\n' \"$0\"\n  for a in \"$@\"; do printf 'arg=%s\\n' \"$a\"; done\n} > \"$PHAROS_SPAWN_LOG\"\nexec /bin/sleep 30\n"
 
+// spawnStubName returns the file name a PATH stub must have so
+// exec.LookPath resolves it on the current GOOS: bare name on unix,
+// a PATHEXT suffix (.bat) on windows — the stub is only ever looked
+// up, never executed, by ResolveSpawnExe.
+func spawnStubName(base string) string {
+	if runtime.GOOS == "windows" {
+		return base + ".bat"
+	}
+	return base
+}
+
 func TestResolveSpawnExe_PythonMissingUsesPython3(t *testing.T) {
 	dir := t.TempDir()
-	writePathExe(t, dir, "python3", "#!/bin/sh\nexit 0\n")
+	stub := spawnStubName("python3")
+	writePathExe(t, dir, stub, "#!/bin/sh\nexit 0\n")
 	t.Setenv("PATH", dir)
 
 	got, err := ResolveSpawnExe("python")
 	if err != nil {
 		t.Fatalf("ResolveSpawnExe: %v", err)
 	}
-	want := filepath.Join(dir, "python3")
+	want := filepath.Join(dir, stub)
 	if got != want {
 		t.Fatalf("ResolveSpawnExe = %q, want %q", got, want)
 	}
@@ -1055,15 +1080,16 @@ func TestResolveSpawnExe_PythonMissingUsesPython3(t *testing.T) {
 
 func TestResolveSpawnExe_PythonPresentKeepsPython(t *testing.T) {
 	dir := t.TempDir()
-	writePathExe(t, dir, "python", "#!/bin/sh\nexit 0\n")
-	writePathExe(t, dir, "python3", "#!/bin/sh\nexit 0\n")
+	stub := spawnStubName("python")
+	writePathExe(t, dir, stub, "#!/bin/sh\nexit 0\n")
+	writePathExe(t, dir, spawnStubName("python3"), "#!/bin/sh\nexit 0\n")
 	t.Setenv("PATH", dir)
 
 	got, err := ResolveSpawnExe("python")
 	if err != nil {
 		t.Fatalf("ResolveSpawnExe: %v", err)
 	}
-	want := filepath.Join(dir, "python")
+	want := filepath.Join(dir, stub)
 	if got != want {
 		t.Fatalf("ResolveSpawnExe = %q, want %q when python is on PATH", got, want)
 	}

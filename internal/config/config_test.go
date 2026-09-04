@@ -6,11 +6,20 @@ import (
 	"testing"
 )
 
+// setHomeEnv points every home-dir env var prod path resolution reads at
+// dir, so tests are hermetic on every GOOS: HOME (unix), USERPROFILE
+// (windows os.UserHomeDir).
+func setHomeEnv(t *testing.T, dir string) {
+	t.Helper()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+}
+
 // setupHome sets HOME to a temp dir so config is isolated.
 func setupHome(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	setHomeEnv(t, dir)
 	return dir
 }
 

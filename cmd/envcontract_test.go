@@ -245,11 +245,15 @@ func runContractCase(t *testing.T, cc contractCase) {
 
 // isolateHome points HOME/USERPROFILE at a fresh temp dir so config,
 // credentials, daemon state, and the store never touch the real home.
+// APPDATA/LOCALAPPDATA follow so windows shell-folder candidates (Claude
+// Desktop, Zed, Windsurf, MSIX scan) resolve under the isolated tree too.
 func isolateHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home) // os.UserHomeDir on Windows
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
 	return home
 }
 
@@ -896,7 +900,10 @@ func TestLLMTxtGoldenFile(t *testing.T) {
 		t.Fatalf("read docs/llm.txt: %v", err)
 	}
 	got := GenerateLLMTxt()
-	if string(want) != got {
+	// Git may check the golden file out with CRLF on windows (autocrlf);
+	// compare content, not checkout line endings.
+	normalized := strings.ReplaceAll(string(want), "\r\n", "\n")
+	if normalized != got {
 		t.Errorf("docs/llm.txt is stale — regenerate with `go run . llmtxt`.\nDiff hint: want %d bytes (committed), got %d bytes (generated)", len(want), len(got))
 	}
 }

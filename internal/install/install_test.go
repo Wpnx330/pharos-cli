@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -712,6 +713,18 @@ func isolateWindowsUsers(t *testing.T) string {
 	return root
 }
 
+// setHomeEnv points every home-dir env var prod path resolution reads at
+// dir, so tests are hermetic on every GOOS: HOME (unix), USERPROFILE
+// (windows os.UserHomeDir), APPDATA/LOCALAPPDATA (windows shell-folder
+// candidates such as Claude Desktop).
+func setHomeEnv(t *testing.T, dir string) {
+	t.Helper()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+	t.Setenv("APPDATA", filepath.Join(dir, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(dir, "AppData", "Local"))
+}
+
 func TestWriteClientConfigsWithMockClient(t *testing.T) {
 	// Set up a fake generic client.
 	isolateWindowsUsers(t)
@@ -804,7 +817,7 @@ func TestWriteClientConfigsMultiSelect(t *testing.T) {
 func TestWriteClientConfigsDesktopRemoteSkipped(t *testing.T) {
 	isolateWindowsUsers(t)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHomeEnv(t, home)
 	dir := filepath.Join(home, ".config", "Claude")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -857,7 +870,7 @@ func TestWriteClientConfigsDesktopRemoteSkipped(t *testing.T) {
 func TestWriteClientConfigsDesktopStdioWrites(t *testing.T) {
 	isolateWindowsUsers(t)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHomeEnv(t, home)
 	dir := filepath.Join(home, ".config", "Claude")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -887,18 +900,25 @@ func TestWriteClientConfigsDesktopStdioWrites(t *testing.T) {
 
 func TestWriteClientConfigsCursorBothHomesAutoAndExplicit(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHomeEnv(t, home)
 	if err := os.MkdirAll(filepath.Join(home, ".cursor"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	winRoot := isolateWindowsUsers(t)
-	winPath := filepath.Join(winRoot, "chris", ".cursor", "mcp.json")
-	if err := os.MkdirAll(filepath.Dir(winPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(winPath, []byte(`{"mcpServers":{"MCP_DOCKER":{"command":"docker","args":["mcp","gateway","run"]}}}`+"\n"), 0o644); err != nil {
-		t.Fatal(err)
+	// The WSL2-mirror fixture only exists on linux; native windows has
+	// no /mnt/c layer, so a single Cursor path is the full set there.
+	want := 1
+	var winPath string
+	if runtime.GOOS == "linux" {
+		want = 2
+		winRoot := isolateWindowsUsers(t)
+		winPath = filepath.Join(winRoot, "chris", ".cursor", "mcp.json")
+		if err := os.MkdirAll(filepath.Dir(winPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(winPath, []byte(`{"mcpServers":{"MCP_DOCKER":{"command":"docker","args":["mcp","gateway","run"]}}}`+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	server := clientconfig.ServerConfig{URL: "https://invokera.com/r/world-time", Type: "http"}
@@ -923,8 +943,8 @@ func TestWriteClientConfigsCursorBothHomesAutoAndExplicit(t *testing.T) {
 			cursorHits++
 		}
 	}
-	if cursorHits != 2 {
-		t.Fatalf("auto mode cursor hits = %d, want 2 (%v)", cursorHits, updated)
+	if cursorHits != want {
+		t.Fatalf("auto mode cursor hits = %d, want %d (%v)", cursorHits, want, updated)
 	}
 
 	updated, skipped, err = WriteClientConfigs("com.invokera/world-time", server, []string{"cursor"})
@@ -934,17 +954,23 @@ func TestWriteClientConfigsCursorBothHomesAutoAndExplicit(t *testing.T) {
 	if len(skipped) != 0 {
 		t.Fatal(skipped)
 	}
-	if len(updated) != 2 {
-		t.Fatalf("--client cursor updated %d, want 2", len(updated))
+	if len(updated) != want {
+		t.Fatalf("--client cursor updated %d, want %d", len(updated), want)
 	}
 	names := map[string]bool{}
 	for _, c := range updated {
 		names[c.Name] = true
 	}
-	if !names["Cursor"] || !names["Cursor (Windows via WSL2)"] {
+	if !names["Cursor"] {
+		t.Errorf("names = %v", names)
+	}
+	if runtime.GOOS == "linux" && !names["Cursor (Windows via WSL2)"] {
 		t.Errorf("names = %v", names)
 	}
 
+	if runtime.GOOS != "linux" {
+		return
+	}
 	winServers, err := clientconfig.ReadServers(winPath)
 	if err != nil {
 		t.Fatal(err)
@@ -960,7 +986,7 @@ func TestWriteClientConfigsCursorBothHomesAutoAndExplicit(t *testing.T) {
 func TestWriteClientConfigsClaudeCodeRemoteAndStdio(t *testing.T) {
 	isolateWindowsUsers(t)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHomeEnv(t, home)
 	path := filepath.Join(home, ".claude.json")
 	if err := os.WriteFile(path, []byte(`{"userID":"u1","machineID":"m1"}`+"\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -1178,7 +1204,7 @@ func TestBuildClientConfigKind2ExtractsListenPort(t *testing.T) {
 func TestWriteClientConfigsDesktopKind2URLSkipped(t *testing.T) {
 	isolateWindowsUsers(t)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHomeEnv(t, home)
 	dir := filepath.Join(home, ".config", "Claude")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)

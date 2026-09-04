@@ -42,6 +42,23 @@ func plantDriftLockfile(t *testing.T, servers map[string]lockfile.ServerEntry) {
 	}
 }
 
+// driftBuiltinClient resolves the native candidate clientconfig.Detect()
+// uses for id on the current GOOS, so planted paths always match prod
+// resolution (Claude Desktop and Zed live under %APPDATA% on windows,
+// ~/.config elsewhere). WSL2 mirrors never apply: driftIsolate points
+// PHAROS_WINDOWS_USERS_ROOT at an absent dir.
+func driftBuiltinClient(t *testing.T, id clientconfig.ClientID) clientconfig.Client {
+	t.Helper()
+	for _, c := range clientconfig.CandidatePaths() {
+		if c.ID == id {
+			c.Existing = true
+			return c
+		}
+	}
+	t.Fatalf("no %s candidate resolved on this GOOS", id)
+	return clientconfig.Client{}
+}
+
 func plantDriftCanonical(t *testing.T, servers map[string]canonical.Server) {
 	t.Helper()
 	cfg := &canonical.Config{Servers: servers}
@@ -398,14 +415,8 @@ func TestDoctorDrift_CorruptLockfileFails(t *testing.T) {
 }
 
 func TestDoctorDrift_ClaudeDesktopRemoteSkipped(t *testing.T) {
-	home := driftIsolate(t)
-	c := clientconfig.Client{
-		ID:       clientconfig.ClientClaudeDesktop,
-		Name:     "Claude Desktop",
-		Path:     filepath.Join(home, ".config", "Claude", "claude_desktop_config.json"),
-		Format:   clientconfig.FormatMcpServers,
-		Existing: true,
-	}
+	driftIsolate(t)
+	c := driftBuiltinClient(t, clientconfig.ClientClaudeDesktop)
 	// Desktop only ever gets the stdio server; the remote one is a
 	// Settings → Connectors bookmark pharos never writes here.
 	plantDriftServer(t, c, "drift-local", driftStdioCfg)
@@ -496,8 +507,7 @@ func TestDoctorDrift_FormatRoundTrip(t *testing.T) {
 		{
 			name: "claude-desktop stdio",
 			client: func(home string) clientconfig.Client {
-				return clientconfig.Client{ID: clientconfig.ClientClaudeDesktop, Name: "Claude Desktop",
-					Path: filepath.Join(home, ".config", "Claude", "claude_desktop_config.json"), Format: clientconfig.FormatMcpServers, Existing: true}
+				return driftBuiltinClient(t, clientconfig.ClientClaudeDesktop)
 			},
 			plant: driftStdioCfg,
 			canon: driftStdioCanonical("drift-server", "node", []string{"server.js"}),
@@ -523,8 +533,7 @@ func TestDoctorDrift_FormatRoundTrip(t *testing.T) {
 		{
 			name: "zed context_servers stdio",
 			client: func(home string) clientconfig.Client {
-				return clientconfig.Client{ID: clientconfig.ClientZed, Name: "Zed",
-					Path: filepath.Join(home, ".config", "zed", "settings.json"), Format: clientconfig.FormatZed, Existing: true}
+				return driftBuiltinClient(t, clientconfig.ClientZed)
 			},
 			plant: driftStdioCfg,
 			canon: driftStdioCanonical("drift-server", "node", []string{"server.js"}),

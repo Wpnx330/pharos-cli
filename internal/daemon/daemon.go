@@ -126,6 +126,9 @@ func LogPath() (string, error) {
 // ReloadDaemon sends a reload signal to the daemon process.
 // On Unix: sends SIGHUP. On Windows: touches the reload trigger file.
 func ReloadDaemon(pid int) error {
+	if pid <= 0 {
+		return fmt.Errorf("invalid PID: %d", pid)
+	}
 	return sendReloadSignal(pid)
 }
 

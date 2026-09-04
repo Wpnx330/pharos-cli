@@ -102,8 +102,13 @@ func TestStateFilePermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Errorf("expected 0600 permissions, got %v", perm)
+	// windows cannot represent unix perm bits — files written 0600 stat
+	// back as 0666 (only the read-only bit round-trips), so the exact
+	// 0600 assertion is meaningful on unix only.
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Errorf("expected 0600 permissions, got %v", perm)
+		}
 	}
 }
 
@@ -129,7 +134,8 @@ func TestPIDFileWriteRead(t *testing.T) {
 
 	path := filepath.Join(tmpDir, "daemon.pid")
 	info, _ := os.Stat(path)
-	if info.Mode().Perm() != 0o600 {
+	// windows cannot represent unix perm bits (see TestStateFilePermissions).
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Errorf("expected 0600, got %v", info.Mode().Perm())
 	}
 }
@@ -752,11 +758,11 @@ func TestShouldStartBackingAfterInstall(t *testing.T) {
 	// idleTimeout 0 already starts immediately; idleTimeout 60 must also
 	// start once when a load request is present.
 	tests := []struct {
-		name         string
-		idleTimeout  int
-		loadRequested bool
+		name           string
+		idleTimeout    int
+		loadRequested  bool
 		alreadyRunning bool
-		wantStart    bool
+		wantStart      bool
 	}{
 		{"idle 60 + load request", 60, true, false, true},
 		{"idle 0 + load request", 0, true, false, true},

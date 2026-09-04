@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -103,10 +104,17 @@ func fakeGenericClientOther(t *testing.T) string {
 }
 
 // fakeClaudeDesktopConfig plants a Claude Desktop config (the remote-skip
-// candidate) under the isolated home and returns its path.
+// candidate) under the isolated home and returns its path. The path must
+// match what clientconfig resolves on this GOOS: %APPDATA%\Claude on
+// windows, ~/.config/Claude elsewhere (isolateHome points APPDATA at the
+// isolated home's AppData/Roaming).
 func fakeClaudeDesktopConfig(t *testing.T) string {
 	t.Helper()
-	dir := filepath.Join(contractHome(t), ".config", "Claude")
+	home := contractHome(t)
+	dir := filepath.Join(home, ".config", "Claude")
+	if runtime.GOOS == "windows" {
+		dir = filepath.Join(home, "AppData", "Roaming", "Claude")
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -849,20 +857,15 @@ func TestInstallReceiptPartialOnConfigWriteFailure(t *testing.T) {
 	receiptRegistry(t)
 	cfgPath := fakeGenericClientOther(t)
 	dir := inTempDir(t)
-	mcpDir := filepath.Dir(cfgPath)
 
-	// Force the config write to fail: read-only config directory.
-	if err := os.Chmod(mcpDir, 0o500); err != nil {
+	// Force the config write to fail on every OS: park a DIRECTORY where
+	// the config file lives — merges cannot write through it, and no
+	// chmod is needed (windows ignores directory permission bits).
+	if err := os.RemoveAll(cfgPath); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(mcpDir, 0o755) })
-	// Filesystems that ignore directory permissions (root, some mounts)
-	// cannot inject this failure — probe before committing to the path.
-	if probe, perr := os.CreateTemp(mcpDir, ".probe-*"); perr == nil {
-		_ = probe.Close()
-		_ = os.Remove(probe.Name())
-		_ = os.Chmod(mcpDir, 0o755)
-		t.Skip("filesystem ignores read-only directory permissions; cannot force config write failure")
+	if err := os.MkdirAll(cfgPath, 0o755); err != nil {
+		t.Fatal(err)
 	}
 
 	stdout, _ := runContract(t,

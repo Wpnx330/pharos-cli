@@ -25,31 +25,23 @@ func isolateWindowsUsers(t *testing.T) string {
 	return root
 }
 
-// helper: create a fake app directory so Detect() picks it up, return
-// the Client with the config path set.
-func setupClient(t *testing.T, id ClientID) Client {
+// setHomeEnv points every home-dir env var prod path resolution reads at
+// dir, so tests are hermetic on every GOOS: HOME (unix), USERPROFILE
+// (windows os.UserHomeDir), APPDATA/LOCALAPPDATA (windows shell-folder
+// candidates such as Claude Desktop, Windsurf, and Zed).
+func setHomeEnv(t *testing.T, dir string) {
 	t.Helper()
-	isolateWindowsUsers(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	if id == ClientClaudeDesktop {
-		dir := filepath.Join(home, ".config", "Claude")
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if id == ClientCursor {
-		dir := filepath.Join(home, ".cursor")
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if id == ClientGeneric {
-		dir := filepath.Join(home, ".config", "mcp")
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+	t.Setenv("APPDATA", filepath.Join(dir, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(dir, "AppData", "Local"))
+}
+
+// firstNativeCandidate returns the first candidatePaths() entry for id —
+// the native path prod resolves on the current GOOS (WSL2 mirrors and the
+// MSIX scan always come after it).
+func firstNativeCandidate(t *testing.T, id ClientID) Client {
+	t.Helper()
 	for _, c := range candidatePaths() {
 		if c.ID == id {
 			return c
@@ -57,6 +49,20 @@ func setupClient(t *testing.T, id ClientID) Client {
 	}
 	t.Fatalf("client %s not found in candidates", id)
 	return Client{}
+}
+
+// helper: create a fake app directory so Detect() picks it up, return
+// the Client with the config path set.
+func setupClient(t *testing.T, id ClientID) Client {
+	t.Helper()
+	isolateWindowsUsers(t)
+	home := t.TempDir()
+	setHomeEnv(t, home)
+	c := firstNativeCandidate(t, id)
+	if err := os.MkdirAll(filepath.Dir(c.Path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return c
 }
 
 func TestDetectFindsCursor(t *testing.T) {
@@ -100,7 +106,7 @@ func TestDetectByID(t *testing.T) {
 
 func TestDetectByIDNotFound(t *testing.T) {
 	isolateWindowsUsers(t)
-	t.Setenv("HOME", t.TempDir())
+	setHomeEnv(t, t.TempDir())
 	c := DetectByID(ClientCursor)
 	if c != nil {
 		t.Error("expected nil when no clients detected")
@@ -316,7 +322,7 @@ func TestReadServersArrayFormat(t *testing.T) {
 func TestDetectCustomClient(t *testing.T) {
 	isolateWindowsUsers(t)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHomeEnv(t, home)
 
 	// Create the custom client's config file so it's "detected".
 	customDir := filepath.Join(home, ".my-editor")
@@ -355,7 +361,7 @@ func TestDetectCustomClient(t *testing.T) {
 func TestDetectCustomClientMissingFile(t *testing.T) {
 	isolateWindowsUsers(t)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHomeEnv(t, home)
 	pharosDir := filepath.Join(home, ".pharos")
 	if err := os.MkdirAll(pharosDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -1084,29 +1090,38 @@ func TestMergeServerClineRemoteKeepsURL(t *testing.T) {
 
 func TestClientsByIDReturnsAllCursorPaths(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHomeEnv(t, home)
 	if err := os.MkdirAll(filepath.Join(home, ".cursor"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	winRoot := isolateWindowsUsers(t)
-	winUser := filepath.Join(winRoot, "chris")
-	if err := os.MkdirAll(filepath.Join(winUser, ".cursor"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(winUser, ".cursor", "mcp.json"), []byte(`{"mcpServers":{}}`+"\n"), 0o644); err != nil {
-		t.Fatal(err)
+	// The WSL2-mirror half only exists on linux; native windows has no
+	// /mnt/c layer, so ClientsByID yields exactly the native path there.
+	want := 1
+	if runtime.GOOS == "linux" {
+		want = 2
+		winRoot := isolateWindowsUsers(t)
+		winUser := filepath.Join(winRoot, "chris")
+		if err := os.MkdirAll(filepath.Join(winUser, ".cursor"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(winUser, ".cursor", "mcp.json"), []byte(`{"mcpServers":{}}`+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	all := ClientsByID(ClientCursor)
-	if len(all) != 2 {
-		t.Fatalf("ClientsByID(cursor) = %d, want 2: %+v", len(all), all)
+	if len(all) != want {
+		t.Fatalf("ClientsByID(cursor) = %d, want %d: %+v", len(all), want, all)
 	}
 	names := map[string]bool{}
 	for _, c := range all {
 		names[c.Name] = true
 	}
-	if !names["Cursor"] || !names["Cursor (Windows via WSL2)"] {
+	if !names["Cursor"] {
+		t.Errorf("names = %v", names)
+	}
+	if runtime.GOOS == "linux" && !names["Cursor (Windows via WSL2)"] {
 		t.Errorf("names = %v", names)
 	}
 	first := DetectByID(ClientCursor)
@@ -1118,7 +1133,7 @@ func TestClientsByIDReturnsAllCursorPaths(t *testing.T) {
 func TestDetectClaudeCodeRequiresExistingFile(t *testing.T) {
 	isolateWindowsUsers(t)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHomeEnv(t, home)
 	if DetectByID(ClientClaudeCode) != nil {
 		t.Fatal("Claude Code must not be detected from $HOME alone")
 	}
@@ -1271,7 +1286,7 @@ func TestMergeServerCursorKeepsExistingDocker(t *testing.T) {
 
 func TestRemoveServerHitsEveryCursorPath(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHomeEnv(t, home)
 	linuxPath := filepath.Join(home, ".cursor", "mcp.json")
 	writeJSONFixture(t, linuxPath, map[string]any{
 		"mcpServers": map[string]any{
@@ -1280,14 +1295,20 @@ func TestRemoveServerHitsEveryCursorPath(t *testing.T) {
 		},
 	})
 
-	winRoot := isolateWindowsUsers(t)
-	winPath := filepath.Join(winRoot, "chris", ".cursor", "mcp.json")
-	writeJSONFixture(t, winPath, map[string]any{
-		"mcpServers": map[string]any{
-			"com.invokera/world-time": map[string]any{"type": "http", "url": "https://invokera.com/r/world-time"},
-			"MCP_DOCKER":              map[string]any{"command": "docker", "args": []string{"mcp", "gateway", "run"}},
-		},
-	})
+	// The WSL2-mirror fixture only exists on linux; native windows has
+	// no /mnt/c layer to mirror into.
+	want := 1
+	if runtime.GOOS == "linux" {
+		want = 2
+		winRoot := isolateWindowsUsers(t)
+		winPath := filepath.Join(winRoot, "chris", ".cursor", "mcp.json")
+		writeJSONFixture(t, winPath, map[string]any{
+			"mcpServers": map[string]any{
+				"com.invokera/world-time": map[string]any{"type": "http", "url": "https://invokera.com/r/world-time"},
+				"MCP_DOCKER":              map[string]any{"command": "docker", "args": []string{"mcp", "gateway", "run"}},
+			},
+		})
+	}
 
 	removed := 0
 	for _, c := range Detect() {
@@ -1299,8 +1320,8 @@ func TestRemoveServerHitsEveryCursorPath(t *testing.T) {
 		}
 		removed++
 	}
-	if removed != 2 {
-		t.Fatalf("removed from %d cursor paths, want 2", removed)
+	if removed != want {
+		t.Fatalf("removed from %d cursor paths, want %d", removed, want)
 	}
 
 	linux := readJSONObject(t, linuxPath)
@@ -1312,7 +1333,10 @@ func TestRemoveServerHitsEveryCursorPath(t *testing.T) {
 		t.Error("linux cursor lost keep-me")
 	}
 
-	win := readJSONObject(t, winPath)
+	if runtime.GOOS != "linux" {
+		return
+	}
+	win := readJSONObject(t, filepath.Join(windowsUsersRoot(), "chris", ".cursor", "mcp.json"))
 	winNames := mcpServerNames(t, win)
 	if winNames["com.invokera/world-time"] {
 		t.Error("windows cursor still has world-time")
@@ -1324,36 +1348,43 @@ func TestRemoveServerHitsEveryCursorPath(t *testing.T) {
 
 func TestClientsByIDReturnsAllVSCodePaths(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHomeEnv(t, home)
 	if err := os.MkdirAll(filepath.Join(home, ".copilot"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	winRoot := isolateWindowsUsers(t)
-	winUser := filepath.Join(winRoot, "chris")
-	if err := os.MkdirAll(filepath.Join(winUser, ".copilot"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(winUser, ".copilot", "mcp-config.json"), []byte(`{"mcpServers":{}}`+"\n"), 0o644); err != nil {
-		t.Fatal(err)
+	want := 1
+	if runtime.GOOS == "linux" {
+		want = 2
+		winRoot := isolateWindowsUsers(t)
+		winUser := filepath.Join(winRoot, "chris")
+		if err := os.MkdirAll(filepath.Join(winUser, ".copilot"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(winUser, ".copilot", "mcp-config.json"), []byte(`{"mcpServers":{}}`+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	all := ClientsByID(ClientVSCode)
-	if len(all) != 2 {
-		t.Fatalf("ClientsByID(vscode) = %d, want 2: %+v", len(all), all)
+	if len(all) != want {
+		t.Fatalf("ClientsByID(vscode) = %d, want %d: %+v", len(all), want, all)
 	}
 	names := map[string]bool{}
 	for _, c := range all {
 		names[c.Name] = true
 	}
-	if !names["VS Code (GitHub Copilot)"] || !names["VS Code (GitHub Copilot) (Windows via WSL2)"] {
+	if !names["VS Code (GitHub Copilot)"] {
+		t.Errorf("names = %v", names)
+	}
+	if runtime.GOOS == "linux" && !names["VS Code (GitHub Copilot) (Windows via WSL2)"] {
 		t.Errorf("names = %v", names)
 	}
 }
 
 func TestRemoveServerHitsEveryVSCodePath(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHomeEnv(t, home)
 	linuxPath := filepath.Join(home, ".copilot", "mcp-config.json")
 	writeJSONFixture(t, linuxPath, map[string]any{
 		"mcpServers": map[string]any{
@@ -1362,14 +1393,18 @@ func TestRemoveServerHitsEveryVSCodePath(t *testing.T) {
 		},
 	})
 
-	winRoot := isolateWindowsUsers(t)
-	winPath := filepath.Join(winRoot, "chris", ".copilot", "mcp-config.json")
-	writeJSONFixture(t, winPath, map[string]any{
-		"mcpServers": map[string]any{
-			"com.invokera/world-time": map[string]any{"type": "http", "url": "https://invokera.com/r/world-time"},
-			"MCP_DOCKER":              map[string]any{"command": "docker", "args": []string{"mcp", "gateway", "run"}},
-		},
-	})
+	want := 1
+	if runtime.GOOS == "linux" {
+		want = 2
+		winRoot := isolateWindowsUsers(t)
+		winPath := filepath.Join(winRoot, "chris", ".copilot", "mcp-config.json")
+		writeJSONFixture(t, winPath, map[string]any{
+			"mcpServers": map[string]any{
+				"com.invokera/world-time": map[string]any{"type": "http", "url": "https://invokera.com/r/world-time"},
+				"MCP_DOCKER":              map[string]any{"command": "docker", "args": []string{"mcp", "gateway", "run"}},
+			},
+		})
+	}
 
 	removed := 0
 	for _, c := range Detect() {
@@ -1381,8 +1416,8 @@ func TestRemoveServerHitsEveryVSCodePath(t *testing.T) {
 		}
 		removed++
 	}
-	if removed != 2 {
-		t.Fatalf("removed from %d vscode paths, want 2", removed)
+	if removed != want {
+		t.Fatalf("removed from %d vscode paths, want %d", removed, want)
 	}
 
 	linux := readJSONObject(t, linuxPath)
@@ -1394,7 +1429,10 @@ func TestRemoveServerHitsEveryVSCodePath(t *testing.T) {
 		t.Error("linux vscode lost keep-me")
 	}
 
-	win := readJSONObject(t, winPath)
+	if runtime.GOOS != "linux" {
+		return
+	}
+	win := readJSONObject(t, filepath.Join(windowsUsersRoot(), "chris", ".copilot", "mcp-config.json"))
 	winNames := mcpServerNames(t, win)
 	if winNames["com.invokera/world-time"] {
 		t.Error("windows vscode still has world-time")
@@ -1406,100 +1444,123 @@ func TestRemoveServerHitsEveryVSCodePath(t *testing.T) {
 
 func TestClientsByIDReturnsAllGeminiPaths(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHomeEnv(t, home)
 	if err := os.MkdirAll(filepath.Join(home, ".gemini"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	winRoot := isolateWindowsUsers(t)
-	winUser := filepath.Join(winRoot, "chris")
-	if err := os.MkdirAll(filepath.Join(winUser, ".gemini"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(winUser, ".gemini", "settings.json"), []byte(`{"mcpServers":{}}`+"\n"), 0o644); err != nil {
-		t.Fatal(err)
+	want := 1
+	if runtime.GOOS == "linux" {
+		want = 2
+		winRoot := isolateWindowsUsers(t)
+		winUser := filepath.Join(winRoot, "chris")
+		if err := os.MkdirAll(filepath.Join(winUser, ".gemini"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(winUser, ".gemini", "settings.json"), []byte(`{"mcpServers":{}}`+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	all := ClientsByID(ClientGemini)
-	if len(all) != 2 {
-		t.Fatalf("ClientsByID(gemini) = %d, want 2: %+v", len(all), all)
+	if len(all) != want {
+		t.Fatalf("ClientsByID(gemini) = %d, want %d: %+v", len(all), want, all)
 	}
 }
 
 func TestClientsByIDReturnsAllAmazonQPaths(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHomeEnv(t, home)
 	if err := os.MkdirAll(filepath.Join(home, ".aws", "amazonq"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	winRoot := isolateWindowsUsers(t)
-	winUser := filepath.Join(winRoot, "chris")
-	if err := os.MkdirAll(filepath.Join(winUser, ".aws", "amazonq"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(winUser, ".aws", "amazonq", "mcp.json"), []byte(`{"mcpServers":{}}`+"\n"), 0o644); err != nil {
-		t.Fatal(err)
+	want := 1
+	if runtime.GOOS == "linux" {
+		want = 2
+		winRoot := isolateWindowsUsers(t)
+		winUser := filepath.Join(winRoot, "chris")
+		if err := os.MkdirAll(filepath.Join(winUser, ".aws", "amazonq"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(winUser, ".aws", "amazonq", "mcp.json"), []byte(`{"mcpServers":{}}`+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	all := ClientsByID(ClientAmazonQ)
-	if len(all) != 2 {
-		t.Fatalf("ClientsByID(amazonq) = %d, want 2: %+v", len(all), all)
+	if len(all) != want {
+		t.Fatalf("ClientsByID(amazonq) = %d, want %d: %+v", len(all), want, all)
 	}
 }
 
 func TestClientsByIDReturnsAllWindsurfPaths(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	if err := os.MkdirAll(filepath.Join(home, ".codeium", "windsurf"), 0o755); err != nil {
+	setHomeEnv(t, home)
+	// Native fixture at the path prod resolves on this GOOS (windows:
+	// %APPDATA%\Codeium\windsurf, unix: ~/.codeium/windsurf).
+	native := firstNativeCandidate(t, ClientWindsurf)
+	if err := os.MkdirAll(filepath.Dir(native.Path), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	winRoot := isolateWindowsUsers(t)
-	winUser := filepath.Join(winRoot, "chris")
-	winDir := filepath.Join(winUser, "AppData", "Roaming", "Codeium", "windsurf")
-	if err := os.MkdirAll(winDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(winDir, "mcp_config.json"), []byte(`{"mcpServers":{}}`+"\n"), 0o644); err != nil {
-		t.Fatal(err)
+	want := 1
+	if runtime.GOOS == "linux" {
+		want = 2
+		winRoot := isolateWindowsUsers(t)
+		winDir := filepath.Join(winRoot, "chris", "AppData", "Roaming", "Codeium", "windsurf")
+		if err := os.MkdirAll(winDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(winDir, "mcp_config.json"), []byte(`{"mcpServers":{}}`+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	all := ClientsByID(ClientWindsurf)
-	if len(all) != 2 {
-		t.Fatalf("ClientsByID(windsurf) = %d, want 2: %+v", len(all), all)
+	if len(all) != want {
+		t.Fatalf("ClientsByID(windsurf) = %d, want %d: %+v", len(all), want, all)
 	}
 }
 
 func TestClientsByIDReturnsAllRooCodePaths(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	linuxDir := filepath.Join(home, ".config", "Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings")
-	if err := os.MkdirAll(linuxDir, 0o755); err != nil {
+	setHomeEnv(t, home)
+	// Native fixture at the path prod resolves on this GOOS (windows:
+	// %APPDATA%\Code\User\..., unix: ~/.config/Code/User/...).
+	native := firstNativeCandidate(t, ClientRooCode)
+	if err := os.MkdirAll(filepath.Dir(native.Path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(linuxDir, "roo_mcp_settings.json"), []byte(`{"mcpServers":{}}`+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(native.Path, []byte(`{"mcpServers":{}}`+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	winRoot := isolateWindowsUsers(t)
-	winDir := filepath.Join(winRoot, "chris", "AppData", "Roaming", "Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings")
-	if err := os.MkdirAll(winDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(winDir, "roo_mcp_settings.json"), []byte(`{"mcpServers":{}}`+"\n"), 0o644); err != nil {
-		t.Fatal(err)
+	want := 1
+	if runtime.GOOS == "linux" {
+		want = 2
+		winRoot := isolateWindowsUsers(t)
+		winDir := filepath.Join(winRoot, "chris", "AppData", "Roaming", "Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings")
+		if err := os.MkdirAll(winDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(winDir, "roo_mcp_settings.json"), []byte(`{"mcpServers":{}}`+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	all := ClientsByID(ClientRooCode)
-	if len(all) != 2 {
-		t.Fatalf("ClientsByID(roo-code) = %d, want 2: %+v", len(all), all)
+	if len(all) != want {
+		t.Fatalf("ClientsByID(roo-code) = %d, want %d: %+v", len(all), want, all)
 	}
 	names := map[string]bool{}
 	for _, c := range all {
 		names[c.Name] = true
 	}
-	if !names["Roo Code"] || !names["Roo Code (Windows via WSL2)"] {
+	if !names["Roo Code"] {
+		t.Errorf("names = %v", names)
+	}
+	if runtime.GOOS == "linux" && !names["Roo Code (Windows via WSL2)"] {
 		t.Errorf("names = %v", names)
 	}
 }
@@ -1710,29 +1771,36 @@ func writeYAMLFixture(t *testing.T, path, content string) {
 
 func TestClientsByIDReturnsAllCodexPaths(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHomeEnv(t, home)
 	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	winRoot := isolateWindowsUsers(t)
-	winUser := filepath.Join(winRoot, "chris")
-	if err := os.MkdirAll(filepath.Join(winUser, ".codex"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(winUser, ".codex", "config.toml"), []byte("# codex\n"), 0o644); err != nil {
-		t.Fatal(err)
+	want := 1
+	if runtime.GOOS == "linux" {
+		want = 2
+		winRoot := isolateWindowsUsers(t)
+		winUser := filepath.Join(winRoot, "chris")
+		if err := os.MkdirAll(filepath.Join(winUser, ".codex"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(winUser, ".codex", "config.toml"), []byte("# codex\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	all := ClientsByID(ClientCodex)
-	if len(all) != 2 {
-		t.Fatalf("ClientsByID(codex) = %d, want 2: %+v", len(all), all)
+	if len(all) != want {
+		t.Fatalf("ClientsByID(codex) = %d, want %d: %+v", len(all), want, all)
 	}
 	names := map[string]bool{}
 	for _, c := range all {
 		names[c.Name] = true
 	}
-	if !names["Codex CLI"] || !names["Codex CLI (Windows via WSL2)"] {
+	if !names["Codex CLI"] {
+		t.Errorf("names = %v", names)
+	}
+	if runtime.GOOS == "linux" && !names["Codex CLI (Windows via WSL2)"] {
 		t.Errorf("names = %v", names)
 	}
 }
@@ -1893,23 +1961,27 @@ func TestCodexRoundTrip(t *testing.T) {
 
 func TestClientsByIDReturnsAllGrokPaths(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHomeEnv(t, home)
 	if err := os.MkdirAll(filepath.Join(home, ".grok"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	winRoot := isolateWindowsUsers(t)
-	winUser := filepath.Join(winRoot, "chris")
-	if err := os.MkdirAll(filepath.Join(winUser, ".grok"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(winUser, ".grok", "config.toml"), []byte("# grok\n"), 0o644); err != nil {
-		t.Fatal(err)
+	want := 1
+	if runtime.GOOS == "linux" {
+		want = 2
+		winRoot := isolateWindowsUsers(t)
+		winUser := filepath.Join(winRoot, "chris")
+		if err := os.MkdirAll(filepath.Join(winUser, ".grok"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(winUser, ".grok", "config.toml"), []byte("# grok\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	all := ClientsByID(ClientGrok)
-	if len(all) != 2 {
-		t.Fatalf("ClientsByID(grok) = %d, want 2: %+v", len(all), all)
+	if len(all) != want {
+		t.Fatalf("ClientsByID(grok) = %d, want %d: %+v", len(all), want, all)
 	}
 }
 
@@ -2024,29 +2096,39 @@ command = "python3"
 
 func TestClientsByIDReturnsAllZedPaths(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	if err := os.MkdirAll(filepath.Join(home, ".config", "zed"), 0o755); err != nil {
+	setHomeEnv(t, home)
+	// Native fixture at the path prod resolves on this GOOS (windows:
+	// %APPDATA%\Zed, unix: ~/.config/zed).
+	native := firstNativeCandidate(t, ClientZed)
+	if err := os.MkdirAll(filepath.Dir(native.Path), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	winRoot := isolateWindowsUsers(t)
-	winDir := filepath.Join(winRoot, "chris", "AppData", "Roaming", "Zed")
-	if err := os.MkdirAll(winDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(winDir, "settings.json"), []byte(`{}`+"\n"), 0o644); err != nil {
-		t.Fatal(err)
+	want := 1
+	if runtime.GOOS == "linux" {
+		want = 2
+		winRoot := isolateWindowsUsers(t)
+		winDir := filepath.Join(winRoot, "chris", "AppData", "Roaming", "Zed")
+		if err := os.MkdirAll(winDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(winDir, "settings.json"), []byte(`{}`+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	all := ClientsByID(ClientZed)
-	if len(all) != 2 {
-		t.Fatalf("ClientsByID(zed) = %d, want 2: %+v", len(all), all)
+	if len(all) != want {
+		t.Fatalf("ClientsByID(zed) = %d, want %d: %+v", len(all), want, all)
 	}
 	names := map[string]bool{}
 	for _, c := range all {
 		names[c.Name] = true
 	}
-	if !names["Zed"] || !names["Zed (Windows via WSL2)"] {
+	if !names["Zed"] {
+		t.Errorf("names = %v", names)
+	}
+	if runtime.GOOS == "linux" && !names["Zed (Windows via WSL2)"] {
 		t.Errorf("names = %v", names)
 	}
 }
@@ -2188,25 +2270,29 @@ func TestZedRoundTrip(t *testing.T) {
 
 func TestClientsByIDReturnsAllAiderPaths(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHomeEnv(t, home)
 	// Aider config file is at ~/.aider.conf.yml — parent is $HOME which
 	// always exists. But Detect() requires the file itself to exist.
 	if err := os.WriteFile(filepath.Join(home, ".aider.conf.yml"), []byte("# aider\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	winRoot := isolateWindowsUsers(t)
-	winUser := filepath.Join(winRoot, "chris")
-	if err := os.MkdirAll(winUser, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(winUser, ".aider.conf.yml"), []byte("# aider\n"), 0o644); err != nil {
-		t.Fatal(err)
+	want := 1
+	if runtime.GOOS == "linux" {
+		want = 2
+		winRoot := isolateWindowsUsers(t)
+		winUser := filepath.Join(winRoot, "chris")
+		if err := os.MkdirAll(winUser, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(winUser, ".aider.conf.yml"), []byte("# aider\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	all := ClientsByID(ClientAider)
-	if len(all) != 2 {
-		t.Fatalf("ClientsByID(aider) = %d, want 2: %+v", len(all), all)
+	if len(all) != want {
+		t.Fatalf("ClientsByID(aider) = %d, want %d: %+v", len(all), want, all)
 	}
 }
 

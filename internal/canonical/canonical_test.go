@@ -7,11 +7,20 @@ import (
 	"testing"
 )
 
-// helper: set HOME to a temp dir and return the canonical config path
+// setHomeEnv points every home-dir env var prod path resolution reads at
+// dir, so tests are hermetic on every GOOS: HOME (unix), USERPROFILE
+// (windows os.UserHomeDir).
+func setHomeEnv(t *testing.T, dir string) {
+	t.Helper()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+}
+
+// helper: point HOME at a temp dir and return the canonical config path
 func setupTest(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHomeEnv(t, home)
 	return filepath.Join(home, ".pharos", "mcp.json")
 }
 
@@ -247,7 +256,7 @@ func TestListServers(t *testing.T) {
 
 func TestSaveCreatesDirectories(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHomeEnv(t, home)
 
 	cfg := &Config{
 		Schema:  SchemaURL,

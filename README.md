@@ -85,6 +85,8 @@ pharos import                  # Import existing MCP client configs into a pharo
 pharos import --adopt          # One-command onboarding: adopt every detected client config as the managed baseline (conflicts resolved interactively)
 pharos remove <name>           # Remove a locally installed package
 pharos remove <name> --force   # Remove even if other packages depend on it (not a confirm skip)
+pharos try <name>              # Probe a server's live capabilities without wiring it (see "Try before you wire")
+pharos try <name> --inspect    # Launch MCP Inspector against the server (needs npx)
 
 # Profiles (contexts — see "Profiles (contexts)" below)
 pharos profile create work --client cursor   # Map a named context to clients
@@ -145,6 +147,31 @@ One-line list only. Full flags and examples: https://discoverpharos.dev/cli/docs
 - `--idle-timeout` — **Per-server** minutes of inactivity before auto-unloading that server's HTTP/SSE process (default: 60, 0 = never unload). Set at install time; stored per-server in `~/.pharos/mcp.json` (install)
 - `--running` — Show only running daemon-managed servers (list)
 - `--diff` — Compare pharos-managed server entries in client configs against the pharos.lock baseline; read-only drift report (doctor)
+- `--timeout` — Total probe budget for `pharos try` (Go duration, default `10s`; each JSON-RPC request is also capped at 10s)
+- `--inspect` — Print and launch the npx MCP Inspector command for the server instead of probing (try)
+
+## Try before you wire
+
+Installing a server shouldn't be a leap of faith. `pharos try <name>` spawns the server exactly as it is configured in `~/.pharos/mcp.json`, speaks real MCP to it (initialize handshake over stdio JSON-RPC), and prints its **live** capabilities in about five seconds — no client config is touched:
+
+```bash
+$ pharos try echo-server
+Probing echo-server…
+✓ echo-server v1.2.3 — MCP 2025-06-18
+
+  TOOLS (2)
+    echo                     Echo back the provided message
+    status                   Return server status
+  RESOURCES (2): notes, file:///config.json
+  PROMPTS (1): greeting
+```
+
+- **Honest failures**: if the server won't start, fails the handshake, or hangs, `try` exits 1 and shows the server's actual stderr (last 10 lines) — not just "exit status 1". Unknown server: exit 2 with an install hint (`pharos install <name> --sandbox` probe-only installs are planned).
+- **`--json`** (`PHAROS_JSON=1`): a single stdout JSON document `{server, caps: {protocolVersion, serverInfo, tools[], resources[], prompts[]}}` — failures emit `{server, errors, stderr_tail}`. Never prompts; progress lines go to stderr. Built for the agent-automation contract.
+- **`--timeout 30s`**: raise the total probe budget (default `10s`).
+- **`--inspect`**: prints the exact `npx -y @modelcontextprotocol/inspector …` command for this server, then launches it in the foreground (honest error if `npx` isn't on PATH). `--inspect --json` only reports the command without spawning.
+
+`try` probes stdio servers only. Env vars from the canonical config are passed through as-is (`${secret:…}` templates are not resolved in this wave).
 
 ## Search Results
 

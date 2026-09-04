@@ -1,0 +1,36 @@
+# Homebrew tap formula template for PHAROS (Wpnx330/homebrew-pharos -> Formula/pharos.rb).
+# Rendered on tag push by .github/workflows/release.yml with the ERB bindings:
+#   version    - bare semver from the tag (e.g. "1.2.0")
+#   sha_arm64  - sha256 of pharos_<ver>_darwin_arm64.tar.gz (computed in CI)
+#   sha_amd64  - sha256 of pharos_<ver>_darwin_amd64.tar.gz (computed in CI)
+# Only Homebrew-provided values (version, Hardware::CPU) are interpolated at
+# formula load time; ERB bakes everything else in as literals.
+class Pharos < Formula
+  desc "MCP server registry, supervisor, and drift doctor"
+  homepage "https://discoverpharos.dev"
+  version "<%= version %>"
+  license "MIT"
+
+  livecheck do
+    url "https://github.com/Wpnx330/pharos-cli/releases"
+    strategy :github_latest
+  end
+
+  # Apple Silicon is primary; Intel macs use the on_intel override.
+  on_arm do
+    url "https://github.com/Wpnx330/pharos-cli/releases/download/v#{version}/pharos_#{version}_darwin_arm64.tar.gz"
+    sha256 "<%= sha_arm64 %>"
+  end
+
+  on_intel do
+    url "https://github.com/Wpnx330/pharos-cli/releases/download/v#{version}/pharos_#{version}_darwin_amd64.tar.gz"
+    sha256 "<%= sha_amd64 %>"
+  end
+
+  # Tarballs are created with `tar -C dist`, so the archive root holds the
+  # bare versioned binary (no path components) — a plain rename into bin.
+  def install
+    arch = Hardware::CPU.intel? ? "amd64" : "arm64"
+    bin.install "pharos_#{version}_darwin_#{arch}" => "pharos"
+  end
+end

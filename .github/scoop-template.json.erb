@@ -1,0 +1,13 @@
+{
+  "version": "<%= version %>",
+  "description": "MCP server registry, supervisor, and drift doctor",
+  "homepage": "https://discoverpharos.dev",
+  "license": "MIT",
+  "architecture": {
+    "amd64": {
+      "url": "https://github.com/Wpnx330/pharos-cli/releases/download/v<%= version %>/pharos_<%= version %>_windows_amd64.zip",
+      "hash": "<%= sha_windows %>"
+    }
+  },
+  "bin": "pharos.exe"
+}

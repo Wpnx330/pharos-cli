@@ -323,6 +323,10 @@ const llmtxtPreamble = `# PHAROS CLI — agent command reference (docs/llm.txt)
 #      it exits 1 with an error naming the flag that fixes it (e.g. "init
 #      requires --yes or PHAROS_ASSUME_YES=1 in non-interactive mode").
 # Human-facing docs: README.md. Generated: this file.
+#
+# Install (package managers; also under README "Homebrew & Scoop"):
+#   brew tap Wpnx330/pharos && brew install pharos
+#   scoop bucket add pharos https://github.com/Wpnx330/Scoop-Bucket && scoop install pharos
 
 `
 

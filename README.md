@@ -37,6 +37,21 @@ go build -o pharos .
 
 Full command reference: https://discoverpharos.dev/cli/docs
 
+## Homebrew & Scoop
+
+macOS (Homebrew):
+
+```bash
+brew tap Wpnx330/pharos && brew install pharos
+```
+
+Windows (Scoop; two lines — PowerShell 5.1 has no `&&`):
+
+```powershell
+scoop bucket add pharos https://github.com/Wpnx330/Scoop-Bucket
+scoop install pharos
+```
+
 ## Commands
 
 ```bash

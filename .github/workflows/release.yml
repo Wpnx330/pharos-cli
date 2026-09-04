@@ -51,6 +51,33 @@ jobs:
           build windows amd64 ".exe"
           ls -l dist
 
+      # W3.1: archives for the Homebrew tap / Scoop bucket.
+      #   darwin/linux tarballs: flat root (tar -C dist) holding the bare
+      #     versioned binary -> formula install is a plain bin.install.
+      #   windows zip: exe staged as pharos.exe so the archive root is flat
+      #     and the Scoop manifest's bin stays "pharos.exe" across versions.
+      #   Archive hashes are exported (GITHUB_ENV) for the tap-bump steps and
+      #   included in SHA256SUMS below (the pharos_* glob runs after this).
+      - name: Archive release artifacts (tar/zip)
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          for target in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64; do
+            goos="${target%_*}"; goarch="${target##*_}"
+            tar -czf "dist/pharos_${VER}_${goos}_${goarch}.tar.gz" -C dist "pharos_${VER}_${goos}_${goarch}"
+          done
+          mkdir -p dist/.win_stage
+          cp "dist/pharos_${VER}_windows_amd64.exe" dist/.win_stage/pharos.exe
+          (cd dist/.win_stage && zip -q ../pharos_${VER}_windows_amd64.zip pharos.exe)
+          rm -rf dist/.win_stage
+          {
+            echo "SHA_DARWIN_ARM64=$(sha256sum "dist/pharos_${VER}_darwin_arm64.tar.gz" | cut -d' ' -f1)"
+            echo "SHA_DARWIN_AMD64=$(sha256sum "dist/pharos_${VER}_darwin_amd64.tar.gz" | cut -d' ' -f1)"
+            echo "SHA_WINDOWS=$(sha256sum "dist/pharos_${VER}_windows_amd64.zip" | cut -d' ' -f1)"
+          } >> "$GITHUB_ENV"
+          ls -l dist
+
+      # Runs after archiving, so the pharos_* glob also covers the tarballs
+      # and the zip: SHA256SUMS lists binaries and archives in one file.
       - name: Generate SHA256SUMS
         run: |
           cd dist
@@ -65,3 +92,74 @@ jobs:
             --generate-notes \
             --draft=false \
             dist/*
+
+      # W3.1: bump the Homebrew tap. The tap lives in a SEPARATE repo
+      # (Wpnx330/homebrew-pharos), so GITHUB_TOKEN is not valid cross-repo:
+      # this needs the HOMEBREW_TAP_TOKEN secret — a fine-grained PAT with
+      # contents:write on Wpnx330/homebrew-pharos (and Wpnx330/Scoop-Bucket
+      # for the Scoop step below). Set it under Settings -> Secrets and
+      # variables -> Actions. The token is never hardcoded; GitHub masks it.
+      - name: Bump Homebrew tap (Wpnx330/homebrew-pharos)
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
+            echo "::error::HOMEBREW_TAP_TOKEN is not set — create a fine-grained PAT with contents:write on Wpnx330/homebrew-pharos and add it under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          mkdir -p formula
+          ruby -rerb -e '
+            version   = ENV.fetch("VER")
+            sha_arm64 = ENV.fetch("SHA_DARWIN_ARM64")
+            sha_amd64 = ENV.fetch("SHA_DARWIN_AMD64")
+            File.write(ARGV[0], ERB.new(File.read(ARGV[1])).result(binding))
+          ' formula/pharos.rb .github/formula-template.rb.erb
+          ruby -c formula/pharos.rb
+          cat formula/pharos.rb
+          git clone --quiet --depth 1 "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/Wpnx330/homebrew-pharos.git" tap-homebrew
+          mkdir -p tap-homebrew/Formula
+          cp formula/pharos.rb tap-homebrew/Formula/pharos.rb
+          cd tap-homebrew
+          git config user.name  "pharos-release-bot"
+          git config user.email "actions@users.noreply.github.com"
+          if [ -z "$(git status --porcelain Formula/pharos.rb)" ]; then
+            echo "Formula already up to date; nothing to commit"
+          else
+            git add Formula/pharos.rb
+            git commit -m "pharos ${VER}"
+            git push origin HEAD
+          fi
+
+      # W3.1: bump the Scoop bucket (same pattern; HOMEBREW_TAP_TOKEN must
+      # cover Wpnx330/Scoop-Bucket too — one fine-grained PAT scoped to both
+      # repos is enough, otherwise split into a second secret and adjust here).
+      - name: Bump Scoop bucket (Wpnx330/Scoop-Bucket)
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
+            echo "::error::HOMEBREW_TAP_TOKEN is not set — create a fine-grained PAT with contents:write on Wpnx330/homebrew-pharos + Wpnx330/Scoop-Bucket and add it under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          mkdir -p bucket
+          ruby -rerb -e '
+            version     = ENV.fetch("VER")
+            sha_windows = ENV.fetch("SHA_WINDOWS")
+            File.write(ARGV[0], ERB.new(File.read(ARGV[1])).result(binding))
+          ' bucket/pharos.json .github/scoop-template.json.erb
+          python3 -m json.tool bucket/pharos.json
+          git clone --quiet --depth 1 "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/Wpnx330/Scoop-Bucket.git" tap-scoop
+          mkdir -p tap-scoop/bucket
+          cp bucket/pharos.json tap-scoop/bucket/pharos.json
+          cd tap-scoop
+          git config user.name  "pharos-release-bot"
+          git config user.email "actions@users.noreply.github.com"
+          if [ -z "$(git status --porcelain bucket/pharos.json)" ]; then
+            echo "Manifest already up to date; nothing to commit"
+          else
+            git add bucket/pharos.json
+            git commit -m "pharos ${VER}"
+            git push origin HEAD
+          fi

@@ -20,6 +20,7 @@
 | W2.1 | pharos import --adopt (A2 onboarding) | 🟢 DONE (Sep 4, 2eae99a) — read all clients, dedupe, managed baseline; conflict UX (pick/use-everywhere/skip, --yes, dry-run); W1.1 contract (JSON purity, env contract, exit codes); orphans preserved; external review F1-F5 fixed (README truthful drift framing, 3 contract tests, known-edges disclosed, prompt nit, dry-run probe); live QA: dedupe+conflict+adopt→doctor clean | app dev | pharos-cli 2eae99a |
 | Wave-R | release.yml + install.ps1 MOTW fix | 🟢 DONE (Sep 4, 5f00d06 + pharos-web c20bdca) — tag-triggered release workflow (dual naming, drift guard, SHA256SUMS, --generate-notes); Unblock-File silent insert in installer; live proof = next install on AppLocker PC | infra | pharos-cli 5f00d06 / pharos-web c20bdca |
 | site | Wave D: v1.1.0 docs parity (doctor --diff, receipts v2, trust signals, agent contract, MSIX FAQ) + getPackage retry/timeout (crawler 404 fix) | 🟢 BUILT+QA (Sep 4) | web dev | reviewer PASS 6/6; pending deploy |
+| site | Wave E1: PHAROS vs Smithery comparison page (hosted-connect vs local-control), cross-links vs-mcpm, sitemap/llms/footer wiring | 🟢 BUILT+QA (Sep 4) | web dev | reviewer PASS 7/7, 2 copy nits closed; pending deploy |
 
 ### Wave-1 shipped summary (for web-dev parity — v1.1.0 LIVE Sep 4)
 

@@ -33,7 +33,7 @@ New user-facing surfaces in v1.1.0 (docs/pages should reflect ALL of these):
 7. **Version** — everything above is live in v1.1.0 binaries (installers resolve it automatically). Windows CI green.
 
 | W2.1 | A2 pharos adopt | ⚪ pending | app dev | — |
-| W2.2 | A1 profiles (opt-in) | ⚪ pending | app dev | — |
+| W2.2 | A1 profiles (opt-in, client-mapped) | 🟢 DONE (Sep 4, 8790b7c) — profiles.json state, create/add/rm/ls/run + install --profile; use = plan-first reconcile (dry-run/strict/yes), non-mapped clients never touched, lockfile Clients[] reconciled; W1.1 contract incl. rm-json decline doc; all-failed exit 1 + FAILED block; ext review core-solid + M1/M2/L1-L6 fixed; +14 tests (26/26), race-clean | app dev | pharos-cli 8790b7c |
 | W3.1 | A3 brew/scoop | ⚪ pending (signing Q open) | app dev | — |
 | W3.2 | A4 pharos try | ⚪ pending | app dev | — |
 | W4.1 | B1 security scorecard | ⚪ pending | app dev | — |

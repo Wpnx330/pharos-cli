@@ -115,7 +115,7 @@ var llmNotes = map[string]llmNote{
 	"pharos install": {
 		output: "progress lines + per-client config write results; JSON N/A",
 		env:    "PHAROS_NON_INTERACTIVE makes the --select-clients picker return the detected defaults instead of launching its TUI",
-		ni:     "no prompts by default (writes all detected clients); use --client to pin targets",
+		ni:     "no prompts by default (writes all detected clients); use --client to pin targets; --profile writes only the profile's mapped clients and attaches the server incl. declared dependencies (conflicts with --client/--select-clients/--frozen, exit 2; --no-dep-config skips the dependency config writes and their profile attach)",
 	},
 	"pharos list": {
 		output: "JSON: array of {name, version, transport, kind, status, endpoint, port, size, memory, uptime, idle, lastActivity} ([] when none installed). Plain: table",
@@ -147,6 +147,43 @@ var llmNotes = map[string]llmNote{
 		output: "per-version purge confirmations + final note; JSON N/A",
 		env:    "PHAROS_ASSUME_YES=1 skips the destructive confirmation; PHAROS_NON_INTERACTIVE without it aborts with guidance (destructive commands are never guessed)",
 		ni:     "--yes, or PHAROS_ASSUME_YES=1",
+	},
+	"pharos profile": {
+		output: "help text listing profile subcommands",
+		env:    "all three contract vars are inherited by every subcommand",
+		ni:     "no prompts; profile use prompts only with pending changes outside JSON mode",
+	},
+	"pharos profile create": {
+		output: "single creation confirmation + next-step hint; JSON: {created, inherits, servers, clients, state}",
+		env:    "PHAROS_JSON=1 or --json",
+		ni:     "no prompts; exits 2 on invalid name, duplicate, unknown --client ID, unknown --inherit parent; --inherit base records nothing (base is always implicit)",
+	},
+	"pharos profile add": {
+		output: "per-server attach confirmations; JSON: {profile, added, servers}",
+		ni:     "no prompts; exits 2 when the profile is unknown or a server has no canonical config (not installed)",
+	},
+	"pharos profile remove": {
+		output: "per-server detach confirmations (servers stay installed); JSON: {profile, removed, servers}",
+		ni:     "no prompts; servers not in the profile are noted, never an error",
+	},
+	"pharos profile ls": {
+		output: "JSON: {version, state, profiles: {<name>: {inherits, servers, clients, target_set}}} where target_set is the resolved base+inherited+own server union. Plain: PROFILE/CLIENTS/INHERITS/SERVERS table",
+		env:    "PHAROS_JSON=1 or --json",
+		ni:     "no prompts; exits 2 when ~/.pharos/profiles.json is corrupt",
+	},
+	"pharos profile use": {
+		output: "JSON: plan {profile, clients, target_set, dry_run, strict, applied, changes, failed, skipped, blocked?, hint?, lockfile_updated, clients_plan: [{client, path, add: [{server, error?}], remove: [{server, reason, error?}], skipped: [{server, reason}], unchanged}]} — applied:false means nothing was written (re-run with --yes); failed counts rows that errored during the apply; skipped counts target servers missing from canonical. Plain: W1.4 doctor-style indented plan + 'Apply? [y/N]' prompt when there are pending changes",
+		env:    "PHAROS_JSON=1 or --json (JSON mode NEVER prompts; pending changes return applied:false, exit 1); PHAROS_ASSUME_YES=1 or --yes applies the plan; PHAROS_NON_INTERACTIVE=1 without --yes aborts with guidance",
+		ni:     "--yes / PHAROS_ASSUME_YES=1 applies; --dry-run is a pure preview (always exit 0 — --strict gates real applies only); --strict refuses to apply while unprofiled servers would be removed (exit 1, hint names 'pharos profile add base <server...>'); rows that fail to apply stay counted in changes, listed under 'N change(s) FAILED', and exit 1 only when nothing applied; target servers missing from canonical are reported as skipped (exit stays 0)",
+	},
+	"pharos profile rm": {
+		output: "single deletion confirmation (servers stay installed); JSON: success {deleted: \"<name>\", servers_kept: true}; JSON mode without --yes never prompts — emits {deleted: false, reason} and exits 1",
+		env:    "PHAROS_JSON=1 or --json; PHAROS_ASSUME_YES=1 skips the confirmation; PHAROS_NON_INTERACTIVE without it aborts with guidance",
+		ni:     "--yes, or PHAROS_ASSUME_YES=1; exits 2 when the profile is inherited by another profile or is 'base'",
+	},
+	"pharos profile run": {
+		output: "summary of daemon load/unload requests; JSON: {profile, loaded, stopped, target_set}",
+		ni:     "no prompts; starts the daemon in the background when not running; exit 1 when the daemon never comes up",
 	},
 	"pharos remove": {
 		output: "per-target removal confirmations; exit 1 when the server is unknown or dependency-protected; JSON N/A",

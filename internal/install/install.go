@@ -704,6 +704,15 @@ func WriteClientConfigs(name string, serverCfg clientconfig.ServerConfig, client
 	return updated, skipped, nil
 }
 
+// ResolveWriteTargets is the exported form of resolveWriteTargets for
+// commands outside the install flow (W2.2 `profile use` resolves a
+// profile's mapped client IDs to concrete client instances with the
+// exact same rules install uses, including native-path creation for
+// not-yet-detected built-ins).
+func ResolveWriteTargets(clientIDs []string) ([]clientconfig.Client, error) {
+	return resolveWriteTargets(clientIDs)
+}
+
 // resolveWriteTargets expands --client IDs to every matching home-level
 // path. Auto mode (empty IDs) is every detected client.
 func resolveWriteTargets(clientIDs []string) ([]clientconfig.Client, error) {

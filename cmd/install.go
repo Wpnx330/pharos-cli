@@ -14,6 +14,7 @@ import (
 	"github.com/Wpnx330/pharos-cli/internal/clientconfig"
 	"github.com/Wpnx330/pharos-cli/internal/install"
 	"github.com/Wpnx330/pharos-cli/internal/lockfile"
+	"github.com/Wpnx330/pharos-cli/internal/profiles"
 	"github.com/Wpnx330/pharos-cli/internal/resolver"
 	"github.com/Wpnx330/pharos-cli/internal/runtime"
 	"github.com/Wpnx330/pharos-cli/internal/semver"
@@ -28,6 +29,7 @@ var (
 	installFrozen        bool
 	installSkipDepConfig bool
 	installIdleTimeout   int
+	installProfile       string
 )
 
 var installCmd = &cobra.Command{
@@ -47,6 +49,7 @@ Examples:
   pharos install mcp-git-server --version 1.2.0
   pharos install mcp-git-server --client cursor
   pharos install mcp-git-server --client cursor,claude-desktop  # multi-select
+  pharos install mcp-git-server --profile work  # write to the profile's clients + attach
   pharos install mcp-git-server --select-clients  # interactive picker
   pharos install mcp-git-server --idle-timeout 30  # auto-unload after 30min idle
   pharos install mcp-git-server --idle-timeout 0   # never unload (always on)
@@ -63,12 +66,82 @@ func init() {
 	installCmd.Flags().BoolVar(&installFrozen, "frozen", false, "install strictly from lockfile; refuse if missing or mismatched")
 	installCmd.Flags().BoolVar(&installSkipDepConfig, "no-dep-config", false, "don't write MCP client configs for dependencies")
 	installCmd.Flags().IntVar(&installIdleTimeout, "idle-timeout", 60, "idle timeout in minutes before auto-unloading (0 = never unload, always on)")
+	installCmd.Flags().StringVar(&installProfile, "profile", "",
+		"write only to this profile's mapped clients and attach the server to it (W2.2; conflicts with --client/--select-clients/--frozen)")
 	rootCmd.AddCommand(installCmd)
+}
+
+// validateInstallProfile resolves the --profile flag before any install
+// work: --client/--select-clients/--frozen are mutually exclusive with
+// it, the profile must exist, and it must have mapped clients. Returns
+// the profile's client IDs, or an error (exit 2 at the call site).
+func validateInstallProfile() ([]string, error) {
+	if installProfile == "" {
+		return nil, nil
+	}
+	if installClient != "" || installSelectClients {
+		return nil, fmt.Errorf("--profile cannot be combined with --client or --select-clients (the profile's mapped clients define the write targets)")
+	}
+	if installFrozen {
+		return nil, fmt.Errorf("--profile is not supported with --frozen")
+	}
+	st, err := profiles.Load()
+	if err != nil {
+		return nil, err
+	}
+	p, ok := st.Profiles[installProfile]
+	if !ok {
+		return nil, fmt.Errorf("profile %q does not exist — create it with 'pharos profile create %s --client <id>'", installProfile, installProfile)
+	}
+	if len(p.Clients) == 0 {
+		return nil, fmt.Errorf("profile %q has no mapped clients — recreate it with 'pharos profile create %s --client <id>'", installProfile, installProfile)
+	}
+	return p.Clients, nil
+}
+
+// attachInstalledToProfile records a just-installed server (primary or
+// dependency) in the --profile state. Best-effort: failures warn but
+// never fail the install.
+func attachInstalledToProfile(rcpt *receiptBuilder, names ...string) {
+	if installProfile == "" || len(names) == 0 {
+		return
+	}
+	st, err := profiles.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s  profile attach failed: %v\n", ui.Error.Render("Warning:"), err)
+		return
+	}
+	if path, perr := profiles.FilePath(); perr == nil {
+		rcpt.snapshotPath(path)
+	}
+	for _, name := range names {
+		if err := st.AddServers(installProfile, name); err != nil {
+			fmt.Fprintf(os.Stderr, "%s  profile attach failed for %s: %v\n", ui.Error.Render("Warning:"), name, err)
+			return
+		}
+	}
+	if err := st.Save(); err != nil {
+		fmt.Fprintf(os.Stderr, "%s  profile attach failed: %v\n", ui.Error.Render("Warning:"), err)
+		return
+	}
+	if path, perr := profiles.FilePath(); perr == nil {
+		rcpt.touch(path, "profiles", "")
+	}
+	progressf("%s  attached to profile %s\n", ui.Muted.Render("·"), installProfile)
 }
 
 func runInstall(cmd *cobra.Command, args []string) {
 	_, client := loadConfig()
 	input := joinInfoName(args)
+
+	// W2.2 --profile: validated BEFORE any install work; when set it
+	// defines the client write targets (mutually exclusive with
+	// --client/--select-clients/--frozen).
+	profileClientIDs, profileErr := validateInstallProfile()
+	if profileErr != nil {
+		fmt.Fprintln(os.Stderr, ui.Error.Render("Profile error:"), profileErr)
+		os.Exit(2)
+	}
 
 	// Parse name@version syntax.
 	name, versionSpec := parseNameVersion(input)
@@ -87,6 +160,13 @@ func runInstall(cmd *cobra.Command, args []string) {
 	if installFrozen {
 		installFromLockfile(name, versionSpec, lockPath, resolveClientSelection())
 		return
+	}
+
+	// Resolve which clients to write to. --profile overrides the
+	// selection with the profile's mapped clients.
+	clientIDs := profileClientIDs
+	if clientIDs == nil {
+		clientIDs = resolveClientSelection()
 	}
 
 	progressf("%s  %s\n", ui.Label.Render("Fetching package info..."), name)
@@ -203,9 +283,6 @@ func runInstall(cmd *cobra.Command, args []string) {
 	serverCfg := install.BuildServerConfig(manifest, storeDir)
 	clientCfg := install.BuildClientConfig(manifest, storeDir)
 
-	// Resolve which clients to write to.
-	clientIDs := resolveClientSelection()
-
 	// W1.2 receipt: snapshot every known client config, the canonical
 	// config, and the lockfile before any writes, so before-hashes are
 	// exact whichever files the run ends up touching.
@@ -276,6 +353,10 @@ func runInstall(cmd *cobra.Command, args []string) {
 		rcpt.touchLock()
 		progressf("%s  %s\n", ui.Muted.Render("Lockfile updated:"), lockPath)
 	}
+
+	// W2.2 --profile: attach the primary package to the profile so a
+	// later 'pharos profile use' keeps it in the mapped clients.
+	attachInstalledToProfile(rcpt, name)
 
 	// Report install telemetry for http/sse packages. stdio packages are
 	// counted server-side via the tarball redirect increment, so we only
@@ -354,6 +435,7 @@ func runInstall(cmd *cobra.Command, args []string) {
 					if !installSkipDepConfig {
 						depCfg := install.BuildClientConfig(depVD.Manifest, storeDir)
 						writeDepClientConfigs(rcpt, depName, depCfg, clientIDs)
+						attachInstalledToProfile(rcpt, depName)
 					}
 					continue
 				}
@@ -386,6 +468,14 @@ func runInstall(cmd *cobra.Command, args []string) {
 					rcpt.addError("dependency %s lockfile update failed: %v", depName, err)
 				} else {
 					rcpt.touchLock()
+				}
+				// W2.2 --profile: dependencies are written to the profile's
+				// clients too, so they attach as well — otherwise a later
+				// 'profile use' would remove them as not-in-profile.
+				// --no-dep-config skips both the config writes and the
+				// attach (same as the already-installed branch above).
+				if !installSkipDepConfig {
+					attachInstalledToProfile(rcpt, depName)
 				}
 				progressf("  %s  %s@%s\n", ui.Success.Render("✓"), depName, depVersion)
 				installed++

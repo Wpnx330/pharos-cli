@@ -27,7 +27,7 @@ USAGE: pharos [flags]
 FLAGS:
   --help <bool> (default: false) help for pharos
   --version <bool> (default: false) version for pharos
-SUBCOMMANDS: audit, completion, config, daemon, doctor, health, help, import, info, init, install, list, llmtxt, lock, login, oauth, package, publish, purge, remove, republish, search, start, stop, unpublish, update, version, whoami
+SUBCOMMANDS: audit, completion, config, daemon, doctor, health, help, import, info, init, install, list, llmtxt, lock, login, oauth, package, profile, publish, purge, remove, republish, search, start, stop, unpublish, update, version, whoami
 OUTPUT: help text listing subcommands
 ENV: all three contract vars are inherited by every subcommand
 NON-INTERACTIVE: no prompts; safe by default
@@ -263,11 +263,12 @@ FLAGS:
   --help <bool> (default: false) help for install
   --idle-timeout <int> (default: 60) idle timeout in minutes before auto-unloading (0 = never unload, always on)
   --no-dep-config <bool> (default: false) don't write MCP client configs for dependencies
+  --profile <string> (default: ) write only to this profile's mapped clients and attach the server to it (W2.2; conflicts with --client/--select-clients/--frozen)
   --select-clients <bool> (default: false) interactively pick which MCP clients to configure
   --version <string> (default: ) version or range to install (e.g. 1.2.0, ^1.0.0, latest)
 OUTPUT: progress lines + per-client config write results; JSON N/A
 ENV: PHAROS_NON_INTERACTIVE makes the --select-clients picker return the detected defaults instead of launching its TUI
-NON-INTERACTIVE: no prompts by default (writes all detected clients); use --client to pin targets
+NON-INTERACTIVE: no prompts by default (writes all detected clients); use --client to pin targets; --profile writes only the profile's mapped clients and attaches the server incl. declared dependencies (conflicts with --client/--select-clients/--frozen, exit 2; --no-dep-config skips the dependency config writes and their profile attach)
 
 # COMMAND: pharos list
 SHORT: List locally installed packages
@@ -337,6 +338,89 @@ FLAGS:
   --help <bool> (default: false) help for package
 OUTPUT: packaging confirmation lines (tarball path + size); JSON N/A
 NON-INTERACTIVE: no prompts
+
+# COMMAND: pharos profile
+SHORT: Manage context profiles — named server sets mapped to clients
+USAGE: pharos profile <create|add|remove|ls|use|rm|run> [flags]
+FLAGS:
+  --help <bool> (default: false) help for profile
+SUBCOMMANDS: add, create, ls, remove, rm, run, use
+OUTPUT: help text listing profile subcommands
+ENV: all three contract vars are inherited by every subcommand
+NON-INTERACTIVE: no prompts; profile use prompts only with pending changes outside JSON mode
+
+# COMMAND: pharos profile add
+SHORT: Attach already-installed servers to a profile
+USAGE: pharos profile add <profile> <server...> [flags]
+FLAGS:
+  --help <bool> (default: false) help for add
+  --json <bool> (default: false) machine-parsable JSON on stdout
+OUTPUT: per-server attach confirmations; JSON: {profile, added, servers}
+NON-INTERACTIVE: no prompts; exits 2 when the profile is unknown or a server has no canonical config (not installed)
+
+# COMMAND: pharos profile create
+SHORT: Create a context profile and map it to clients
+USAGE: pharos profile create <name> [flags]
+FLAGS:
+  --client <string> (default: ) map the profile to these clients (comma-separated, e.g. cursor,claude-desktop)
+  --help <bool> (default: false) help for create
+  --inherit <string> (default: ) inherit an existing profile's servers in addition to base
+  --json <bool> (default: false) machine-parsable JSON on stdout
+OUTPUT: single creation confirmation + next-step hint; JSON: {created, inherits, servers, clients, state}
+ENV: PHAROS_JSON=1 or --json
+NON-INTERACTIVE: no prompts; exits 2 on invalid name, duplicate, unknown --client ID, unknown --inherit parent; --inherit base records nothing (base is always implicit)
+
+# COMMAND: pharos profile ls
+SHORT: List context profiles and their client mappings
+USAGE: pharos profile ls [flags]
+FLAGS:
+  --help <bool> (default: false) help for ls
+  --json <bool> (default: false) machine-parsable JSON on stdout
+OUTPUT: JSON: {version, state, profiles: {<name>: {inherits, servers, clients, target_set}}} where target_set is the resolved base+inherited+own server union. Plain: PROFILE/CLIENTS/INHERITS/SERVERS table
+ENV: PHAROS_JSON=1 or --json
+NON-INTERACTIVE: no prompts; exits 2 when ~/.pharos/profiles.json is corrupt
+
+# COMMAND: pharos profile remove
+SHORT: Detach servers from a profile (they stay installed)
+USAGE: pharos profile remove <profile> <server...> [flags]
+FLAGS:
+  --help <bool> (default: false) help for remove
+  --json <bool> (default: false) machine-parsable JSON on stdout
+OUTPUT: per-server detach confirmations (servers stay installed); JSON: {profile, removed, servers}
+NON-INTERACTIVE: no prompts; servers not in the profile are noted, never an error
+
+# COMMAND: pharos profile rm
+SHORT: Delete a profile (servers stay installed)
+USAGE: pharos profile rm <name> [flags]
+FLAGS:
+  --help <bool> (default: false) help for rm
+  --json <bool> (default: false) machine-parsable JSON on stdout
+  --yes <bool> (default: false) delete without confirmation prompt
+OUTPUT: single deletion confirmation (servers stay installed); JSON: success {deleted: "<name>", servers_kept: true}; JSON mode without --yes never prompts — emits {deleted: false, reason} and exits 1
+ENV: PHAROS_JSON=1 or --json; PHAROS_ASSUME_YES=1 skips the confirmation; PHAROS_NON_INTERACTIVE without it aborts with guidance
+NON-INTERACTIVE: --yes, or PHAROS_ASSUME_YES=1; exits 2 when the profile is inherited by another profile or is 'base'
+
+# COMMAND: pharos profile run
+SHORT: Load a profile's servers in the daemon and idle the rest
+USAGE: pharos profile run <name> [flags]
+FLAGS:
+  --help <bool> (default: false) help for run
+  --json <bool> (default: false) machine-parsable JSON on stdout
+OUTPUT: summary of daemon load/unload requests; JSON: {profile, loaded, stopped, target_set}
+NON-INTERACTIVE: no prompts; starts the daemon in the background when not running; exit 1 when the daemon never comes up
+
+# COMMAND: pharos profile use
+SHORT: Reconcile a profile's mapped clients to exactly its servers
+USAGE: pharos profile use <name> [flags]
+FLAGS:
+  --dry-run <bool> (default: false) print the plan only — write nothing
+  --help <bool> (default: false) help for use
+  --json <bool> (default: false) machine-parsable plan JSON on stdout (never prompts)
+  --strict <bool> (default: false) refuse to apply while unprofiled servers would be removed
+  --yes <bool> (default: false) apply the plan without confirmation prompt
+OUTPUT: JSON: plan {profile, clients, target_set, dry_run, strict, applied, changes, failed, skipped, blocked?, hint?, lockfile_updated, clients_plan: [{client, path, add: [{server, error?}], remove: [{server, reason, error?}], skipped: [{server, reason}], unchanged}]} — applied:false means nothing was written (re-run with --yes); failed counts rows that errored during the apply; skipped counts target servers missing from canonical. Plain: W1.4 doctor-style indented plan + 'Apply? [y/N]' prompt when there are pending changes
+ENV: PHAROS_JSON=1 or --json (JSON mode NEVER prompts; pending changes return applied:false, exit 1); PHAROS_ASSUME_YES=1 or --yes applies the plan; PHAROS_NON_INTERACTIVE=1 without --yes aborts with guidance
+NON-INTERACTIVE: --yes / PHAROS_ASSUME_YES=1 applies; --dry-run is a pure preview (always exit 0 — --strict gates real applies only); --strict refuses to apply while unprofiled servers would be removed (exit 1, hint names 'pharos profile add base <server...>'); rows that fail to apply stay counted in changes, listed under 'N change(s) FAILED', and exit 1 only when nothing applied; target servers missing from canonical are reported as skipped (exit stays 0)
 
 # COMMAND: pharos publish
 SHORT: Publish a package to the PHAROS registry

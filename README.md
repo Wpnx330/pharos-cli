@@ -59,6 +59,7 @@ pharos install <name>          # Download and install a package (with recursive 
 pharos install <name> --no-dep-config  # Install without writing MCP client configs for dependencies
 pharos install <name> --idle-timeout 30  # Auto-unload after 30min idle (default: 60)
 pharos install <name> --idle-timeout 0   # Never unload — always on
+pharos install <name> --profile work     # Write only the profile's mapped clients + attach it
 pharos list                    # List locally installed packages
 pharos list --running          # Show only running servers (daemon-managed)
 pharos start <name>            # Start a locally installed MCP server
@@ -69,6 +70,13 @@ pharos import                  # Import existing MCP client configs into a pharo
 pharos import --adopt          # One-command onboarding: adopt every detected client config as the managed baseline (conflicts resolved interactively)
 pharos remove <name>           # Remove a locally installed package
 pharos remove <name> --force   # Remove even if other packages depend on it (not a confirm skip)
+
+# Profiles (contexts — see "Profiles (contexts)" below)
+pharos profile create work --client cursor   # Map a named context to clients
+pharos profile add work <server...>          # Attach already-installed servers
+pharos profile ls --json                     # The context map (agent-readable)
+pharos profile use work                      # Reconcile mapped clients to exactly this context (plan + confirm)
+pharos profile rm work                       # Delete the profile (servers stay installed)
 
 # Daemon (MCP server process supervisor)
 pharos daemon start            # Start the daemon (backgrounds by default)
@@ -311,6 +319,52 @@ Resolve any of these by picking the variant (or "use everywhere") and editing to
 | Generic MCP | `~/.config/mcp/mcp.json` | JSON (`{"mcpServers": {}}`) |
 
 **Microsoft Store (MSIX) Claude Desktop**: Claude Desktop installed from the Microsoft Store is an MSIX package. Depending on app version, the Store build may materialize its config under the MSIX `LocalCache` path (`%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\claude_desktop_config.json`, probed per Windows user under WSL2 too) or the classic `%APPDATA%\Claude\` path; pharos probes both, classic first, as two independent entries when both exist, so a dual install surfaces as two entries: *Claude Desktop* and *Claude Desktop (Microsoft Store)*. A Store-installed Claude that has never been launched has no `LocalCache\Roaming\Claude` directory yet and is intentionally not detected — launch it once, then `pharos install` will offer to create its config.
+
+## Profiles (contexts)
+
+A profile is a **named context that maps a set of installed servers to clients**: `pharos profile create work --client cursor` means "this is my Cursor context." Profiles are an orchestration layer over installs — `pharos.lock` and `~/.pharos/mcp.json` (the canonical config) are untouched until you run `pharos profile use`, which reconciles the mapped clients to contain **exactly** the profile's servers. Switching contexts is one command, not config surgery:
+
+```bash
+pharos profile create work --client cursor          # map the context to Cursor
+pharos profile create personal --client claude-desktop --inherit base
+pharos profile add work Context7 github             # attach already-installed servers
+pharos profile remove work github                   # detach (servers stay installed)
+pharos profile ls --json                            # the context map, agent-readable
+pharos profile use work --dry-run                   # preview the reconciliation plan
+pharos profile use work                             # plan + "Apply? [y/N]"
+pharos profile use work --yes                       # apply without prompting
+pharos profile rm work                              # delete the profile; servers stay
+pharos profile run work                             # daemon: load this set, idle the rest
+```
+
+**State.** `~/.pharos/profiles.json` (pharos-internal, safe to delete — profiles are metadata): `{"version":1,"profiles":{"work":{"inherits":[],"servers":["Context7"],"clients":["cursor"]}}}`. `pharos profile ls --json` adds the resolved `target_set` per profile so agents can read the full context map.
+
+**Inheritance.** Every profile implicitly inherits `base` — servers attached to `base` (`pharos profile add base <server...>`) stay in every context, so common servers are listed once. `--inherit <profile>` adds one explicit parent on top (single parent, cycles rejected). The **target set** `profile use` reconciles to is `base ∪ inherited chain ∪ own`, deduped base-first.
+
+**`pharos profile use` — safe by default.** It computes the plan first: servers in the target set but missing from a mapped client are **added** from the canonical config (the exact entry shapes `pharos install` writes — re-derived through the same helpers `doctor --diff` verifies against); servers present in a mapped client but **not** in the target set are **candidates for removal**, labeled by where they're profiled. Servers attached to no profile are labeled **unprofiled** with the migration hint `pharos profile add base <server...>`. Non-mapped clients are never touched. Nothing is written until you confirm: the default prints the plan and prompts `Apply? [y/N]`; `--yes` (or `PHAROS_ASSUME_YES=1`) applies; `--dry-run` prints the plan and writes nothing — it is always a pure preview (exit 0), `--strict` gates real applies only; `--json` prints the plan with `applied: true/false` and **never prompts** — agents re-run with `--yes` after inspecting. `--strict` refuses to apply while unprofiled servers would be removed (exit 1) so they get classified deliberately first. Failed applies are never silent: rows that error keep their `error`, stay counted in `changes`, are listed under `✗ N change(s) FAILED:` (human) / `failed: N` (JSON), and exit 1 when nothing applied. Target-set servers missing from the canonical config are reported as `skipped` rows plus a note (exit stays 0). Every apply also updates the `pharos.lock` per-client records (added to client X → X appended to the entry's `Clients`; removed → dropped), so `doctor --diff` stays honest afterwards.
+
+Example transcript:
+
+```text
+$ pharos profile use work
+Profile "work" → 3 server(s) across 1 mapped client(s)
+Target set:  Context7, github, shared-echo
+  Generic MCP (~/.config/mcp/mcp.json)
+    +  add Context7 (from canonical config)
+    -  remove legacy-scraper — unprofiled (will be removed from this client)
+    =  2 already in place
+Hint: pharos profile add base legacy-scraper — keeps them in every context
+Apply? [y/N] y
+✓  Applied 2 change(s) across 1 mapped client(s).
+```
+
+**Exit codes** (`profile use`): `0` = applied (fully or partially — failures are listed either way), already in sync, or dry-run; `1` = the plan had changes but nothing was applied (declined, non-interactive/JSON without `--yes`, `--strict` unprofiled conflict, or every change failed); `2` = usage/validation errors (unknown profile, no mapped clients, corrupt `profiles.json`).
+
+**`pharos profile rm`** confirms before deleting (`--yes` / `PHAROS_ASSUME_YES=1` skip the prompt; `PHAROS_NON_INTERACTIVE=1` without them aborts with guidance). With `--json` it never prompts: an unconfirmed run emits `{deleted: false, reason}` and exits 1; a confirmed one emits `{deleted: "<name>", servers_kept: true}`.
+
+**Install-time mapping.** `pharos install <name> --profile work` writes the server only to the profile's mapped clients and attaches it to the profile in one step (dependencies too — otherwise a later `profile use` would remove them; `--no-dep-config` skips both the dependency config writes and their profile attach). It conflicts with `--client`, `--select-clients`, and `--frozen` (exit 2).
+
+**Daemon synergy.** `pharos profile run work` asks the daemon to load the profile's target set and idle/stop every other daemon-managed server — context switching also saves memory. Requires the daemon (auto-started when possible).
 
 ## Development
 

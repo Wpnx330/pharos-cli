@@ -15,6 +15,20 @@
 | W1.3 | B2 search signals (CLI) | 🟢 DONE (Sep 2) — OWNER/CATEGORY cols + humanized downloads + (stale) suffix; --json carries publisher/category/tools_count/version_status; info Owner/Category guarded; +19 tests (suite green); live-binary QA'd | app dev | pharos-cli c244862 |
 | W1.4 | B3 doctor --diff | 🟢 DONE (Sep 2) — b15d358 + adversarial-review remediation 4f13e10 (F1-F8: aider skip-merge, per-client lockfile record, case-fold relevance, test-honesty pins, numeric env, Grok headers, docs, read-only probe); +9 tests; live QA: subset install clean, case-rename surfaces MISSING+EXTRA | app dev | pharos-cli b15d358 + 4f13e10 |
 | W1.4.1 | MSIX Claude Desktop (Store) detection | 🟢 DONE (Sep 3, d651bff) — additive Claude_* MSIX probe (Win+WSL2), classic-first union, never-launched skip; review F1-F3 fixed (README premise hedged, order asserted, windows CI matrix); live QA on sandboxed MSIX tree | app dev | pharos-cli d651bff |
+| W1.4.2 | Windows CI portability | 🟢 DONE (Sep 4, 8a78697) — 38 POSIX-assumption test fixes across 7 pkgs exposed by new windows matrix; 3-line prod guard ReloadDaemon(pid<=0); external review APPROVE; CI green BOTH jobs (ubuntu+windows) | app dev | pharos-cli 8a78697 |
+| RELEASE | v1.1.0 shipped | 🟢 LIVE (Sep 4) — tag v1.1.0, 11 assets (both naming variants), installers resolve latest→v1.1.0; full Wave-1 train: A7 + C5 + B2 + B3 + MSIX + windows CI; release notes list all features | users | [v1.1.0](https://github.com/Wpnx330/pharos-cli/releases/tag/v1.1.0) |
+
+### Wave-1 shipped summary (for web-dev parity — v1.1.0 LIVE Sep 4)
+
+New user-facing surfaces in v1.1.0 (docs/pages should reflect ALL of these):
+1. **`pharos doctor --diff`** — per-client drift report vs lockfile baseline; MISSING/MODIFIED/EXTRA; JSON via `PHAROS_JSON=1`; fully read-only. Docs: README "Doctor drift" section.
+2. **Install receipts v2** — every install emits a receipt with per-client results, dependency rows, `status: ok|partial`, errors[] on partial. Surface in docs where install output is described.
+3. **Search trust signals** — OWNER + CATEGORY columns, humanized download counts, `(stale)` version suffix; `info` shows Owner/Category. Docs: README "Search Results" section.
+4. **Agent contract** — `PHAROS_JSON=1` + `PHAROS_NON_INTERACTIVE=1` + `PHAROS_ASSUME_YES=1`; `docs/llm.txt` machine-readable command surface. If the site has an "automate pharos" or agent page, point it at llm.txt.
+5. **MSIX Claude Desktop** — Store-installed Claude Desktop now detected/configured; never-launched = skipped (launch once first). Worth a FAQ/troubleshooting entry.
+6. **`mcp.directory` sixth registry source** — 1,700+ extra packages; update any "sources" list on the site.
+7. **Version** — everything above is live in v1.1.0 binaries (installers resolve it automatically). Windows CI green.
+
 | W2.1 | A2 pharos adopt | ⚪ pending | app dev | — |
 | W2.2 | A1 profiles (opt-in) | ⚪ pending | app dev | — |
 | W3.1 | A3 brew/scoop | ⚪ pending (signing Q open) | app dev | — |

@@ -167,7 +167,7 @@ Probing echo-server…
 ```
 
 - **Honest failures**: if the server won't start, fails the handshake, or hangs, `try` exits 1 and shows the server's actual stderr (last 10 lines) — not just "exit status 1". Unknown server: exit 2 with an install hint (`pharos install <name> --sandbox` probe-only installs are planned).
-- **`--json`** (`PHAROS_JSON=1`): a single stdout JSON document `{server, caps: {protocolVersion, serverInfo, tools[], resources[], prompts[]}}` — failures emit `{server, errors, stderr_tail}`. Never prompts; progress lines go to stderr. Built for the agent-automation contract.
+- **`--json`** (`PHAROS_JSON=1`): a single stdout JSON document `{server, caps: {protocolVersion, serverInfo, tools[], resources[], prompts[]}}` — probe failures emit `{server, errors, stderr_tail}`; pre-flight failures (config unreadable, unknown server, non-stdio) emit the minimal `{server, errors}` document. Never prompts; progress lines go to stderr. Built for the agent-automation contract.
 - **`--timeout 30s`**: raise the total probe budget (default `10s`).
 - **`--inspect`**: prints the exact `npx -y @modelcontextprotocol/inspector …` command for this server, then launches it in the foreground (honest error if `npx` isn't on PATH). `--inspect --json` only reports the command without spawning.
 

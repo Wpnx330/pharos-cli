@@ -18,18 +18,22 @@ func setProcGroup(cmd *exec.Cmd) {
 	}
 }
 
-// killProc force-kills the probe's child. TerminateProcess is tried first;
-// taskkill /T /F is the fallback because it also tears down the child tree.
+// killProc force-kills the probe's child. taskkill /T /F runs FIRST because
+// it tears down the whole descendant tree — npx-wrapped servers are
+// npx.cmd → cmd.exe → node, and TerminateProcess (proc.Kill) only kills the
+// direct child, orphaning the node descendants. Direct termination is the
+// fallback for when taskkill is unavailable or fails.
 func killProc(pid int) error {
-	proc, err := os.FindProcess(pid)
-	if err == nil {
-		if kerr := proc.Kill(); kerr == nil {
-			return nil
-		}
-	}
 	out, terr := exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(pid)).CombinedOutput()
-	if terr != nil {
+	if terr == nil {
+		return nil
+	}
+	proc, ferr := os.FindProcess(pid)
+	if ferr != nil {
 		return fmt.Errorf("taskkill %d: %v: %s", pid, terr, string(out))
+	}
+	if kerr := proc.Kill(); kerr != nil {
+		return fmt.Errorf("kill %d: taskkill: %v: %s; terminate: %v", pid, terr, string(out), kerr)
 	}
 	return nil
 }

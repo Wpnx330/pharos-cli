@@ -85,22 +85,25 @@ func runTry(args []string) error {
 
 	srv, err := canonical.GetServer(name)
 	if err != nil {
-		return &tryError{Code: 1, Message: fmt.Sprintf("read canonical config: %v", err)}
+		msg := fmt.Sprintf("read canonical config: %v", err)
+		tryEmitPreFlightJSON(name, msg)
+		return &tryError{Code: 1, Message: msg}
 	}
 	if srv == nil {
+		msg := fmt.Sprintf("server %q not found in ~/.pharos/mcp.json", name)
+		tryEmitPreFlightJSON(name, msg)
 		return &tryError{
 			Code:    2,
-			Message: fmt.Sprintf("server %q not found in ~/.pharos/mcp.json", name),
+			Message: msg,
 			Hint:    fmt.Sprintf("install it first: pharos install %s (probe-only --sandbox installs are planned)", name),
 		}
 	}
 	if !strings.EqualFold(srv.Transport, "stdio") || strings.TrimSpace(srv.Command) == "" {
-		return &tryError{
-			Code: 1,
-			Message: fmt.Sprintf(
-				"server %q is not a stdio server (transport %q, command %q) — pharos try probes stdio servers only",
-				name, srv.Transport, srv.Command),
-		}
+		msg := fmt.Sprintf(
+			"server %q is not a stdio server (transport %q, command %q) — pharos try probes stdio servers only",
+			name, srv.Transport, srv.Command)
+		tryEmitPreFlightJSON(name, msg)
+		return &tryError{Code: 1, Message: msg}
 	}
 
 	command := append([]string{srv.Command}, srv.Args...)
@@ -222,6 +225,17 @@ func printTryJSON(out *tryJSONOut) {
 		return
 	}
 	fmt.Println(string(data))
+}
+
+// tryEmitPreFlightJSON prints the minimal failure document on the
+// pre-flight error paths (config unreadable, unknown server, non-stdio),
+// so --json consumers always get a stdout document instead of an empty
+// one. The human-readable error still goes to stderr via the cobra path.
+func tryEmitPreFlightJSON(server, msg string) {
+	if !JSONRequested() {
+		return
+	}
+	printTryJSON(&tryJSONOut{Server: server, Errors: []string{msg}})
 }
 
 // tryProgressf sends progress lines to stderr in JSON mode (stdout must

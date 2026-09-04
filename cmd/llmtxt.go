@@ -213,7 +213,7 @@ var llmNotes = map[string]llmNote{
 		ni:     "--yes, or PHAROS_ASSUME_YES=1",
 	},
 	"pharos try": {
-		output: "JSON: {server, caps: {protocolVersion, serverInfo: {name, version}, tools: [{name, description}], resources: [names], prompts: [names]}} on success; on failure {server, errors, stderr_tail} with caps omitted (exit 1); with --inspect --json: {server, inspect_command} without spawning. Plain: \"Probing <name>…\" + capability summary (server name/version/protocol header, TOOLS table with 72-col-truncated descriptions, RESOURCES/PROMPTS counts with names only when ≤10)",
+		output: "JSON: {server, caps: {protocolVersion, serverInfo: {name, version}, tools: [{name, description}], resources: [names], prompts: [names]}} on success; on probe failure {server, errors, stderr_tail} with caps omitted (exit 1); pre-flight failures (config unreadable exit 1, unknown server exit 2, non-stdio exit 1) emit {server, errors} only; with --inspect --json: {server, inspect_command} without spawning. Plain: \"Probing <name>…\" + capability summary (server name/version/protocol header, TOOLS table with 72-col-truncated descriptions, RESOURCES/PROMPTS counts with names only when ≤10)",
 		env:    "PHAROS_JSON=1 or --json (progress lines go to stderr in JSON mode)",
 		ni:     "no prompts by design (PHAROS_NON_INTERACTIVE is irrelevant); unknown server exits 2 with an install hint; non-stdio servers, spawn/initialize failures, and timeouts exit 1 with the server's stderr tail (last 10 lines); --inspect without npx on PATH exits 1 with an install hint; --inspect --json never spawns (interactive)",
 	},

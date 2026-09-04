@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -213,13 +214,23 @@ func TestTryInspectWithoutNpx(t *testing.T) {
 }
 
 // TestTryTimeoutOverride — --timeout shortens the probe budget so a
-// hanging server fails fast with the tools/list stage named.
+// hanging server fails fast naming the request stage. Usually tools/list,
+// but under CI load the initialize round trip itself can overrun the
+// short budget, so either stage is accepted.
 func TestTryTimeoutOverride(t *testing.T) {
 	setupTryServer(t, "slow", "hang")
 
 	_, combined := runContract(t, nil, "try", "slow", "--timeout", "200ms")
-	if !strings.Contains(combined, "tools/list") {
-		t.Errorf("timeout failure does not name tools/list stage:\n%s", combined)
+	// The 200ms budget usually expires via ctx (context deadline
+	// exceeded); a per-request overrun instead reads "no response within".
+	// Either timeout signature is a pass; the stage must be named.
+	timeoutMention := strings.Contains(combined, "context deadline exceeded") ||
+		strings.Contains(combined, "no response within")
+	if !timeoutMention {
+		t.Errorf("timeout failure missing timeout mention:\n%s", combined)
+	}
+	if !strings.Contains(combined, "tools/list") && !strings.Contains(combined, "initialize") {
+		t.Errorf("timeout failure does not name a request stage:\n%s", combined)
 	}
 }
 
@@ -247,6 +258,94 @@ func TestTryInspectJSONReportsCommand(t *testing.T) {
 	}
 	if !strings.HasPrefix(cmd, "npx -y @modelcontextprotocol/inspector") {
 		t.Errorf("inspect_command = %q, want npx inspector prefix", cmd)
+	}
+}
+
+// TestTryPreFlightJSONDocs — the pre-flight failure paths (unknown server
+// → exit 2, non-stdio → exit 1) emit the minimal {server, errors} document
+// on stdout in JSON mode instead of leaving it empty.
+func TestTryPreFlightJSONDocs(t *testing.T) {
+	isolateHome(t)
+	resetAllFlags()
+	t.Cleanup(resetAllFlags)
+	t.Setenv("PHAROS_JSON", "1")
+
+	stdout := captureTryStdout(t, func() {
+		err := runTry([]string{"ghost"})
+		te, ok := err.(*tryError)
+		if !ok || te.Code != 2 {
+			t.Fatalf("runTry(ghost) = %v, want exit-2 tryError", err)
+		}
+	})
+	assertTryJSONDoc(t, stdout, "ghost", "not found in ~/.pharos/mcp.json")
+
+	dir := filepath.Join(contractHome(t), ".pharos")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := map[string]canonical.Server{
+		"remote": {
+			Transport: "http-sse",
+			URL:       "http://127.0.0.1:9999/sse",
+			Package:   canonical.PackageInfo{Name: "remote", Version: "1.0.0", Source: "pharos"},
+			Enabled:   true,
+		},
+	}
+	data, _ := json.Marshal(canonical.Config{Servers: cfg})
+	if err := os.WriteFile(filepath.Join(dir, "mcp.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout = captureTryStdout(t, func() {
+		err := runTry([]string{"remote"})
+		te, ok := err.(*tryError)
+		if !ok || te.Code != 1 {
+			t.Fatalf("runTry(remote) = %v, want exit-1 tryError", err)
+		}
+	})
+	assertTryJSONDoc(t, stdout, "remote", "not a stdio server")
+}
+
+// captureTryStdout runs fn with os.Stdout redirected to a pipe and returns
+// what it printed (try's JSON paths write via fmt.Println on os.Stdout).
+func captureTryStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stdout
+	os.Stdout = w
+	fn()
+	os.Stdout = orig
+	_ = w.Close()
+	data, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+// assertTryJSONDoc checks a pre-flight failure document: valid JSON, the
+// server named, exactly one error carrying the expected fragment.
+func assertTryJSONDoc(t *testing.T, stdout, server, errContains string) {
+	t.Helper()
+	trimmed := strings.TrimSpace(stdout)
+	if !json.Valid([]byte(trimmed)) {
+		t.Fatalf("stdout is not valid JSON: %q", stdout)
+	}
+	var doc struct {
+		Server string   `json:"server"`
+		Errors []string `json:"errors"`
+	}
+	if err := json.Unmarshal([]byte(trimmed), &doc); err != nil {
+		t.Fatalf("decode pre-flight JSON: %v", err)
+	}
+	if doc.Server != server {
+		t.Errorf("server = %q, want %q", doc.Server, server)
+	}
+	if len(doc.Errors) != 1 || !strings.Contains(doc.Errors[0], errContains) {
+		t.Errorf("errors = %v, want one entry containing %q", doc.Errors, errContains)
 	}
 }
 

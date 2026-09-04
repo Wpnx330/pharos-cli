@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -16,10 +18,15 @@ import (
 // TestMain doubles as the fake MCP server: when PHAROS_MCP_HELPER is set in
 // the environment, this binary re-executes itself as a scripted stdio
 // server (the classic helper-process pattern — works on every GOOS, no
-// network, no external processes).
+// network, no external processes). PHAROS_KILL_HELPER selects the
+// kill-tree fixture used by TestKillProcTree (Windows-only).
 func TestMain(m *testing.M) {
 	if mode := os.Getenv("PHAROS_MCP_HELPER"); mode != "" {
 		runHelper(mode, os.Stdout, os.Stdin)
+		os.Exit(0)
+	}
+	if os.Getenv("PHAROS_KILL_HELPER") != "" {
+		runKillHelper()
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
@@ -35,6 +42,8 @@ func TestMain(m *testing.M) {
 //	malformed  — stdout banner noise + a non-object initialize result
 //	exitsearly — writes nothing, logs to stderr, exits 1
 //	bigtools   — 200 tools
+//	exitafter  — full valid handshake, then exits immediately after the
+//	             final prompts/list response (drain-race regression)
 func runHelper(mode string, out io.Writer, in io.Reader) {
 	scanner := bufio.NewScanner(in)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
@@ -102,6 +111,11 @@ func runHelper(mode string, out io.Writer, in io.Reader) {
 			respond(out, req.ID, map[string]any{"prompts": []map[string]string{
 				{"name": "greeting"},
 			}})
+			if mode == "exitafter" {
+				// Exit with the final response just written — stdout EOF
+				// races the reaper, which must not drop it (F2).
+				os.Exit(0)
+			}
 		}
 	}
 }
@@ -203,7 +217,9 @@ func TestProbeMethodNotFoundTolerated(t *testing.T) {
 }
 
 // TestProbeTimeout — a server that never answers tools/list fails the
-// per-request timeout (shortened so the test stays fast).
+// per-request timeout (shortened so the test stays fast). Under CI load
+// the initialize round trip itself can overrun the short budget, so
+// either stage is accepted.
 func TestProbeTimeout(t *testing.T) {
 	caps, err := probeHelper(t, "hang", 0, 250*time.Millisecond)
 	if err == nil {
@@ -212,8 +228,15 @@ func TestProbeTimeout(t *testing.T) {
 	if caps != nil {
 		t.Errorf("caps = %+v, want nil on failure", caps)
 	}
-	if !strings.Contains(err.Error(), "tools/list") || !strings.Contains(err.Error(), "no response within") {
-		t.Errorf("error = %q, want tools/list timeout mention", err)
+	if !strings.Contains(err.Error(), "no response within") {
+		t.Errorf("error = %q, want timeout mention", err)
+	}
+	var pe *ProbeError
+	if !errors.As(err, &pe) {
+		t.Fatalf("error %T is not *ProbeError", err)
+	}
+	if pe.Stage != "initialize" && pe.Stage != "tools/list" {
+		t.Errorf("stage = %q, want initialize or tools/list", pe.Stage)
 	}
 }
 
@@ -248,6 +271,21 @@ func TestProbeServerExitsEarly(t *testing.T) {
 	}
 	if len(pe.StderrTail) == 0 || pe.StderrTail[0] != "boom: bad config" {
 		t.Errorf("stderrTail = %v, want [boom: bad config]", pe.StderrTail)
+	}
+}
+
+// TestProbeFinalResponseThenExit — a server that exits immediately after
+// its last response must not lose that response to the reap race
+// (readLoop-drain vs cmd.Wait), which used to surface as
+// "server closed stdout before responding".
+func TestProbeFinalResponseThenExit(t *testing.T) {
+	caps, err := probeHelper(t, "exitafter", 0, 0)
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	if len(caps.Tools) != 2 || len(caps.Prompts) != 1 {
+		t.Errorf("tools = %d, prompts = %d, want 2/1 (final response dropped?)",
+			len(caps.Tools), len(caps.Prompts))
 	}
 }
 
@@ -300,5 +338,83 @@ func TestProbeMissingExecutable(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not found") {
 		t.Errorf("error = %q, want not-found mention", err)
+	}
+}
+
+// ── kill-tree fixture (F1 regression) ───────────────────────────────────────
+
+// runKillHelper spawns a long-lived grandchild (cmd → ping, so the tree is
+// helper → cmd.exe → ping) and prints its PID, then blocks. taskkill /T /F
+// on the helper must take the grandchild down with it; a TerminateProcess-
+// only kill leaves it orphaned. Windows-only by construction — the test
+// skips elsewhere, so this never runs off-Windows.
+func runKillHelper() {
+	grand := exec.Command("cmd", "/c", "ping", "-n", "60", "127.0.0.1")
+	if err := grand.Start(); err != nil {
+		fmt.Fprintln(os.Stderr, "grandchild spawn:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("gpid %d\n", grand.Process.Pid)
+	time.Sleep(60 * time.Second)
+}
+
+// windowsProcessAlive reports whether a process with the given PID is
+// running, via tasklist. Delimiter-wrapped match so PID 123 does not
+// false-positive on 1234.
+func windowsProcessAlive(pid int) bool {
+	out, err := exec.Command("tasklist", "/NH", "/FO", "CSV", "/FI",
+		fmt.Sprintf("PID eq %d", pid)).CombinedOutput()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), fmt.Sprintf(`,"%d",`, pid))
+}
+
+// TestKillProcTree — killProc must tear down the whole descendant tree, not
+// just the direct child: the first fix attempt killed the helper directly
+// (TerminateProcess) and only reached taskkill on failure, orphaning
+// grandchildren of npx-wrapped servers.
+func TestKillProcTree(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("taskkill tree-kill semantics are Windows-only")
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(exe)
+	cmd.Env = append(os.Environ(), "PHAROS_KILL_HELPER=1")
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	line, err := bufio.NewReader(out).ReadString('\n')
+	if err != nil {
+		t.Fatalf("read grandchild pid: %v", err)
+	}
+	var gpid int
+	if _, err := fmt.Sscanf(strings.TrimSpace(line), "gpid %d", &gpid); err != nil {
+		t.Fatalf("parse %q: %v", line, err)
+	}
+
+	if err := killProc(cmd.Process.Pid); err != nil {
+		t.Fatalf("killProc(helper): %v", err)
+	}
+	_ = cmd.Wait() // helper reaped; exit status after /F kill is irrelevant
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if !windowsProcessAlive(gpid) {
+			return // tree gone — the ordering fix holds
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("grandchild %d survived killProc tree kill", gpid)
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
@@ -89,10 +90,25 @@ func Probe(ctx context.Context, command []string, env map[string]string, dir str
 		return nil, &ProbeError{Stage: "spawn", Err: errors.New("empty command")}
 	}
 	if timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
+		var tcancel context.CancelFunc
+		ctx, tcancel = context.WithTimeout(ctx, timeout)
+		defer tcancel()
 	}
+	// First ^C cancels the probe instead of killing the CLI process
+	// outright: cancellation funnels into close() (stdin close → tree
+	// kill), so the spawned server is cleaned up rather than orphaned.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt)
+	defer signal.Stop(sigs)
+	go func() {
+		select {
+		case <-sigs:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 
 	// ResolveSpawnExe gives PATH lookup plus the python→python3 fallback
 	// used everywhere else pharos spawns servers.
@@ -105,6 +121,12 @@ func Probe(ctx context.Context, command []string, env map[string]string, dir str
 	cmd.Dir = dir
 	cmd.Env = envWith(os.Environ(), env)
 	setProcGroup(cmd)
+	// Stderr goes straight to the tail buffer: os/exec guarantees Wait
+	// completes every copy into a Writer set on cmd.Stderr, so the tail is
+	// fully drained as soon as the reap is done (no reader goroutine to
+	// race — CI-exposed: TestProbeServerExitsEarly once saw an empty tail).
+	tail := &stderrTail{max: 10}
+	cmd.Stderr = tail
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -114,33 +136,14 @@ func Probe(ctx context.Context, command []string, env map[string]string, dir str
 	if err != nil {
 		return nil, &ProbeError{Stage: "spawn", Err: fmt.Errorf("stdout pipe: %w", err)}
 	}
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, &ProbeError{Stage: "spawn", Err: fmt.Errorf("stderr pipe: %w", err)}
-	}
 
 	if err := cmd.Start(); err != nil {
 		return nil, &ProbeError{Stage: "spawn", Err: err}
 	}
 
-	tail := &stderrTail{max: 10}
-	stderrDone := make(chan struct{})
-	go func() {
-		defer close(stderrDone)
-		_, _ = io.Copy(tail, stderrPipe)
-	}()
-
 	c := newClient(cmd, stdin)
 	caps, perr := c.run(ctx, stdout)
 	c.close()
-	// Drain guarantee: the stderr reader goroutine may not have flushed the
-	// final bytes when the child exit is detected (Wait returns before the
-	// pipe EOF is copied through). Wait for EOF before reading the tail —
-	// CI-exposed race: TestProbeServerExitsEarly saw an empty tail.
-	select {
-	case <-stderrDone:
-	case <-time.After(2 * time.Second):
-	}
 	if perr != nil {
 		return nil, &ProbeError{Stage: c.stage, Err: perr, StderrTail: tail.tail()}
 	}
@@ -206,17 +209,23 @@ type client struct {
 	seq     int64
 	stage   string
 	done    chan struct{} // closed by waitLoop after cmd.Wait returns
-	waitErr error
+	// stdoutEOF is closed by readLoop once stdout hits EOF. cmd.Wait must
+	// not run before that: Wait tears the pipe down concurrently with the
+	// reads, which can drop the final buffered response (os/exec: it is
+	// incorrect to call Wait before all reads have completed).
+	stdoutEOF chan struct{}
+	waitErr   error
 }
 
 func newClient(cmd *exec.Cmd, stdin io.WriteCloser) *client {
 	return &client{
-		cmd:     cmd,
-		stdin:   stdin,
-		pending: make(map[string]chan rpcMessage),
-		stage:   "initialize",
-		done:    make(chan struct{}),
-		seq:     1,
+		cmd:       cmd,
+		stdin:     stdin,
+		pending:   make(map[string]chan rpcMessage),
+		stage:     "initialize",
+		done:      make(chan struct{}),
+		stdoutEOF: make(chan struct{}),
+		seq:       1,
 	}
 }
 
@@ -355,8 +364,10 @@ func (c *client) call(ctx context.Context, method string, params any, result any
 }
 
 // readLoop parses stdout lines and routes responses to waiting calls.
-// Unparseable lines (server banners on stdout) are skipped.
+// Unparseable lines (server banners on stdout) are skipped. Closing
+// stdoutEOF signals the reaper that all reads are done.
 func (c *client) readLoop(stdout io.Reader) {
+	defer close(c.stdoutEOF)
 	reader := bufio.NewReaderSize(stdout, 64*1024)
 	for {
 		line, err := reader.ReadBytes('\n')
@@ -390,8 +401,15 @@ func (c *client) dispatch(line []byte) {
 	}
 }
 
-// waitLoop reaps the child; waitErr is published before done closes.
+// waitLoop reaps the child; waitErr is published before done closes. The
+// reap waits (bounded) for readLoop to reach EOF first, so the final
+// buffered response is dispatched before Wait tears the pipe down. A
+// server that never closes stdout can't stall the reap past the bound.
 func (c *client) waitLoop() {
+	select {
+	case <-c.stdoutEOF:
+	case <-time.After(2 * time.Second):
+	}
 	c.waitErr = c.cmd.Wait()
 	close(c.done)
 }

@@ -13,7 +13,7 @@ import (
 )
 
 // Version is the CLI version, set at build time via ldflags.
-var Version = "1.0.0"
+var Version = "1.1.0"
 
 // jsonFlag is the global --json flag.
 var jsonFlag bool

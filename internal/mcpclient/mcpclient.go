@@ -124,11 +124,23 @@ func Probe(ctx context.Context, command []string, env map[string]string, dir str
 	}
 
 	tail := &stderrTail{max: 10}
-	go func() { _, _ = io.Copy(tail, stderrPipe) }()
+	stderrDone := make(chan struct{})
+	go func() {
+		defer close(stderrDone)
+		_, _ = io.Copy(tail, stderrPipe)
+	}()
 
 	c := newClient(cmd, stdin)
 	caps, perr := c.run(ctx, stdout)
 	c.close()
+	// Drain guarantee: the stderr reader goroutine may not have flushed the
+	// final bytes when the child exit is detected (Wait returns before the
+	// pipe EOF is copied through). Wait for EOF before reading the tail —
+	// CI-exposed race: TestProbeServerExitsEarly saw an empty tail.
+	select {
+	case <-stderrDone:
+	case <-time.After(2 * time.Second):
+	}
 	if perr != nil {
 		return nil, &ProbeError{Stage: c.stage, Err: perr, StderrTail: tail.tail()}
 	}

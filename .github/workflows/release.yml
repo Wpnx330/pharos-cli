@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Download go modules
+        run: go mod download
+
+      # Guards against tag/version drift (W1.4.2 a0c12e2 flow, automated).
+      # Tags are v-prefixed; cmd/root.go var Version is not, so compare
+      # against the bare version via the --json output (no ANSI styling).
+      - name: Verify tag matches CLI version
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          if ! go run . version --json | grep -q "\"version\":\"$VER\""; then
+            echo "::error::Tag/version drift: tag is $GITHUB_REF_NAME but 'go run . version' does not report $VER (cmd/root.go var Version)"
+            exit 1
+          fi
+          echo "Tag $GITHUB_REF_NAME matches CLI version $VER"
+
+      # One build per target, copied under both naming schemes:
+      #   pharos_{ver}_{os}_{arch}[.exe]  <- install.ps1 / install.sh resolve
+      #   pharos-{os}-{arch}[.exe]        <- legacy/dash naming (release notes)
+      - name: Build binaries
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          build() {
+            goos=$1; goarch=$2; ext=$3
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+              go build -trimpath -ldflags "-s -w" -o "dist/pharos_${VER}_${goos}_${goarch}${ext}" .
+            cp "dist/pharos_${VER}_${goos}_${goarch}${ext}" "dist/pharos-${goos}-${goarch}${ext}"
+          }
+          build darwin  amd64 ""
+          build darwin  arm64 ""
+          build linux   amd64 ""
+          build linux   arm64 ""
+          build windows amd64 ".exe"
+          ls -l dist
+
+      - name: Generate SHA256SUMS
+        run: |
+          cd dist
+          sha256sum pharos_* pharos-* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create release and upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --draft=false \
+            dist/*

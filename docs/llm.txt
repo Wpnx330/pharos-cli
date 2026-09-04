@@ -219,13 +219,17 @@ NON-INTERACTIVE: no prompts
 SHORT: Import existing MCP server configs into a pharos.lock
 USAGE: pharos import [flags]
 FLAGS:
+  --adopt <bool> (default: false) adopt every detected client config as the managed baseline (pharos.lock + ~/.pharos/mcp.json); conflicts prompt unless --yes/--json/PHAROS_NON_INTERACTIVE
   --as-unmanaged <bool> (default: false) track unresolved servers without dropping them
   --client <string> (default: ) import from a specific client only (claude-desktop, cursor, generic)
+  --dry-run <bool> (default: false) with --adopt: full adopt report without writing lockfile, canonical, or client files
+  --from <string> (default: ) alias of --client: import/adopt from a specific client only
   --help <bool> (default: false) help for import
   --json <bool> (default: false) output as JSON
-OUTPUT: JSON: {lockfile, resolved, unresolved, servers: [{name, version, status}]}. Plain: per-server report + summary line
-ENV: PHAROS_JSON=1 or --json
-NON-INTERACTIVE: no prompts; requires registry access to resolve servers
+  --yes <bool> (default: false) with --adopt: auto-resolve conflicts using the first client's config (also PHAROS_ASSUME_YES=1)
+OUTPUT: Plain import JSON: {lockfile, resolved, unresolved, servers: [{name, version, status}]}. With --adopt: JSON: {mode: "adopt", dry_run, lockfile, canonical, clients_scanned, found, adopted, conflicts, conflicts_resolved, conflicts_skipped, unresolved_in_registry, servers: [{name, clients, status: adopted|conflict-resolved|conflict-auto-resolved|conflict-skipped, version, source_client, use_everywhere, conflict: {variants: [{clients, config}], resolution}}], warnings?, next}. Plain: per-server report + summary line; adopt exit code 1 when any conflict was skipped
+ENV: PHAROS_JSON=1 or --json (JSON mode never prompts: adopt conflicts are reported and skipped unless --yes); PHAROS_ASSUME_YES=1 or --yes auto-resolves adopt conflicts (first detected client's config wins); PHAROS_NON_INTERACTIVE=1 without --yes auto-skips adopt conflicts (non-conflicts still adopt). Known comparison edges: adopt compares entries with doctor --diff's exact rules, so the known edges listed in README.md ("Known comparison edges" — unsorted OpenCode env arrays, unquoted TOML booleans, redundant type fields, multi-word command / bare-URL entries) compare as different, never silently merge
+NON-INTERACTIVE: no prompts when --yes / PHAROS_ASSUME_YES=1 / --json / PHAROS_NON_INTERACTIVE is set; interactive adopt conflicts prompt (pick 1-N, u[N] = use N everywhere, s = skip); registry access is best-effort version enrichment — unresolved servers still adopt
 
 # COMMAND: pharos info
 SHORT: Show detailed information about a package

@@ -17,6 +17,10 @@ import (
 var importAsUnmanaged bool
 var importClient string
 var importJSON bool
+var importAdopt bool
+var importFrom string
+var importDryRun bool
+var importYes bool
 
 // importEntry is one server row in the import JSON report.
 type importEntry struct {
@@ -40,10 +44,54 @@ var importCmd = &cobra.Command{
 and resolves each listed server against the PHAROS registry, populating
 pharos.lock with resolved versions and integrity hashes.
 
-Use --client <id> to import from a specific client only (claude-desktop, cursor, vscode, windsurf, gemini, amazonq, roo-code, cline, opencode, hermes, codex, grok, zed, aider, generic).
-Use --as-unmanaged to track unresolved servers without dropping them.`,
+Use --client <id> (alias --from) to import from a specific client only (claude-desktop, cursor, vscode, windsurf, gemini, amazonq, roo-code, cline, opencode, hermes, codex, grok, zed, aider, generic).
+Use --as-unmanaged to track unresolved servers without dropping them.
+
+Use --adopt for one-command onboarding: every detected client config is
+deduped into pharos.lock + ~/.pharos/mcp.json as the managed baseline.
+Conflicts (same server, materially different config across clients) are
+resolved interactively (or via --yes / --json / PHAROS_NON_INTERACTIVE).
+--dry-run previews the full adopt report without writing anything.
+Adopt reads your client configs; it never rewrites them (except an
+explicit "use everywhere" conflict choice).
+After adopting, run 'pharos doctor --diff' to verify clean state.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		_, client := loadConfig()
+		client, err := resolveImportFromAlias(importClient, importFrom)
+		if err != nil {
+			return err
+		}
+		importClient = client
+
+		if importAdopt {
+			_, apiClient := loadConfig()
+			report, code, adoptErr := runAdoptImport(adoptOptions{
+				Client: importClient,
+				Yes:    importYes,
+				DryRun: importDryRun,
+				API:    apiClient,
+			})
+			if adoptErr != nil {
+				fmt.Fprintln(os.Stderr, ui.Error.Render("Adopt failed:"), adoptErr)
+				os.Exit(1)
+			}
+			if JSONRequested() {
+				if err := printAdoptJSON(report); err != nil {
+					return err
+				}
+			} else {
+				printAdoptHuman(report)
+			}
+			if code != 0 {
+				os.Exit(1)
+			}
+			return nil
+		}
+
+		if importDryRun {
+			return fmt.Errorf("--dry-run requires --adopt")
+		}
+
+		_, clientAPI := loadConfig()
 
 		// Detect clients
 		var clients []clientconfig.Client
@@ -99,7 +147,7 @@ Use --as-unmanaged to track unresolved servers without dropping them.`,
 			sort.Strings(names)
 
 			for _, name := range names {
-				pkg, err := client.GetPackage(name)
+				pkg, err := clientAPI.GetPackage(name)
 				if err != nil {
 					unresolved++
 					report.Unresolved++
@@ -172,9 +220,26 @@ func printImportJSON(report *importReport) error {
 	return nil
 }
 
+// resolveImportFromAlias merges the --from alias into --client. Both are
+// accepted (per SPEC A2 --from replaces --client; --client keeps working);
+// setting both to different values is an error.
+func resolveImportFromAlias(client, from string) (string, error) {
+	if from == "" {
+		return client, nil
+	}
+	if client != "" && client != from {
+		return "", fmt.Errorf("--client and --from are aliases; set only one")
+	}
+	return from, nil
+}
+
 func init() {
 	importCmd.Flags().BoolVar(&importAsUnmanaged, "as-unmanaged", false, "track unresolved servers without dropping them")
 	importCmd.Flags().StringVar(&importClient, "client", "", "import from a specific client only (claude-desktop, cursor, generic)")
+	importCmd.Flags().StringVar(&importFrom, "from", "", "alias of --client: import/adopt from a specific client only")
+	importCmd.Flags().BoolVar(&importAdopt, "adopt", false, "adopt every detected client config as the managed baseline (pharos.lock + ~/.pharos/mcp.json); conflicts prompt unless --yes/--json/PHAROS_NON_INTERACTIVE")
+	importCmd.Flags().BoolVar(&importDryRun, "dry-run", false, "with --adopt: full adopt report without writing lockfile, canonical, or client files")
+	importCmd.Flags().BoolVar(&importYes, "yes", false, "with --adopt: auto-resolve conflicts using the first client's config (also PHAROS_ASSUME_YES=1)")
 	importCmd.Flags().BoolVar(&importJSON, "json", false, "output as JSON")
 	rootCmd.AddCommand(importCmd)
 }

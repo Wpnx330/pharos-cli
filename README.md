@@ -66,6 +66,7 @@ pharos stop <name>             # Stop a running MCP server
 pharos update [name]           # Check for and apply updates to installed servers — installs the new version and rewrites affected client configs
 pharos lock                    # Resolve dependencies and write ./pharos.lock
 pharos import                  # Import existing MCP client configs into a pharos.lock
+pharos import --adopt          # One-command onboarding: adopt every detected client config as the managed baseline (conflicts resolved interactively)
 pharos remove <name>           # Remove a locally installed package
 pharos remove <name> --force   # Remove even if other packages depend on it (not a confirm skip)
 
@@ -251,6 +252,42 @@ Safe writes guarantee *pharos* never corrupts a config — but nothing stopped a
 ```
 
 Only compared fields (`command`, `args`, `env`, `url`, `type`) count; reformatting (key order, whitespace, empty containers) never counts as drift, and unknown user keys inside an entry are left alone. Numeric env/args spellings (`PORT = 8080` vs `"8080"`) are not drift, Grok remote `headers` are compared like `env`, and `--client` subset installs read as healthy for clients they were never written to (lockfile records which clients received each server). Clients pharos has never written to are skipped silently — including a client whose config file has been deleted outright (recreate it with `pharos install`; per-server MISSING findings are not emitted for a whole missing file). Under `PHAROS_JSON=1` the findings appear on the drift checks in the doctor JSON report.
+
+## Import & Adopt
+
+`pharos import --adopt` is one-command onboarding: it reads every detected client config, dedupes servers by name, and writes them into the managed baseline (`pharos.lock` + `~/.pharos/mcp.json`) so pharos becomes the source of truth with zero re-work. Adopt **reads** your client configs — it never rewrites them (except the explicit "use everywhere" conflict choice below). After a clean adopt (or one where every conflict used "use everywhere"), `pharos doctor --diff` reads every client as clean. If you resolved a conflict by picking one variant, clients keeping other variants will intentionally show as MODIFIED drift — that's the record of which variant won; resolve with "use everywhere" or edit to taste.
+
+```bash
+pharos import --adopt            # Adopt every detected client config as the managed baseline
+pharos import --adopt --from cursor   # Adopt only Cursor's set (alias of --client cursor)
+pharos import --adopt --dry-run  # Full report + conflict list, writes nothing
+pharos import --adopt --yes      # Auto-resolve conflicts (first detected client's config wins)
+pharos import --adopt --json     # Machine report; conflicts reported, never prompted
+pharos import --client cursor    # Plain import (dependency-resolution oriented, no canonical write)
+```
+
+| Flag | Applies to | Behavior |
+|------|-----------|----------|
+| `--adopt` | adopt mode | Dedupe all detected client configs into `pharos.lock` + `~/.pharos/mcp.json`. Servers unresolved in the registry still adopt as managed (version empty) — your config is the truth; registry resolution is best-effort version/integrity enrichment. |
+| `--from <id>` / `--client <id>` | both | Import/adopt from one client only. `--from` is an alias of `--client`; setting both to different values is an error. |
+| `--dry-run` | `--adopt` | Full adopt report — including conflict resolution — without writing the lockfile, canonical config, or any client file. |
+| `--yes` | `--adopt` | Auto-resolve conflicts: the **first detected client's** config wins (deterministic `Detect()` order), marked `conflict-auto-resolved`. Also `PHAROS_ASSUME_YES=1`. |
+| `--json` / `PHAROS_JSON=1` | both | Pure stdout JSON, no prompts ever. Conflicting servers carry both configs in the report and are skipped (adopting the rest) unless `--yes` is also set. |
+
+**Conflict resolution.** The same server name with materially different configs across clients (compared with the exact same field rules `doctor --diff` uses — identical-except-cosmetic never conflicts, numeric env spellings don't false-conflict) is a conflict. Interactively, each conflict shows the variants side-by-side with a per-field diff and a prompt: pick `1`-`N` to adopt that variant, `u`/`u<N>` to **use it everywhere** (the picked config is written to every client that has the server — that's the resolution promise), or `s` to skip. Non-interactive runs (`PHAROS_NON_INTERACTIVE=1` without `--yes`) auto-skip conflicts and adopt the rest. Known edge: entries that deviate from pharos's own serialization shape (hand-written unsorted OpenCode env arrays, unquoted TOML booleans, redundant type fields) compare as different — same rules `doctor --diff` applies.
+
+**Known comparison edges.** Adopt reuses `doctor --diff`'s comparison rules verbatim, so it inherits that command's known edge cases: an entry that deviates from pharos's own serialization shape compares as **different** — a conflict during adopt, a MODIFIED finding in `doctor --diff` — never silently merged. The known edges:
+
+- Hand-written unsorted OpenCode `env` arrays (pharos serializes env sorted, so an unsorted hand-written array reads as a different entry)
+- Unquoted TOML boolean env values (`DEBUG = true` in Codex/Grok TOML vs `"true"` in pharos's serialization)
+- Redundant `"type": "stdio"` fields where pharos's serialization for that client omits the type (e.g. hand-added type on a Cursor stdio entry)
+- Multi-word `command` strings (`"node server.js"` as one string, where pharos records `command` + `args` separately) and bare-URL remote entries (`url` with no explicit type, where pharos's serialization always carries a typed remote shape)
+
+Resolve any of these by picking the variant (or "use everywhere") and editing to taste — the comparison rules are never relaxed, because consistency with `doctor --diff` is the contract.
+
+**Exit codes**: `0` = clean adopt (all conflicts resolved or none); `1` = any conflict skipped — agents can detect and re-run with `--yes` or prompt the user.
+
+**Report**: found N servers across M clients; per-server rows `{name, clients[], status, version}` with status `adopted` | `conflict-resolved` | `conflict-auto-resolved` | `conflict-skipped`, always ending with `Run 'pharos doctor --diff' to verify clean state.`
 
 ### Supported client formats
 

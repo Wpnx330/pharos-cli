@@ -98,9 +98,9 @@ var llmNotes = map[string]llmNote{
 		ni:     "no prompts; requires registry access",
 	},
 	"pharos import": {
-		output: "JSON: {lockfile, resolved, unresolved, servers: [{name, version, status}]}. Plain: per-server report + summary line",
-		env:    "PHAROS_JSON=1 or --json",
-		ni:     "no prompts; requires registry access to resolve servers",
+		output: "Plain import JSON: {lockfile, resolved, unresolved, servers: [{name, version, status}]}. With --adopt: JSON: {mode: \"adopt\", dry_run, lockfile, canonical, clients_scanned, found, adopted, conflicts, conflicts_resolved, conflicts_skipped, unresolved_in_registry, servers: [{name, clients, status: adopted|conflict-resolved|conflict-auto-resolved|conflict-skipped, version, source_client, use_everywhere, conflict: {variants: [{clients, config}], resolution}}], warnings?, next}. Plain: per-server report + summary line; adopt exit code 1 when any conflict was skipped",
+		env:    "PHAROS_JSON=1 or --json (JSON mode never prompts: adopt conflicts are reported and skipped unless --yes); PHAROS_ASSUME_YES=1 or --yes auto-resolves adopt conflicts (first detected client's config wins); PHAROS_NON_INTERACTIVE=1 without --yes auto-skips adopt conflicts (non-conflicts still adopt). Known comparison edges: adopt compares entries with doctor --diff's exact rules, so the known edges listed in README.md (\"Known comparison edges\" — unsorted OpenCode env arrays, unquoted TOML booleans, redundant type fields, multi-word command / bare-URL entries) compare as different, never silently merge",
+		ni:     "no prompts when --yes / PHAROS_ASSUME_YES=1 / --json / PHAROS_NON_INTERACTIVE is set; interactive adopt conflicts prompt (pick 1-N, u[N] = use N everywhere, s = skip); registry access is best-effort version enrichment — unresolved servers still adopt",
 	},
 	"pharos info": {
 		output: "JSON: full registry package detail (name, dist_tags, versions[] with manifest). Plain: labeled detail sections",

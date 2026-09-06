@@ -21,9 +21,11 @@ var auditCmd = &cobra.Command{
 	Use:   "audit",
 	Short: "Scan installed servers for known security vulnerabilities",
 	Long: ui.Label.Render("pharos audit") + ` checks every server in pharos.lock (or detected client
-configs if no lockfile exists) against the PHAROS security advisory database.
+configs if no lockfile exists) against the PHAROS security advisory database
+and shows each server's registry security scorecard grade.
 
-Exit code is 1 if any vulnerable versions are found.`,
+Exit code is 1 if any vulnerable versions are found. The scorecard grade
+is advisory-only — it never affects the exit code.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		_, client := loadConfig()
 
@@ -62,7 +64,11 @@ type auditEntry struct {
 	Server     string         `json:"server"`
 	Version    string         `json:"version"`
 	Advisories []api.Advisory `json:"advisories"`
-	Error      string         `json:"error,omitempty"`
+	// Scorecard is the registry's security grade for the package
+	// ({"score": 77, "grade": "B"}), omitted when unscored, federated,
+	// or when the scorecard lookup failed.
+	Scorecard *api.ScorecardSummary `json:"scorecard,omitempty"`
+	Error     string                `json:"error,omitempty"`
 }
 
 // serverInfo is a minimal server representation for audit scanning.
@@ -71,7 +77,9 @@ type serverInfo struct {
 	Version string
 }
 
-// runAudit queries the registry for advisories on each server.
+// runAudit queries the registry for advisories on each server, plus the
+// package's security scorecard grade (display-only; a failed scorecard
+// lookup never fails the audit).
 func runAudit(client *api.Client, servers []serverInfo) *auditReport {
 	report := &auditReport{Total: len(servers)}
 
@@ -82,6 +90,9 @@ func runAudit(client *api.Client, servers []serverInfo) *auditReport {
 			entry.Error = err.Error()
 		} else {
 			entry.Advisories = filterApplicable(advisories, s.Version)
+		}
+		if sc, err := client.GetScorecard(s.Name); err == nil && sc.Scored && sc.Score != nil {
+			entry.Scorecard = &api.ScorecardSummary{Score: *sc.Score, Grade: sc.Grade}
 		}
 		report.Entries = append(report.Entries, entry)
 		report.Scanned++
@@ -196,6 +207,7 @@ func formatAuditReport(report *auditReport) string {
 	cols := []ui.TableColumn{
 		{Title: "SERVER", Width: 24, MaxWidth: 0},
 		{Title: "VERSION", Width: 10, MaxWidth: 10},
+		{Title: "SECURITY", Width: 10, MaxWidth: 12},
 		{Title: "ADVISORY", Width: 16, MaxWidth: 16},
 		{Title: "SEVERITY", Width: 10, MaxWidth: 10},
 		{Title: "FIXED IN", Width: 10, MaxWidth: 10},
@@ -210,6 +222,7 @@ func formatAuditReport(report *auditReport) string {
 			rows = append(rows, ui.TableRow{
 				ui.PackageName.Render(entry.Server),
 				entry.Version,
+				auditScorecardCell(entry.Scorecard),
 				ui.Muted.Render("none"),
 				ui.Success.Render("ok"),
 				"",
@@ -221,6 +234,7 @@ func formatAuditReport(report *auditReport) string {
 			rows = append(rows, ui.TableRow{
 				ui.PackageName.Render(entry.Server),
 				entry.Version,
+				auditScorecardCell(entry.Scorecard),
 				ui.Muted.Render("error"),
 				ui.Muted.Render("—"),
 				"",
@@ -233,6 +247,7 @@ func formatAuditReport(report *auditReport) string {
 			rows = append(rows, ui.TableRow{
 				ui.PackageName.Render(entry.Server),
 				entry.Version,
+				auditScorecardCell(entry.Scorecard),
 				adv.ID,
 				severityStyle(adv.Severity),
 				adv.FixedIn,
@@ -262,6 +277,27 @@ func severityStyle(sev string) string {
 		return ui.Label.Render(sev)
 	default:
 		return ui.Muted.Render(sev)
+	}
+}
+
+// auditScorecardCell renders the SECURITY column of the audit table:
+// the score and grade coloured by band (A/B green, C amber, D/F red)
+// when scored, a muted dash otherwise (unscored, federated, or lookup
+// failure). Display-only — the grade never affects the exit code.
+func auditScorecardCell(sc *api.ScorecardSummary) string {
+	if sc == nil {
+		return ui.Muted.Render(listDash)
+	}
+	cell := fmt.Sprintf("%d (%s)", sc.Score, sc.Grade)
+	switch sc.Grade {
+	case "A", "B":
+		return ui.Success.Render(cell)
+	case "C":
+		return ui.Label.Render(cell)
+	case "D", "F":
+		return ui.Error.Render(cell)
+	default:
+		return cell
 	}
 }
 

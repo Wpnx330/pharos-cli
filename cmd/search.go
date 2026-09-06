@@ -103,11 +103,12 @@ func searchNextPageHint(query string, page int, registry, transport, nextCursor 
 // searchTableColumns is the human table header for `pharos search`.
 // TRANSPORT and REGISTRY sit after VERSION so a hit's protocol and
 // originating catalog are visible without --json. OWNER (publisher
-// namespace) and CATEGORY are the trust/signal columns from spec B2;
-// they share the desktop budget with DESCRIPTION, whose MaxWidth
-// shrinks to compensate. Narrow terminals are handled by the same
-// per-column MaxWidth truncation as before (the table renderer has no
-// terminal-width presets — MaxWidth discipline is the narrow-mode plan).
+// namespace), CATEGORY and SECURITY (scorecard grade) are the
+// trust/signal columns from spec B2/B1; they share the desktop budget
+// with DESCRIPTION, whose MaxWidth shrinks to compensate. Narrow
+// terminals are handled by the same per-column MaxWidth truncation as
+// before (the table renderer has no terminal-width presets — MaxWidth
+// discipline is the narrow-mode plan).
 func searchTableColumns() []ui.TableColumn {
 	return []ui.TableColumn{
 		{Title: "NAME", Width: 20, MaxWidth: 0},
@@ -116,7 +117,8 @@ func searchTableColumns() []ui.TableColumn {
 		{Title: "REGISTRY", Width: 10, MaxWidth: 16},
 		{Title: "OWNER", Width: 10, MaxWidth: 18},
 		{Title: "CATEGORY", Width: 10, MaxWidth: 16},
-		{Title: "DESCRIPTION", Width: 24, MaxWidth: 40},
+		{Title: "SECURITY", Width: 9, MaxWidth: 12},
+		{Title: "DESCRIPTION", Width: 24, MaxWidth: 32},
 		{Title: "DOWNLOADS", Width: 10, MaxWidth: 10},
 	}
 }
@@ -151,9 +153,22 @@ func searchTableRow(r api.SearchResult) ui.TableRow {
 		searchCellOrDash(r.SourceRegistry),
 		searchCellOrDash(string(r.Publisher)),
 		searchCellOrDash(r.Category),
+		formatSearchScorecard(r.Scorecard),
 		r.Description,
 		formatSearchDownloads(r.Downloads),
 	}
+}
+
+// formatSearchScorecard renders the SECURITY cell: "77 (B)" when the
+// registry scored the package, the list dash when the scorecard is nil
+// (unscored, federated, or an older registry without the field). Kept
+// plain-text so the cell stays grep- and test-friendly; the score is
+// display-only and never reorders results (relevance score is separate).
+func formatSearchScorecard(sc *api.ScorecardSummary) string {
+	if sc == nil {
+		return listDash
+	}
+	return fmt.Sprintf("%d (%s)", sc.Score, sc.Grade)
 }
 
 // searchVersionCell appends the registry's version_status to the version

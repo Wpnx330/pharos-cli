@@ -143,6 +143,12 @@ var infoCmd = &cobra.Command{
 			printMeta("Git Repo", repo)
 		}
 
+		// Security scorecard — the registry-computed heuristic grade.
+		// Always shown: "Not scored" is a distinct state from a low
+		// score (federated packages are never graded; native packages
+		// are scored shortly after publish).
+		printMeta("Security", formatInfoScorecard(pkg.Scorecard))
+
 		// Dates — show Created/Modified for native packages,
 		// Last Sync for synced packages (created/modified are
 		// internal-only for synced entries).
@@ -244,6 +250,17 @@ func infoLookupHint(err error) string {
 		return "use the exact PACKAGE ID from search (quote it if it has spaces)"
 	}
 	return ""
+}
+
+// formatInfoScorecard renders the Security line for `pharos info`:
+// "77/100 (B)" when the package has been scored, muted "Not scored"
+// otherwise (federated packages, pending scores, and older registries
+// that omit the field all land here).
+func formatInfoScorecard(sc *api.ScorecardDetail) string {
+	if sc == nil {
+		return ui.Muted.Render("Not scored")
+	}
+	return fmt.Sprintf("%d/100 (%s)", sc.Score, sc.Grade)
 }
 
 // formatDate extracts the date portion (YYYY-MM-DD) from an ISO 8601

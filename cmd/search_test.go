@@ -10,7 +10,7 @@ import (
 
 func TestSearchTableColumnsOrder(t *testing.T) {
 	cols := searchTableColumns()
-	want := []string{"NAME", "VERSION", "TRANSPORT", "REGISTRY", "OWNER", "CATEGORY", "DESCRIPTION", "DOWNLOADS"}
+	want := []string{"NAME", "VERSION", "TRANSPORT", "REGISTRY", "OWNER", "CATEGORY", "SECURITY", "DESCRIPTION", "DOWNLOADS"}
 	if len(cols) != len(want) {
 		t.Fatalf("column count = %d, want %d (%v)", len(cols), len(want), titlesOf(cols))
 	}
@@ -48,6 +48,10 @@ func TestSearchTableNewSignalColumnsHaveMaxWidthCaps(t *testing.T) {
 			if c.MaxWidth != 16 {
 				t.Errorf("CATEGORY MaxWidth = %d, want 16", c.MaxWidth)
 			}
+		case "SECURITY":
+			if c.MaxWidth != 12 {
+				t.Errorf("SECURITY MaxWidth = %d, want 12", c.MaxWidth)
+			}
 		}
 	}
 }
@@ -63,8 +67,8 @@ func TestSearchTableRowPopulatedTransportAndRegistry(t *testing.T) {
 		Publisher:      "moodmnky",
 		Category:       "lifestyle",
 	})
-	if len(row) != 8 {
-		t.Fatalf("row cells = %d, want 8: %#v", len(row), row)
+	if len(row) != 9 {
+		t.Fatalf("row cells = %d, want 9: %#v", len(row), row)
 	}
 	if row[1] != "0.0.0" {
 		t.Errorf("VERSION = %q, want API value 0.0.0 (do not invent a version)", row[1])
@@ -81,11 +85,14 @@ func TestSearchTableRowPopulatedTransportAndRegistry(t *testing.T) {
 	if row[5] != "lifestyle" {
 		t.Errorf("CATEGORY = %q, want lifestyle", row[5])
 	}
-	if row[6] == "" {
+	if row[6] != listDash {
+		t.Errorf("SECURITY = %q, want %q when no scorecard is sent", row[6], listDash)
+	}
+	if row[7] == "" {
 		t.Error("DESCRIPTION is empty")
 	}
-	if row[7] != "0" {
-		t.Errorf("DOWNLOADS = %q, want 0", row[7])
+	if row[8] != "0" {
+		t.Errorf("DOWNLOADS = %q, want 0", row[8])
 	}
 }
 

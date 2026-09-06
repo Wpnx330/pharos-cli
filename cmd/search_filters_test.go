@@ -23,12 +23,13 @@ import (
 
 // searchCorpus is the fixture catalog the stand-in registry filters over.
 // echo-stdio carries the spec B2 trust signals (publisher/category/
-// tools_count/version_status); echo-legacy omits them all to cover the
-// empty-signal display path.
+// tools_count/version_status) plus a B1 scorecard grade; echo-legacy
+// omits them all to cover the empty-signal display path.
 var searchCorpus = []api.SearchResult{
 	{Name: "echo-http", Version: "1.0.0", Description: "echo over http", Transport: []string{"http"}, SourceRegistry: "pharos"},
 	{Name: "echo-http-mirror", Version: "1.1.0", Description: "echo over http", Transport: []string{"http"}, SourceRegistry: "mcp.io", Downloads: 1234},
-	{Name: "echo-stdio", Version: "2.0.0", Description: "echo over stdio", Transport: []string{"stdio"}, SourceRegistry: "pharos", Publisher: "acme-tools", Category: "developer-tools", ToolsCount: 5},
+	{Name: "echo-stdio", Version: "2.0.0", Description: "echo over stdio", Transport: []string{"stdio"}, SourceRegistry: "pharos", Publisher: "acme-tools", Category: "developer-tools", ToolsCount: 5,
+		Scorecard: &api.ScorecardSummary{Score: 77, Grade: "B"}},
 	{Name: "echo-dual", Version: "3.0.0", Description: "echo over both", Transport: []string{"stdio", "http"}, SourceRegistry: "mcp.io", VersionStatus: "stale"},
 	{Name: "echo-legacy", Version: "0.0.1", Description: "echo, no metadata", SourceRegistry: "mcp.io"},
 }
@@ -329,6 +330,36 @@ func TestSearchTableShowsSignalColumns(t *testing.T) {
 	}
 	if !strings.Contains(out, "3.0.0 (stale)") {
 		t.Errorf("version_status suffix missing from table:\n%s", out)
+	}
+	if !strings.Contains(out, "SECURITY") {
+		t.Errorf("SECURITY header missing from table:\n%s", out)
+	}
+	if !strings.Contains(out, "77 (B)") {
+		t.Errorf("scorecard grade cell missing from table:\n%s", out)
+	}
+}
+
+// TestSearchJSONRoundTripsScorecard asserts the B1 scorecard survives the
+// CLI's --json echo in both states: the graded hit carries the summary
+// object and the unscored hit echoes the registry's explicit null.
+func TestSearchJSONRoundTripsScorecard(t *testing.T) {
+	var queries []url.Values
+	srv := startTestRegistry(t, &queries)
+	pointCLIAtRegistry(t, srv.URL)
+
+	results := decodeResults(t, runSearch(t, "echo", "--json"))
+
+	byName := make(map[string]api.SearchResult, len(results))
+	for _, r := range results {
+		byName[r.Name] = r
+	}
+	scored := byName["echo-stdio"]
+	if scored.Scorecard == nil || scored.Scorecard.Score != 77 || scored.Scorecard.Grade != "B" {
+		t.Errorf("--json scorecard = %+v, want 77/B round-tripped", scored.Scorecard)
+	}
+	legacy := byName["echo-legacy"]
+	if legacy.Scorecard != nil {
+		t.Errorf("--json scorecard for unscored hit = %+v, want nil", legacy.Scorecard)
 	}
 }
 

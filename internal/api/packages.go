@@ -36,6 +36,10 @@ type PackageDetail struct {
 	// Category is the registry catalog category, shown by `pharos info`
 	// when present.
 	Category string `json:"category,omitempty"`
+	// Scorecard is the full security scorecard, present only when the
+	// package has been scored (absent for federated and not-yet-scored
+	// native packages — those are surfaced by the scorecard endpoint).
+	Scorecard *ScorecardDetail `json:"scorecard,omitempty"`
 }
 
 // VersionDetail is a version entry embedded in PackageDetail.

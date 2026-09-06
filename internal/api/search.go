@@ -36,6 +36,11 @@ type SearchResult struct {
 	// VersionStatus is the lifecycle status of the served version,
 	// e.g. "active", "stale", "deprecated".
 	VersionStatus string `json:"version_status,omitempty"`
+	// Scorecard is the security scorecard summary. The registry sends
+	// null for unscored and federated packages (and older registries
+	// omit the key); both parse to a nil pointer. The tag has no
+	// omitempty so --json echoes the registry's explicit-null contract.
+	Scorecard *ScorecardSummary `json:"scorecard"`
 }
 
 // Publisher is the publisher namespace flattened from the registry's

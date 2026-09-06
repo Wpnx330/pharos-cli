@@ -3,7 +3,7 @@
      App dev (CLI/registry/SDK) AND web dev both mirror progress here.
      Handoffs referencing this spec: TRON/temp/handoff-app-dev-v1.1.md,
      TRON/temp/handoff-web-dev-v1.1.md
-     Last updated: 2026-09-02 08:55 ET by TRON (W1.3 shipped)
+     Last updated: 2026-09-06 ET by TRON — audit pass: W1-W3 + v1.1.0 verified live, site Waves A-E1 verified deployed
 ════════════════════════════════════════════════════════════════ -->
 
 # PHAROS v1.1 Spec — Parity Plus — STATE TRACKER
@@ -19,8 +19,8 @@
 | RELEASE | v1.1.0 shipped | 🟢 LIVE (Sep 4) — tag v1.1.0, 11 assets (both naming variants), installers resolve latest→v1.1.0; full Wave-1 train: A7 + C5 + B2 + B3 + MSIX + windows CI; release notes list all features | users | [v1.1.0](https://github.com/Wpnx330/pharos-cli/releases/tag/v1.1.0) |
 | W2.1 | pharos import --adopt (A2 onboarding) | 🟢 DONE (Sep 4, 2eae99a) — read all clients, dedupe, managed baseline; conflict UX (pick/use-everywhere/skip, --yes, dry-run); W1.1 contract (JSON purity, env contract, exit codes); orphans preserved; external review F1-F5 fixed (README truthful drift framing, 3 contract tests, known-edges disclosed, prompt nit, dry-run probe); live QA: dedupe+conflict+adopt→doctor clean | app dev | pharos-cli 2eae99a |
 | Wave-R | release.yml + install.ps1 MOTW fix | 🟢 DONE (Sep 4, 5f00d06 + pharos-web c20bdca) — tag-triggered release workflow (dual naming, drift guard, SHA256SUMS, --generate-notes); Unblock-File silent insert in installer; live proof = next install on AppLocker PC | infra | pharos-cli 5f00d06 / pharos-web c20bdca |
-| site | Wave D: v1.1.0 docs parity (doctor --diff, receipts v2, trust signals, agent contract, MSIX FAQ) + getPackage retry/timeout (crawler 404 fix) | 🟢 BUILT+QA (Sep 4) | web dev | reviewer PASS 6/6; pending deploy |
-| site | Wave E1: PHAROS vs Smithery comparison page (hosted-connect vs local-control), cross-links vs-mcpm, sitemap/llms/footer wiring | 🟢 BUILT+QA (Sep 4) | web dev | reviewer PASS 7/7, 2 copy nits closed; pending deploy |
+| site | Wave D: v1.1.0 docs parity (doctor --diff, receipts v2, trust signals, agent contract, MSIX FAQ) + getPackage retry/timeout (crawler 404 fix) | 🟢 BUILT+QA (Sep 4) | web dev | reviewer PASS 6/6; deployed (verified live Sep 6) |
+| site | Wave E1: PHAROS vs Smithery comparison page (hosted-connect vs local-control), cross-links vs-mcpm, sitemap/llms/footer wiring | 🟢 BUILT+QA (Sep 4) | web dev | reviewer PASS 7/7, 2 copy nits closed; deployed (verified live Sep 6) |
 
 ### Wave-1 shipped summary (for web-dev parity — v1.1.0 LIVE Sep 4)
 
@@ -33,7 +33,6 @@ New user-facing surfaces in v1.1.0 (docs/pages should reflect ALL of these):
 6. **`mcp.directory` sixth registry source** — 1,700+ extra packages; update any "sources" list on the site.
 7. **Version** — everything above is live in v1.1.0 binaries (installers resolve it automatically). Windows CI green.
 
-| W2.1 | A2 pharos adopt | ⚪ pending | app dev | — |
 | W2.2 | A1 profiles (opt-in, client-mapped) | 🟢 DONE (Sep 4, 8790b7c) — profiles.json state, create/add/rm/ls/run + install --profile; use = plan-first reconcile (dry-run/strict/yes), non-mapped clients never touched, lockfile Clients[] reconciled; W1.1 contract incl. rm-json decline doc; all-failed exit 1 + FAILED block; ext review core-solid + M1/M2/L1-L6 fixed; +14 tests (26/26), race-clean | app dev | pharos-cli 8790b7c |
 | W3.1 | A3 brew/scoop | 🟢 CI (Sep 4, 65fdfd6) — release.yml archives (tar/zip+SHAs) + ERB formula/scoop templates → auto-bump Wpnx330/homebrew-pharos + Scoop-Bucket on tag; HOMEBREW_TAP_TOKEN secret required (contents:write both repos); README+llm.txt install sections; no GoReleaser. LIVE after: Chris creates 2 repos + sets secret + tags next release | app dev | pharos-cli 65fdfd6 |
 | W3.2 | A4 pharos try | 🟢 DONE (Sep 4, 24565cd+2475925) — internal/mcpclient (JSON-RPC over stdio, zero deps, timeouts, drain-before-Wait); try cmd: caps summary, exit 1+stderr-tail honesty, exit 2+hint+JSON doc, --inspect (npx-gated, win PATHEXT verified); ext review CHANGES-REQUESTED → fixed (win tree-kill taskkill-first, Wait-vs-pipe race, claims honesty, pre-flight JSON docs); 20 tests; CI green both jobs (2475925); live e2e QA vs spawned fake server | app dev | pharos-cli 2475925 |
@@ -44,12 +43,13 @@ New user-facing surfaces in v1.1.0 (docs/pages should reflect ALL of these):
 | site | homepage registry copy (2 strings) | 🟢 DONE (Sep 1) — full 7-registry list live, 133,000+ counts, Badge/FilterBar label maps cover all sources, "Available on undefined" bug fixed | web dev | pharos-web e752bc3, deployed |
 | site | llm.txt serving (after W1.1) | 🟢 UNBLOCKED — docs/llm.txt is in pharos-cli repo @ db23a59; serve at /llm.txt + link from agent docs | web dev | — |
 | site | Sprint 1 DoD (star CTA, canonicals, sitemap+100 pkg URLs, schema SWA/FAQ/HowTo, llms.txt current, CWV spot) | 🟢 DONE (Sep 1) | web dev | pharos-web 252372b..cc9639d, deployed; GSC verify + clean-Windows install.ps1 test = Chris |
-| site | hero carousel overflow fix (CTA pushed slide 0 past min-h; OpenCode agent fix + reviewer pass, 3-viewport verified) | 🟢 DONE (Sep 1) | web dev | pending commit+deploy |
+| site | hero carousel overflow fix (CTA pushed slide 0 past min-h; OpenCode agent fix + reviewer pass, 3-viewport verified) | 🟢 DONE (Sep 1) | web dev | deployed (verified live Sep 6) |
 | site | /search instant-nav (shell+skeleton streams, was 11-20s cold freeze) | 🟢 DONE (Sep 2) | web dev | pharos-web 20a2c1e deployed; nav commit 53ms, skeleton at 30ms, results ~400ms |
 | site | search follow-ups: param-aware SSR, no cached failures, error boundaries, 8s timeouts, CLS | 🟢 DONE (Sep 2) | web dev | pharos-web b43317f deployed; deep-link SSR verified live; typed-search refetch wired |
-| site | Sprint 2 Wave A: /servers hub + 13 category pages, SoftwareApplication/Breadcrumb/ItemList/FAQPage JSON-LD, sitemap 1027 URLs, install.ps1 PS5.1 fix | 🟢 BUILT+QA (Sep 2) | web dev | reviewer PASS 7/7; pending deploy |
-| site | Sprint 2 Wave B: cornerstone Best MCP Servers 2026 + PHAROS vs mcpm.sh comparison, FAQ JSON-LD, footer/llms.txt wiring | 🟢 BUILT+QA (Sep 2) | web dev | reviewer PASS 6/6, follow-ups closed; pending deploy |
-| site | Sprint 2 Wave C: client install guides (hub + Cursor/Claude Desktop/Claude Code/VS Code), GEO pass llms-full, cross-links, footer Guides group | 🟢 BUILT+QA (Sep 2) | web dev | reviewer PASS 7/7, follow-ups closed; pending deploy |
+| site | Sprint 2 Wave A: /servers hub + 13 category pages, SoftwareApplication/Breadcrumb/ItemList/FAQPage JSON-LD, sitemap 1027 URLs, install.ps1 PS5.1 fix | 🟢 BUILT+QA (Sep 2) | web dev | reviewer PASS 7/7; deployed (verified live Sep 6) |
+| site | Sprint 2 Wave B: cornerstone Best MCP Servers 2026 + PHAROS vs mcpm.sh comparison, FAQ JSON-LD, footer/llms.txt wiring | 🟢 BUILT+QA (Sep 2) | web dev | reviewer PASS 6/6, follow-ups closed; deployed (verified live Sep 6) |
+| site | Sprint 2 Wave C: client install guides (hub + Cursor/Claude Desktop/Claude Code/VS Code), GEO pass llms-full, cross-links, footer Guides group | 🟢 BUILT+QA (Sep 2) | web dev | reviewer PASS 7/7, follow-ups closed; deployed (verified live Sep 6) |
+| site | Wave E3: /docs Account card (config get/set/list/secret -> whoami+config add-client/list-clients/remove-client), Global Flags card (fake globals -> per-command output control), Installation card (pip/npm -> curl install.sh / irm install.ps1 / go install), git-clone variant removed from cli/docs+cli.md. All E2 reviewer follow-ups closed. Agents E3+E3b (glm53-nothinking) + TRON binary verification (go.mod 1.25, cmd/search.go -n). Deployed 0196de5, live-verified. Homebrew/Scoop docs WAIT on tap repos live | web dev | pharos-web 0196de5 |
 
 
 ---

@@ -319,9 +319,12 @@ func adoptLockPath(dryRun bool) (string, error) {
 // W5.1 origin: fresh (not-yet-managed) servers record adopted
 // provenance — AdoptedFrom is the source client, Ref the registry
 // repository URL when resolution found one. Previously-managed servers
-// keep their existing Origin and PinnedAt: adoption merges client
-// coverage, it does not rewrite provenance (and a legacy nil Origin
-// stays nil rather than being fabricated).
+// keep their installed truth: Version, Integrity, Transport, InstalledAt,
+// Origin, and PinnedAt are all preserved verbatim (a registry refresh —
+// or a dead registry resolving nothing — must not fabricate a version
+// bump or wipe the recorded artifact, and a legacy nil Origin stays nil
+// rather than being fabricated). Adoption merges client coverage; only
+// the Clients record and the canonical config shape refresh.
 func adoptApply(warnings *[]string, lf *lockfile.Lockfile, canon *canonical.Config, canonDirty *bool, opts adoptOptions, name string, v adoptVariant, entries []adoptClientEntry, everywhere bool) {
 	version, integrity, regTransport, repoURL := adoptResolveRegistry(opts.API, name)
 	transport := regTransport
@@ -341,9 +344,23 @@ func adoptApply(warnings *[]string, lf *lockfile.Lockfile, canon *canonical.Conf
 		InstalledAt: time.Now().UTC(),
 		Clients:     clientIDs,
 	}
+	recordVersion, recordIntegrity := version, integrity
 	if hadPrev {
+		// W5.1 review R1: preserve the installed truth. The artifact on
+		// disk is what the client actually runs — re-adopting must not
+		// overwrite the entry with dist-tags-latest metadata (which would
+		// desync a pin: Version says a version that was never installed
+		// while PinnedAt keeps the old one) nor wipe it to empty strings
+		// when the registry is unreachable. Registry enrichment applies
+		// to fresh adopts only.
+		entry.Version = prev.Version
+		entry.Integrity = prev.Integrity
+		entry.Transport = prev.Transport
+		entry.InstalledAt = prev.InstalledAt
 		entry.Origin = prev.Origin
 		entry.PinnedAt = prev.PinnedAt
+		recordVersion = prev.Version
+		recordIntegrity = prev.Integrity
 	} else {
 		entry.Origin = &lockfile.OriginInfo{
 			Kind:         lockfile.OriginKindAdopted,
@@ -354,7 +371,10 @@ func adoptApply(warnings *[]string, lf *lockfile.Lockfile, canon *canonical.Conf
 	}
 	lf.Set(name, entry)
 
-	canon.Servers[name] = adoptCanonicalServer(name, v.Config, version, integrity)
+	// The canonical record mirrors the lockfile version/integrity so the
+	// two never disagree after a re-adopt (the config shape itself always
+	// comes from the adopted client entry).
+	canon.Servers[name] = adoptCanonicalServer(name, v.Config, recordVersion, recordIntegrity)
 	*canonDirty = true
 
 	if everywhere && !opts.DryRun {

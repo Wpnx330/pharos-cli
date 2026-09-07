@@ -28,12 +28,16 @@ var knownGitHosts = map[string]string{
 // normalizeRepoURL cleans a repository reference into a comparable
 // browse URL: strips "git+" prefixes (npm-style), "git@" scp-style
 // hosts are NOT rewritten (they rarely appear in registry data and
-// rewriting risks fabrication), trims whitespace and a trailing
-// ".git" suffix.
+// rewriting risks fabrication), trims whitespace, a trailing ".git"
+// suffix, and trailing "/" slashes (so a registry repo_url like
+// "https://github.com/x/y/" joins into ".../y/releases", never
+// ".../y//releases").
 func normalizeRepoURL(raw string) string {
 	repo := strings.TrimSpace(raw)
 	repo = strings.TrimPrefix(repo, "git+")
+	repo = strings.TrimRight(repo, "/")
 	repo = strings.TrimSuffix(repo, ".git")
+	repo = strings.TrimRight(repo, "/")
 	return repo
 }
 

@@ -339,9 +339,12 @@ func checkRegistryWithRepo(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/v1/packages/echo-server"):
+			// Trailing slash on purpose (C5): normalizeRepoURL must trim it
+			// so the derived links are ".../echo" / ".../echo/releases",
+			// never ".../echo//releases".
 			_, _ = io.WriteString(w, `{
 				"name": "echo-server",
-				"repo_url": "https://github.com/example/echo",
+				"repo_url": "https://github.com/example/echo/",
 				"dist_tags": {"latest": "1.0.0"},
 				"versions": [
 					{"version": "1.0.0", "status": "active", "created_at": "2026-01-01T00:00:00Z",
@@ -587,6 +590,10 @@ func TestNormalizeRepoURL(t *testing.T) {
 		{"git+https://github.com/x/y.git", "https://github.com/x/y"},
 		{"  https://github.com/x/y.git  ", "https://github.com/x/y"},
 		{"git@github.com:x/y.git", "git@github.com:x/y"}, // scp-style left alone
+		// C5: trailing slashes never survive (no ".../y//releases" joins).
+		{"https://github.com/x/y/", "https://github.com/x/y"},
+		{"https://github.com/x/y//", "https://github.com/x/y"},
+		{"https://github.com/x/y.git/", "https://github.com/x/y"},
 	}
 	for _, tc := range cases {
 		if got := normalizeRepoURL(tc.in); got != tc.want {
@@ -613,6 +620,14 @@ func TestGitHostReleasesBase(t *testing.T) {
 	}
 	if _, releases, ok := gitHostReleasesBase("https://gitlab.com/x/y"); !ok || releases != "-/releases" {
 		t.Errorf("gitlab releases path = %q (ok=%v), want -/releases", releases, ok)
+	}
+	// C5: a trailing-slash repo_url normalizes before the join.
+	repo, releases, ok := gitHostReleasesBase("https://github.com/x/y/")
+	if !ok || repo != "https://github.com/x/y" {
+		t.Errorf("trailing-slash base = %q/%q/%v, want https://github.com/x/y/releases-path", repo, releases, ok)
+	}
+	if got := deriveChangelogURL(repo, releases); got != "https://github.com/x/y/releases" {
+		t.Errorf("trailing-slash changelog join = %q, want https://github.com/x/y/releases (never //releases)", got)
 	}
 }
 

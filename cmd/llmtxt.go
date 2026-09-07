@@ -218,17 +218,17 @@ var llmNotes = map[string]llmNote{
 		ni:     "no prompts by design (PHAROS_NON_INTERACTIVE is irrelevant); unknown server exits 2 with an install hint; non-stdio servers, spawn/initialize failures, and timeouts exit 1 with the server's stderr tail (last 10 lines); --inspect without npx on PATH exits 1 with an install hint; --inspect --json never spawns (interactive)",
 	},
 	"pharos update": {
-		output: "JSON: {dry_run, updated, up_to_date, not_found, updates_available, pinned, servers: [{name, from, to, action, origin?, pinned?, repo?, changelog?}]} where action is one of updated, up_to_date, update_available, pinned, not_found, failed; origin (object: kind, ref, installed_via, adopted_from) rides on rows for entries that have one and is omitted (never null) otherwise; repo/changelog appear only under --check when the origin Ref or packument repo_url is a known git host (github/gitlab). With updates applied under --json the receipt JSON is the sole stdout document (W1.2). Plain: per-server lines + summary table (NAME/FROM/TO/ACTION/PINNED)",
+		output: "JSON: {dry_run, updated, up_to_date, not_found, updates_available, pinned, servers: [{name, from, to, action, origin?, pinned?, repo?, changelog?}]} where action is one of updated, up_to_date, update_available, pinned, not_found, failed; origin (object: kind, ref, installed_via, adopted_from) rides on rows for entries that have one and is omitted (never null) otherwise; repo/changelog appear only under --check when the origin Ref or packument repo_url is a known git host (github/gitlab). With updates applied under --json the receipt JSON is the sole stdout document (W1.2); pinned rows and the pinned counter are check/dry-run-report and human-mode only — when an apply under --json updates at least one server, the stdout receipt carries no pinned annotation (W1.2 receipt contract). Legacy entries (no origin) are treated as registry installs by update; pharos never writes a fabricated origin back. Plain: per-server lines + summary table (NAME/FROM/TO/ACTION/PINNED)",
 		env:    "PHAROS_JSON=1 or --json",
 		ni:     "no prompts; requires registry access (pinned servers are skipped before any registry call in apply mode)",
 	},
 	"pharos pin": {
-		output: "confirmation lines (\"✓ Pinned <name>@<version>\"); installing a different version runs the full install flow first (progress lines, install receipt summary in human mode). No --json flag: under PHAROS_JSON=1 the delegated install's receipt JSON is the stdout document and pin's confirmations go to stderr",
+		output: "confirmation lines (\"✓ Pinned <name>@<version>\"); installing a different version runs the full install flow first (progress lines, install receipt summary in human mode). No --json flag: under PHAROS_JSON=1 the delegated install's receipt JSON is the stdout document and pin's confirmations go to stderr. Receipt semantics: pin/unpin lockfile writes are receipt-less — the receipt contract covers install/remove/update only; under PHAROS_JSON=1 with a version argument stdout carries the delegated install's receipt, whose lockfile after_sha256 reflects the post-install pre-pin state. Dependency installs count as installs: a dep resolution that installs a different version of a pinned server moves that pin to the installed version (most-recent-install-wins)",
 		env:    "no --json flag; PHAROS_JSON=1 routes the delegated install's receipt to stdout",
 		ni:     "no prompts; requires registry access when a version argument is given",
 	},
 	"pharos unpin": {
-		output: "single confirmation line (\"✓ Unpinned <name>\"); exit 1 when the server is missing from pharos.lock or not pinned; JSON N/A (single-line output)",
+		output: "single confirmation line (\"✓ Unpinned <name>\"); exit 1 when the server is missing from pharos.lock or not pinned; JSON N/A (single-line output). Receipt semantics: the unpin lockfile write is receipt-less — the receipt contract covers install/remove/update only",
 		ni:     "no prompts",
 	},
 	"pharos version": {

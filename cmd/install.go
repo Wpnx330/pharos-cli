@@ -345,8 +345,14 @@ func runInstall(cmd *cobra.Command, args []string) {
 
 	// Update lockfile, recording which clients actually received the
 	// config (drift detection keys MISSING findings off this record).
+	// W5.1: every pharos install records registry provenance.
 	writtenClients := writtenClientIDs(updated)
-	if err := install.UpdateLockfile(lockPath, result, resolvedURL, writtenClients); err != nil {
+	origin := &lockfile.OriginInfo{
+		Kind:         lockfile.OriginKindRegistry,
+		Ref:          name + "@" + resolvedVersion,
+		InstalledVia: "pharos install",
+	}
+	if err := install.UpdateLockfile(lockPath, result, resolvedURL, writtenClients, origin); err != nil {
 		fmt.Fprintf(os.Stderr, "%s  %s\n", ui.Error.Render("Lockfile update failed:"), err)
 		rcpt.addError("lockfile update failed: %v", err)
 	} else {
@@ -462,9 +468,16 @@ func runInstall(cmd *cobra.Command, args []string) {
 					depCfg := install.BuildClientConfig(depVD.Manifest, storeDir)
 					depUpdated = writeDepClientConfigs(rcpt, depName, depCfg, clientIDs)
 				}
+				// W5.1: dependencies are registry installs too — record
+				// their own provenance.
+				depOrigin := &lockfile.OriginInfo{
+					Kind:         lockfile.OriginKindRegistry,
+					Ref:          depName + "@" + depVersion,
+					InstalledVia: "pharos install",
+				}
 				if err := install.UpdateLockfile(lockPath, &install.InstallResult{
 					Name: depName, Version: depVersion, Transport: depTransport, Kind: depKind,
-				}, depURL, writtenClientIDs(depUpdated)); err != nil {
+				}, depURL, writtenClientIDs(depUpdated), depOrigin); err != nil {
 					rcpt.addError("dependency %s lockfile update failed: %v", depName, err)
 				} else {
 					rcpt.touchLock()

@@ -315,24 +315,44 @@ func adoptLockPath(dryRun bool) (string, error) {
 // adoptApply records one adopted server in the lockfile and canonical
 // config, and performs the "use everywhere" client rewrites when asked.
 // Dry-run opts skip every write.
+//
+// W5.1 origin: fresh (not-yet-managed) servers record adopted
+// provenance — AdoptedFrom is the source client, Ref the registry
+// repository URL when resolution found one. Previously-managed servers
+// keep their existing Origin and PinnedAt: adoption merges client
+// coverage, it does not rewrite provenance (and a legacy nil Origin
+// stays nil rather than being fabricated).
 func adoptApply(warnings *[]string, lf *lockfile.Lockfile, canon *canonical.Config, canonDirty *bool, opts adoptOptions, name string, v adoptVariant, entries []adoptClientEntry, everywhere bool) {
-	version, integrity, regTransport := adoptResolveRegistry(opts.API, name)
+	version, integrity, regTransport, repoURL := adoptResolveRegistry(opts.API, name)
 	transport := regTransport
 	if transport == "" {
 		transport = adoptTransport(v.Config)
 	}
 
+	prev, hadPrev := lf.Get(name)
 	clientIDs := adoptClientIDs(entries)
-	if prev, ok := lf.Get(name); ok {
+	if hadPrev {
 		clientIDs = adoptUnionClientIDs(prev.Clients, clientIDs)
 	}
-	lf.Set(name, lockfile.ServerEntry{
+	entry := lockfile.ServerEntry{
 		Version:     version,
 		Integrity:   integrity,
 		Transport:   transport,
 		InstalledAt: time.Now().UTC(),
 		Clients:     clientIDs,
-	})
+	}
+	if hadPrev {
+		entry.Origin = prev.Origin
+		entry.PinnedAt = prev.PinnedAt
+	} else {
+		entry.Origin = &lockfile.OriginInfo{
+			Kind:         lockfile.OriginKindAdopted,
+			Ref:          repoURL,
+			InstalledVia: "pharos import --adopt",
+			AdoptedFrom:  string(v.Clients[0].ID),
+		}
+	}
+	lf.Set(name, entry)
 
 	canon.Servers[name] = adoptCanonicalServer(name, v.Config, version, integrity)
 	*canonDirty = true
@@ -352,15 +372,16 @@ func adoptApply(warnings *[]string, lf *lockfile.Lockfile, canon *canonical.Conf
 
 // adoptResolveRegistry best-effort resolves name against the registry,
 // mirroring plain import's enrichment (latest dist-tag version, tarball
-// integrity, transport from the first listed version). Any failure
-// yields empty strings — the config stays the source of truth.
-func adoptResolveRegistry(apiClient *api.Client, name string) (version, integrity, transport string) {
+// integrity, transport from the first listed version, repository URL
+// for origin provenance). Any failure yields empty strings — the config
+// stays the source of truth.
+func adoptResolveRegistry(apiClient *api.Client, name string) (version, integrity, transport, repoURL string) {
 	if apiClient == nil {
-		return "", "", ""
+		return "", "", "", ""
 	}
 	pkg, err := apiClient.GetPackage(name)
 	if err != nil {
-		return "", "", ""
+		return "", "", "", ""
 	}
 	if pkg.DistTags != nil {
 		version = pkg.DistTags["latest"]
@@ -371,7 +392,8 @@ func adoptResolveRegistry(apiClient *api.Client, name string) (version, integrit
 	if vd := pkg.FindVersion(version); vd != nil {
 		integrity = vd.Manifest.Integrity
 	}
-	return version, integrity, transport
+	repoURL = strings.TrimSpace(string(pkg.RepoURL))
+	return version, integrity, transport, repoURL
 }
 
 // adoptTransport derives the transport recorded in the lockfile/canonical

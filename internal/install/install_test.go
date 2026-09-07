@@ -1300,7 +1300,7 @@ func TestUpdateLockfileRecordsWrittenClients(t *testing.T) {
 	res := &InstallResult{Name: "srv", Version: "1.0.0", Transport: "stdio"}
 
 	// Fresh install to two clients — record both, sorted.
-	if err := UpdateLockfile(lockPath, res, "https://x/srv.tgz", []string{"generic", "cursor"}); err != nil {
+	if err := UpdateLockfile(lockPath, res, "https://x/srv.tgz", []string{"generic", "cursor"}, &lockfile.OriginInfo{Kind: lockfile.OriginKindRegistry, Ref: "srv@1.0.0", InstalledVia: "pharos install"}); err != nil {
 		t.Fatal(err)
 	}
 	lf, err := lockfile.Load(lockPath)
@@ -1316,7 +1316,7 @@ func TestUpdateLockfileRecordsWrittenClients(t *testing.T) {
 	}
 
 	// Re-install to a subset must merge (not lose the other client).
-	if err := UpdateLockfile(lockPath, res, "https://x/srv.tgz", []string{"cursor"}); err != nil {
+	if err := UpdateLockfile(lockPath, res, "https://x/srv.tgz", []string{"cursor"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	lf, _ = lockfile.Load(lockPath)
@@ -1327,7 +1327,7 @@ func TestUpdateLockfileRecordsWrittenClients(t *testing.T) {
 
 	// Re-install adding a new client extends the set, deduped: previous
 	// order preserved, new IDs appended sorted.
-	if err := UpdateLockfile(lockPath, res, "https://x/srv.tgz", []string{"cursor", "aider", "cursor"}); err != nil {
+	if err := UpdateLockfile(lockPath, res, "https://x/srv.tgz", []string{"cursor", "aider", "cursor"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	lf, _ = lockfile.Load(lockPath)
@@ -1337,7 +1337,7 @@ func TestUpdateLockfileRecordsWrittenClients(t *testing.T) {
 	}
 
 	// An update with no client writes keeps the previous record.
-	if err := UpdateLockfile(lockPath, res, "https://x/srv.tgz", nil); err != nil {
+	if err := UpdateLockfile(lockPath, res, "https://x/srv.tgz", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	lf, _ = lockfile.Load(lockPath)
@@ -1352,7 +1352,7 @@ func TestUpdateLockfileRecordsWrittenClients(t *testing.T) {
 	if err := legacy.Save(lockPath); err != nil {
 		t.Fatal(err)
 	}
-	if err := UpdateLockfile(lockPath, &InstallResult{Name: "old", Version: "0.9.0", Transport: "stdio"}, "", nil); err != nil {
+	if err := UpdateLockfile(lockPath, &InstallResult{Name: "old", Version: "0.9.0", Transport: "stdio"}, "", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	lf, _ = lockfile.Load(lockPath)

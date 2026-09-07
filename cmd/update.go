@@ -200,12 +200,22 @@ Use --dry-run to see what would change without modifying anything.`,
 				printUpdateConfigResults(upd, uerrs)
 			}
 
+			// Rewrite the lockfile entry preserving every additive field:
+			// Clients (previously wiped here — drift detection keys MISSING
+			// findings off this record), Origin (W5.1), PinnedAt (W5.1).
+			// For registry-origin entries the Ref's version part is bumped
+			// to the newly installed version; adopted/legacy origins pass
+			// through untouched (legacy nil Origin stays absent — the
+			// backfill rule is behavior-only, never fabricated metadata).
 			lf.Set(name, lockfile.ServerEntry{
 				Version:     latest,
 				Integrity:   integrity,
 				Transport:   transport,
 				Resolved:    entry.Resolved,
 				InstalledAt: entry.InstalledAt,
+				Clients:     entry.Clients,
+				Origin:      originAfterUpdate(entry, name, latest),
+				PinnedAt:    entry.PinnedAt,
 			})
 			updated++
 			updatedNames = append(updatedNames, name)
@@ -270,6 +280,24 @@ func printUpdateJSON(report *updateReport) error {
 	}
 	fmt.Println(string(data))
 	return nil
+}
+
+// originAfterUpdate computes the Origin an updated lockfile entry
+// carries. Legacy entries (nil Origin) stay absent — treating them as
+// registry installs is update BEHAVIOR, never written back as fabricated
+// metadata. Registry origins are refreshed so Ref's version part tracks
+// the newly installed version; any other kind (adopted) passes through
+// unchanged. The input pointer is never mutated.
+func originAfterUpdate(entry lockfile.ServerEntry, name, latest string) *lockfile.OriginInfo {
+	if entry.Origin == nil {
+		return nil
+	}
+	if entry.Origin.Kind != lockfile.OriginKindRegistry {
+		return entry.Origin
+	}
+	updated := *entry.Origin
+	updated.Ref = name + "@" + latest
+	return &updated
 }
 
 func init() {

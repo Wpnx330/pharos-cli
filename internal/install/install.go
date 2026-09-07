@@ -763,7 +763,17 @@ func resolveWriteTargets(clientIDs []string) ([]clientconfig.Client, error) {
 // server's config to (possibly empty); they are merged into the entry's
 // Clients set — a re-install to a different client subset extends the
 // record rather than replacing it.
-func UpdateLockfile(lockPath string, result *InstallResult, resolvedURL string, clientIDs []string) error {
+//
+// origin (W5.1) is the provenance recorded for THIS install; a non-nil
+// value overwrites any previous Origin (the most recent install is the
+// origin truth). A nil origin preserves the previous entry's Origin —
+// callers that only refresh metadata must not fabricate provenance.
+//
+// Additive fields are carried across installs: an existing PinnedAt
+// survives a reinstall, refreshed to the newly installed version so the
+// pin intent ("this server is version-locked by hand") follows the
+// explicit install instead of stranding a stale pin.
+func UpdateLockfile(lockPath string, result *InstallResult, resolvedURL string, clientIDs []string, origin *lockfile.OriginInfo) error {
 	lf, err := lockfile.Load(lockPath)
 	if err != nil {
 		return err
@@ -777,8 +787,19 @@ func UpdateLockfile(lockPath string, result *InstallResult, resolvedURL string, 
 	}
 	if prev, ok := lf.Get(result.Name); ok {
 		entry.Clients = mergeClientIDs(prev.Clients, clientIDs)
+		entry.PinnedAt = prev.PinnedAt
+		if entry.PinnedAt != nil && *entry.PinnedAt != result.Version {
+			pinned := result.Version
+			entry.PinnedAt = &pinned
+		}
+		if origin != nil {
+			entry.Origin = origin
+		} else {
+			entry.Origin = prev.Origin
+		}
 	} else {
 		entry.Clients = normalizeClientIDs(clientIDs)
+		entry.Origin = origin
 	}
 	lf.Set(result.Name, entry)
 	return lf.Save(lockPath)

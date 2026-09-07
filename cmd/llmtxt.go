@@ -62,6 +62,11 @@ var llmNotes = map[string]llmNote{
 		output: "help text listing daemon subcommands",
 		ni:     "no prompts",
 	},
+	"pharos budget": {
+		output: "JSON: {daemon?: {pid, startedAt, uptimeMinutes}, servers: [{name, pid?, port, startedAt?, lastActivity?, idleMinutes?, idleTimeoutMinutes, resident, memoryRSSBytes?}], totals: {residentProcesses, estimatedMemoryBytes?}, suggestions: [{code, message}]} — `?` fields are omitted when unknown (omitempty, never null); daemon is omitted entirely when the daemon is not running (idle system = 0 processes, exit 0); idleTimeoutMinutes is always present (0 = no auto-unload); memoryRSSBytes/estimatedMemoryBytes are OS RSS estimates (omitted when the probe fails, never hard-fail). Suggestion codes: idle_servers (idle >30d with an idle-timeout), always_on_idle (resident idleTimeout=0 server with no requests >7d), daemon_no_servers. Plain: daemon line + resident-process/memory summary + per-server table (BUDGET flag: active/over/idle/always-on/never-used; LIMIT: the server's own idle-timeout or never) + advisory suggestions footer",
+		env:    "PHAROS_JSON=1 or --json",
+		ni:     "no prompts; strictly read-only over ~/.pharos/daemon.json + OS process probes (no daemon/config/lockfile writes, no receipt, suggestions never auto-applied); exits 1 only when a present daemon state cannot be read; memory-probe failures never fail the command",
+	},
 	"pharos daemon start": {
 		output: "startup confirmation lines (PID, log path); exits 1 if already running; JSON N/A",
 		ni:     "no prompts; backgrounds itself by default",

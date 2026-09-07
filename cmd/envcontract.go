@@ -65,7 +65,7 @@ func JSONRequested() bool {
 	return jsonFlag || listJSON || doctorJSON || auditJSON ||
 		versionJSON || daemonStatusJSON || configJSON ||
 		importJSON || republishJSON || updateJSON || profileJSON ||
-		tryJSON
+		tryJSON || budgetJSON
 }
 
 // NonInteractiveError is the typed error returned when a command reaches an

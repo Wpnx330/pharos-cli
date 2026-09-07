@@ -131,7 +131,7 @@ One-line list only. Full flags and examples: https://discoverpharos.dev/cli/docs
 
 ## Flags
 
-- `--json` — Output as JSON (search, info, health). Search includes `transport`, `source_registry`, `nextCursor`, `total`.
+- `--json` — Output as JSON (search, info, health). Search includes `transport`, `source_registry`, `nextCursor`, `total`, `boosted` (always present, `[]` when none).
 - `--limit` / `-n` — Number of search results (default: 10)
 - `--page` / `-p` — Search page (1-based). Mapped to API cursor `(page-1)*limit`.
 - `--registry` — Search filter: `mcp.io`, `mcp.so`, `pharos`, `smithery`
@@ -176,6 +176,8 @@ Probing echo-server…
 ## Search Results
 
 The search table shows the trust signals the registry already provides: `OWNER` (publisher namespace), `CATEGORY` (registry catalog category), and `DOWNLOADS` (30-day downloads, humanized — `1234` renders as `1.2k`). A non-`active` `version_status` is flagged inline on the version, e.g. `1.2.3 (stale)`; `active` versions stay bare. Missing values render as `—`. `--json` carries the same fields (`publisher`, `category`, `tools_count`, `version_status`) per result.
+
+Sponsored placements (W4.2 D1): when the registry has active boosts matching your query, a **SPONSORED** block prints above the organic table — same columns, max 2 rows, each name suffixed ` [boosted]`. Sponsored entries never reorder organic results, and with no active boosts the output is unchanged. `--json` exposes them as a separate `boosted` array (each entry `"sponsored": true`); organic results are never mixed in.
 
 ## Configuration
 

@@ -12,8 +12,47 @@ import (
 	"time"
 )
 
-// LockVersion is the schema version of the lockfile format.
+// LockVersion is the schema version of the lockfile format. W5.1 added
+// the additive Origin/PinnedAt fields WITHOUT bumping this: legacy
+// lockfiles load unchanged, and consumers of the new fields must treat
+// absence as "unknown, apply legacy behavior".
 const LockVersion = 1
+
+// Origin kinds recorded in OriginInfo.Kind.
+const (
+	// OriginKindRegistry: installed from the pharos registry via
+	// `pharos install`. Ref = "<name>@<version>".
+	OriginKindRegistry = "registry"
+	// OriginKindAdopted: adopted from a client config via
+	// `pharos import --adopt`. AdoptedFrom = source client ID; Ref =
+	// the registry repository URL when the package resolved (empty
+	// otherwise).
+	OriginKindAdopted = "adopted"
+	// OriginKindManual is reserved for servers present in
+	// ~/.pharos/mcp.json that pharos never installed or adopted. Pharos
+	// does not currently have a cheap discovery point for hand-edited
+	// canonical entries, so no code path records this kind yet; it is
+	// defined so tooling can rely on the closed vocabulary.
+	OriginKindManual = "manual"
+)
+
+// OriginInfo records HOW a server entered pharos management (W5.1 A6).
+// It is provenance only: update behavior for unknown kinds must fall
+// back to the legacy registry path, never fail.
+type OriginInfo struct {
+	Kind string `json:"kind"` // registry | adopted | manual
+	// Ref is origin-shaped context: "<name>@<version>" for registry
+	// installs, the repository URL for adopted servers when the
+	// registry resolved one. It NEVER repurposes ServerEntry.Resolved
+	// (which stays the tarball/endpoint URL).
+	Ref string `json:"ref"`
+	// InstalledVia is the pharos command that recorded the origin
+	// ("pharos install" / "pharos import --adopt").
+	InstalledVia string `json:"installed_via"`
+	// AdoptedFrom is the client ID the server was adopted from
+	// (adopted entries only).
+	AdoptedFrom string `json:"adopted_from,omitempty"`
+}
 
 // Lockfile is the top-level lockfile structure.
 type Lockfile struct {
@@ -32,6 +71,21 @@ type ServerEntry struct {
 	// written to at install time (additive, optional). Empty/absent on
 	// legacy entries — consumers must then assume every client.
 	Clients []string `json:"clients,omitempty"`
+	// Origin records how the server entered pharos management (W5.1,
+	// additive). Pointer so legacy entries keep the field absent; every
+	// consumer must nil-check. Backfill rule: a nil Origin read from
+	// disk is treated as a registry install for update behavior —
+	// legacy entries were registry installs or pre-W2.1 adoptions —
+	// but pharos never writes a fabricated origin back: the field
+	// stays absent until a real install/adopt rewrites the entry.
+	Origin *OriginInfo `json:"origin,omitempty"`
+	// PinnedAt pins the server at a version (the version string it was
+	// pinned at, additive W5.1). Nil = unpinned. Pinned servers are
+	// skipped by `pharos update`'s apply path but still reported by
+	// --check/--dry-run. Kept OUTSIDE OriginInfo because pinning is
+	// orthogonal to provenance: legacy entries (nil Origin) can be
+	// pinned without fabricating origin metadata.
+	PinnedAt *string `json:"pinnedAt,omitempty"`
 }
 
 // New creates an empty lockfile with the current schema version.

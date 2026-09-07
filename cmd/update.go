@@ -17,6 +17,7 @@ import (
 
 var updateDryRun bool
 var updateCheck bool
+var updateAll bool
 var updateJSON bool
 
 // updateEntry is one server row in the update JSON report.
@@ -108,6 +109,13 @@ Use --all (or no arguments) to update every server in the lockfile.`,
 		// together — they select the same no-apply mode.
 		checkMode := updateDryRun || updateCheck
 
+		// W5.1 --all is the explicit form of the bare all-servers run;
+		// a name argument selects exactly one server, so the two are
+		// mutually exclusive.
+		if updateAll && target != "" {
+			return fmt.Errorf("specify either a server name or --all, not both")
+		}
+
 		var updatesAvailable, upToDate, notFound, updated int
 		report := &updateReport{DryRun: checkMode, Servers: []updateEntry{}}
 
@@ -124,11 +132,31 @@ Use --all (or no arguments) to update every server in the lockfile.`,
 			}
 
 			entry, _ := lf.Get(name)
+			pinned := entry.PinnedAt != nil
+
+			// W5.1: pinned servers are skipped by the apply path — before
+			// any registry call, since no fetched data can change the
+			// outcome. --check/--dry-run still probe and show what is
+			// available (rows carry pinned=true there).
+			if pinned && !checkMode {
+				report.Pinned++
+				report.Servers = append(report.Servers, updateEntry{
+					Name: name, From: entry.Version, Action: "pinned", Pinned: true, Origin: entry.Origin,
+				})
+				if !JSONRequested() {
+					fmt.Printf("  %s  %s@%s %s\n", ui.Muted.Render("◆"), name, *entry.PinnedAt, ui.Muted.Render("pinned — 'pharos unpin "+name+"' to update"))
+				}
+				continue
+			}
+			if pinned {
+				report.Pinned++
+			}
+
 			pkg, err := client.GetPackage(name)
 			if err != nil {
 				notFound++
 				report.NotFound++
-				report.Servers = append(report.Servers, updateEntry{Name: name, From: entry.Version, Action: "not_found", Origin: entry.Origin})
+				report.Servers = append(report.Servers, updateEntry{Name: name, From: entry.Version, Action: "not_found", Origin: entry.Origin, Pinned: pinned})
 				if !JSONRequested() {
 					fmt.Printf("  %s  %s — %s\n", ui.Muted.Render("?"), name, ui.Muted.Render("not found in registry"))
 				}
@@ -157,7 +185,7 @@ Use --all (or no arguments) to update every server in the lockfile.`,
 				report.UpToDate++
 				report.Servers = append(report.Servers, updateEntry{
 					Name: name, From: entry.Version, To: latest, Action: "up_to_date",
-					Origin: entry.Origin, Repo: repo, Changelog: changelog,
+					Origin: entry.Origin, Pinned: pinned, Repo: repo, Changelog: changelog,
 				})
 				if !JSONRequested() {
 					fmt.Printf("  %s  %s@%s %s\n", ui.Success.Render("✓"), name, entry.Version, ui.Muted.Render("(up to date)"))
@@ -171,10 +199,13 @@ Use --all (or no arguments) to update every server in the lockfile.`,
 				report.UpdatesAvailable++
 				report.Servers = append(report.Servers, updateEntry{
 					Name: name, From: entry.Version, To: latest, Action: "update_available",
-					Origin: entry.Origin, Repo: repo, Changelog: changelog,
+					Origin: entry.Origin, Pinned: pinned, Repo: repo, Changelog: changelog,
 				})
 				if !JSONRequested() {
 					fmt.Printf("  %s  %s: %s → %s\n", ui.Label.Render("→"), name, entry.Version, latest)
+					if pinned {
+						fmt.Printf("      %s\n", ui.Muted.Render(fmt.Sprintf("pinned at %s — 'pharos unpin %s' to apply", *entry.PinnedAt, name)))
+					}
 					printCheckOriginExtras(repo, changelog)
 				}
 				continue
@@ -302,6 +333,11 @@ Use --all (or no arguments) to update every server in the lockfile.`,
 			return printUpdateJSON(report)
 		}
 
+		// W5.1: the apply path ends with a summary table (name, from → to,
+		// action, pinned?) rendered with the shared ui helpers — including
+		// the servers that were pinned, up to date, or not found.
+		printUpdateSummaryTable(report)
+
 		fmt.Printf("\n%s  %d updated, %d up to date, %d not found\n",
 			ui.Success.Render("✓ Done."),
 			updated,
@@ -313,6 +349,38 @@ Use --all (or no arguments) to update every server in the lockfile.`,
 		}
 		return nil
 	},
+}
+
+// printUpdateSummaryTable renders the apply-path summary table. Human
+// mode only — JSON consumers read the report/receipt documents.
+func printUpdateSummaryTable(report *updateReport) {
+	if JSONRequested() || len(report.Servers) == 0 {
+		return
+	}
+	cols := []ui.TableColumn{
+		{Title: "NAME", Width: 16, MaxWidth: 32},
+		{Title: "FROM", Width: 8, MaxWidth: 16},
+		{Title: "TO", Width: 8, MaxWidth: 16},
+		{Title: "ACTION", Width: 10, MaxWidth: 18},
+		{Title: "PINNED", Width: 6, MaxWidth: 6},
+	}
+	rows := make([]ui.TableRow, 0, len(report.Servers))
+	for _, e := range report.Servers {
+		from, to := e.From, e.To
+		if from == "" {
+			from = "-"
+		}
+		if to == "" {
+			to = "-"
+		}
+		pinnedCell := ""
+		if e.Pinned {
+			pinnedCell = "yes"
+		}
+		rows = append(rows, ui.TableRow{e.Name, from, to, e.Action, pinnedCell})
+	}
+	fmt.Print("\n")
+	fmt.Print(ui.RenderTable(cols, rows))
 }
 
 // printUpdateJSON emits the update report as JSON to stdout.
@@ -346,6 +414,7 @@ func originAfterUpdate(entry lockfile.ServerEntry, name, latest string) *lockfil
 func init() {
 	updateCmd.Flags().BoolVar(&updateDryRun, "dry-run", false, "show what would change without applying updates")
 	updateCmd.Flags().BoolVar(&updateCheck, "check", false, "like --dry-run, plus repo/changelog links for git-hosted origins")
+	updateCmd.Flags().BoolVar(&updateAll, "all", false, "update every server in the lockfile (same as passing no name)")
 	updateCmd.Flags().BoolVar(&updateJSON, "json", false, "output as JSON")
 	rootCmd.AddCommand(updateCmd)
 }

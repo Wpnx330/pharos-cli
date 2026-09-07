@@ -31,7 +31,7 @@ USAGE: pharos [flags]
 FLAGS:
   --help <bool> (default: false) help for pharos
   --version <bool> (default: false) version for pharos
-SUBCOMMANDS: audit, completion, config, daemon, doctor, health, help, import, info, init, install, list, llmtxt, lock, login, oauth, package, profile, publish, purge, remove, republish, search, start, stop, try, unpublish, update, version, whoami
+SUBCOMMANDS: audit, completion, config, daemon, doctor, health, help, import, info, init, install, list, llmtxt, lock, login, oauth, package, pin, profile, publish, purge, remove, republish, search, start, stop, try, unpin, unpublish, update, version, whoami
 OUTPUT: help text listing subcommands
 ENV: all three contract vars are inherited by every subcommand
 NON-INTERACTIVE: no prompts; safe by default
@@ -343,6 +343,15 @@ FLAGS:
 OUTPUT: packaging confirmation lines (tarball path + size); JSON N/A
 NON-INTERACTIVE: no prompts
 
+# COMMAND: pharos pin
+SHORT: Pin a server at its current (or given) version — update skips it
+USAGE: pharos pin <name> [<version>] [flags]
+FLAGS:
+  --help <bool> (default: false) help for pin
+OUTPUT: confirmation lines ("✓ Pinned <name>@<version>"); installing a different version runs the full install flow first (progress lines, install receipt summary in human mode). No --json flag: under PHAROS_JSON=1 the delegated install's receipt JSON is the stdout document and pin's confirmations go to stderr
+ENV: no --json flag; PHAROS_JSON=1 routes the delegated install's receipt to stdout
+NON-INTERACTIVE: no prompts; requires registry access when a version argument is given
+
 # COMMAND: pharos profile
 SHORT: Manage context profiles — named server sets mapped to clients
 USAGE: pharos profile <create|add|remove|ls|use|rm|run> [flags]
@@ -518,6 +527,14 @@ OUTPUT: JSON: {server, caps: {protocolVersion, serverInfo: {name, version}, tool
 ENV: PHAROS_JSON=1 or --json (progress lines go to stderr in JSON mode)
 NON-INTERACTIVE: no prompts by design (PHAROS_NON_INTERACTIVE is irrelevant); unknown server exits 2 with an install hint; non-stdio servers, spawn/initialize failures, and timeouts exit 1 with the server's stderr tail (last 10 lines); --inspect without npx on PATH exits 1 with an install hint; --inspect --json never spawns (interactive)
 
+# COMMAND: pharos unpin
+SHORT: Remove a version pin so update manages the server again
+USAGE: pharos unpin <name> [flags]
+FLAGS:
+  --help <bool> (default: false) help for unpin
+OUTPUT: single confirmation line ("✓ Unpinned <name>"); exit 1 when the server is missing from pharos.lock or not pinned; JSON N/A (single-line output)
+NON-INTERACTIVE: no prompts
+
 # COMMAND: pharos unpublish
 SHORT: Hide a package version from search and direct lookup
 USAGE: pharos unpublish <name> [flags]
@@ -534,13 +551,14 @@ NON-INTERACTIVE: --yes, or PHAROS_ASSUME_YES=1
 SHORT: Check for and apply updates to installed MCP servers
 USAGE: pharos update [name] [flags]
 FLAGS:
+  --all <bool> (default: false) update every server in the lockfile (same as passing no name)
   --check <bool> (default: false) like --dry-run, plus repo/changelog links for git-hosted origins
   --dry-run <bool> (default: false) show what would change without applying updates
   --help <bool> (default: false) help for update
   --json <bool> (default: false) output as JSON
-OUTPUT: JSON: {dry_run, updated, up_to_date, not_found, updates_available, servers: [{name, from, to, action}]} where action is one of updated, up_to_date, update_available, not_found, failed. Plain: per-server lines + summary
+OUTPUT: JSON: {dry_run, updated, up_to_date, not_found, updates_available, pinned, servers: [{name, from, to, action, origin?, pinned?, repo?, changelog?}]} where action is one of updated, up_to_date, update_available, pinned, not_found, failed; origin (object: kind, ref, installed_via, adopted_from) rides on rows for entries that have one and is omitted (never null) otherwise; repo/changelog appear only under --check when the origin Ref or packument repo_url is a known git host (github/gitlab). With updates applied under --json the receipt JSON is the sole stdout document (W1.2). Plain: per-server lines + summary table (NAME/FROM/TO/ACTION/PINNED)
 ENV: PHAROS_JSON=1 or --json
-NON-INTERACTIVE: no prompts; requires registry access
+NON-INTERACTIVE: no prompts; requires registry access (pinned servers are skipped before any registry call in apply mode)
 
 # COMMAND: pharos version
 SHORT: Print the PHAROS CLI version

@@ -218,9 +218,18 @@ var llmNotes = map[string]llmNote{
 		ni:     "no prompts by design (PHAROS_NON_INTERACTIVE is irrelevant); unknown server exits 2 with an install hint; non-stdio servers, spawn/initialize failures, and timeouts exit 1 with the server's stderr tail (last 10 lines); --inspect without npx on PATH exits 1 with an install hint; --inspect --json never spawns (interactive)",
 	},
 	"pharos update": {
-		output: "JSON: {dry_run, updated, up_to_date, not_found, updates_available, servers: [{name, from, to, action}]} where action is one of updated, up_to_date, update_available, not_found, failed. Plain: per-server lines + summary",
+		output: "JSON: {dry_run, updated, up_to_date, not_found, updates_available, pinned, servers: [{name, from, to, action, origin?, pinned?, repo?, changelog?}]} where action is one of updated, up_to_date, update_available, pinned, not_found, failed; origin (object: kind, ref, installed_via, adopted_from) rides on rows for entries that have one and is omitted (never null) otherwise; repo/changelog appear only under --check when the origin Ref or packument repo_url is a known git host (github/gitlab). With updates applied under --json the receipt JSON is the sole stdout document (W1.2). Plain: per-server lines + summary table (NAME/FROM/TO/ACTION/PINNED)",
 		env:    "PHAROS_JSON=1 or --json",
-		ni:     "no prompts; requires registry access",
+		ni:     "no prompts; requires registry access (pinned servers are skipped before any registry call in apply mode)",
+	},
+	"pharos pin": {
+		output: "confirmation lines (\"✓ Pinned <name>@<version>\"); installing a different version runs the full install flow first (progress lines, install receipt summary in human mode). No --json flag: under PHAROS_JSON=1 the delegated install's receipt JSON is the stdout document and pin's confirmations go to stderr",
+		env:    "no --json flag; PHAROS_JSON=1 routes the delegated install's receipt to stdout",
+		ni:     "no prompts; requires registry access when a version argument is given",
+	},
+	"pharos unpin": {
+		output: "single confirmation line (\"✓ Unpinned <name>\"); exit 1 when the server is missing from pharos.lock or not pinned; JSON N/A (single-line output)",
+		ni:     "no prompts",
 	},
 	"pharos version": {
 		output: "JSON: {name, version}. Plain: \"pharos version X.Y.Z\"",

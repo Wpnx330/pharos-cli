@@ -15,15 +15,16 @@ type TableColumn struct {
 // TableRow is a slice of cell strings, one per column.
 type TableRow = []string
 
-// RenderTable renders a slice of rows as a formatted ASCII table.
-// Columns auto-size to fit content, capped at maxColWidth. The header
-// is bold/colored without border decorations (borders produce multi-line
-// output that breaks single-line column alignment).
-//
-// All width calculations use VISIBLE width (ANSI escape sequences stripped),
-// so styled cells (bold, colored) align correctly with unstyled cells.
-func RenderTable(cols []TableColumn, rows []TableRow) string {
-	const maxColWidth = 80
+// maxColWidth is the global cap applied when a column has no per-column
+// MaxWidth.
+const maxColWidth = 80
+
+// TableWidths computes the visible column widths used to render cols with
+// rows: the title/Width floor expanded to the widest cell, capped
+// per-column (MaxWidth) or at maxColWidth. Exported so callers can render
+// several stacked table sections off one width computation (see
+// RenderTableSections).
+func TableWidths(cols []TableColumn, rows []TableRow) []int {
 	widths := make([]int, len(cols))
 	for i, c := range cols {
 		plain := stripANSI(c.Title)
@@ -49,7 +50,42 @@ func RenderTable(cols []TableColumn, rows []TableRow) string {
 			}
 		}
 	}
+	return widths
+}
 
+// RenderTable renders a slice of rows as a formatted ASCII table.
+// Columns auto-size to fit content, capped at maxColWidth. The header
+// is bold/colored without border decorations (borders produce multi-line
+// output that breaks single-line column alignment).
+//
+// All width calculations use VISIBLE width (ANSI escape sequences stripped),
+// so styled cells (bold, colored) align correctly with unstyled cells.
+func RenderTable(cols []TableColumn, rows []TableRow) string {
+	return renderTableSized(cols, TableWidths(cols, rows), rows)
+}
+
+// RenderTableSections renders multiple stacked table sections sharing one
+// width computation across the union of all sections' rows, so their
+// columns align vertically. Each section renders exactly like
+// RenderTable(cols, section) would alone — except that column widths are
+// shared, so content that widens a column in one section (e.g. a NAME
+// cell carrying a " [boosted]" marker) widens it in every section.
+func RenderTableSections(cols []TableColumn, sections ...[]TableRow) []string {
+	var union []TableRow
+	for _, rows := range sections {
+		union = append(union, rows...)
+	}
+	widths := TableWidths(cols, union)
+	out := make([]string, len(sections))
+	for i, rows := range sections {
+		out[i] = renderTableSized(cols, widths, rows)
+	}
+	return out
+}
+
+// renderTableSized renders rows into columns of the given pre-computed
+// visible widths (from TableWidths).
+func renderTableSized(cols []TableColumn, widths []int, rows []TableRow) string {
 	var b strings.Builder
 
 	// Header — simple bold color, no borders

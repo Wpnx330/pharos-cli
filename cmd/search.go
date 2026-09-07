@@ -215,24 +215,39 @@ const sponsoredMarker = " [boosted]"
 
 // renderSearchResults prints the text search output: the SPONSORED
 // mini-section (only when the registry sent boosted entries) above the
-// organic table, which keeps its exact pre-boosts rendering — columns,
-// widths, footer, count, and next-page hint are untouched. With no
-// boosted entries the output is byte-identical to the organic-only
-// rendering.
+// organic table. With no boosted entries the output is byte-identical to
+// the organic-only rendering. When both sections render they share one
+// column-width computation over the union of their rows, so the stacked
+// tables align column-for-column despite the NAME column growing by the
+// " [boosted]" marker. A boosted-only page (zero organic results) still
+// renders the footer, count, and next-page hint — the count line simply
+// reads "0 package(s) found".
 func renderSearchResults(results *api.SearchResponse, query string, page int, registry, transport string) {
-	if len(results.Boosted) > 0 {
-		fmt.Println(ui.Muted.Render(sponsoredHeader))
-		fmt.Print(ui.RenderTable(searchTableColumns(), sponsoredTableRows(results.Boosted)))
-	}
-	if len(results.Results) == 0 {
-		return
-	}
 	cols := searchTableColumns()
-	var rows []ui.TableRow
-	for _, r := range results.Results {
-		rows = append(rows, searchTableRow(r))
+	var sponsoredRows, organicRows []ui.TableRow
+	if len(results.Boosted) > 0 {
+		sponsoredRows = sponsoredTableRows(results.Boosted)
 	}
-	fmt.Print(ui.RenderTable(cols, rows))
+	if len(results.Results) > 0 {
+		organicRows = make([]ui.TableRow, 0, len(results.Results))
+		for _, r := range results.Results {
+			organicRows = append(organicRows, searchTableRow(r))
+		}
+	}
+
+	switch {
+	case len(sponsoredRows) > 0 && len(organicRows) > 0:
+		sections := ui.RenderTableSections(cols, sponsoredRows, organicRows)
+		fmt.Println(ui.Muted.Render(sponsoredHeader))
+		fmt.Print(sections[0])
+		fmt.Print(sections[1])
+	case len(sponsoredRows) > 0:
+		fmt.Println(ui.Muted.Render(sponsoredHeader))
+		fmt.Print(ui.RenderTable(cols, sponsoredRows))
+	case len(organicRows) > 0:
+		fmt.Print(ui.RenderTable(cols, organicRows))
+	}
+
 	fmt.Println(searchInfoFooter())
 	fmt.Printf("\n%s\n", ui.Muted.Render(fmt.Sprintf("%d package(s) found", results.Total)))
 	if hint := searchNextPageHint(query, page, registry, transport, results.NextCursor); hint != "" {

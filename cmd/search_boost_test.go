@@ -127,6 +127,99 @@ func TestSponsoredCapTwoDisplayed(t *testing.T) {
 	}
 }
 
+// TestBoostedOnlyPageStillShowsCountAndFooter pins review F6: a page with
+// boosted entries but zero organic results must fall through to the
+// footer, count line, and next-page hint instead of returning early.
+func TestBoostedOnlyPageStillShowsCountAndFooter(t *testing.T) {
+	resp := &api.SearchResponse{
+		Boosted:    []api.SearchResult{boostedHit("gamma/three")},
+		NextCursor: "MQ==",
+		Total:      0,
+	}
+	out := captureSearchStdout(t, func() {
+		renderSearchResults(resp, "query", 1, "", "")
+	})
+	if !strings.Contains(out, sponsoredHeader) {
+		t.Fatalf("boosted-only page missing SPONSORED header:\n%s", out)
+	}
+	if !strings.Contains(out, "0 package(s) found") {
+		t.Errorf("boosted-only page lost the count line:\n%s", out)
+	}
+	if !strings.Contains(out, searchInfoFooter()) {
+		t.Errorf("boosted-only page lost the info footer:\n%s", out)
+	}
+	if !strings.Contains(out, `next page: pharos search "query" --page 2`) {
+		t.Errorf("boosted-only page lost the next-page hint:\n%s", out)
+	}
+	// Exactly one table header: the organic table must not render empty.
+	if got := strings.Count(out, "VERSION"); got != 1 {
+		t.Errorf("table header count = %d, want 1 (sponsored table only):\n%s", got, out)
+	}
+}
+
+// TestSponsoredAndOrganicTablesShareColumnWidths pins review F7: the
+// sponsored NAME cell carries a 10-rune " [boosted]" marker; with
+// per-call width computation the stacked tables misaligned. Both sections
+// must now render on one shared width grid.
+func TestSponsoredAndOrganicTablesShareColumnWidths(t *testing.T) {
+	resp := &api.SearchResponse{
+		Results: []api.SearchResult{
+			{Name: "alpha/one", Version: "1.0.0", Description: "first"},
+			{Name: "git-mcp-server", Version: "2.0.0", Description: "second"},
+		},
+		Boosted: []api.SearchResult{boostedHit("git-mcp-server")},
+		Total:   2,
+	}
+	out := captureSearchStdout(t, func() {
+		renderSearchResults(resp, "query", 1, "", "")
+	})
+
+	var headers []string
+	var sponsoredLine, organicLine string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "NAME") && strings.Contains(line, "VERSION") {
+			headers = append(headers, line)
+		}
+		switch {
+		case strings.Contains(line, sponsoredMarker):
+			sponsoredLine = line
+		case strings.Contains(line, "alpha/one"):
+			organicLine = line
+		}
+	}
+	if len(headers) != 2 {
+		t.Fatalf("table headers = %d, want 2 (SPONSORED + organic):\n%s", len(headers), out)
+	}
+	if headers[0] != headers[1] {
+		t.Errorf("stacked table headers differ — column widths not shared:\n%q\n%q",
+			headers[0], headers[1])
+	}
+	if sponsoredLine == "" || organicLine == "" {
+		t.Fatalf("missing sponsored/organic rows:\n%s", out)
+	}
+	if sw, ow := visibleLineWidth(sponsoredLine), visibleLineWidth(organicLine); sw != ow {
+		t.Errorf("sponsored row width %d != organic row width %d — sections misaligned:\n%s", sw, ow, out)
+	}
+}
+
+// visibleLineWidth measures a rendered line's printable width by
+// stripping ANSI escape sequences (mirrors ui's visible-width rule).
+func visibleLineWidth(s string) int {
+	var b strings.Builder
+	inEscape := false
+	for _, r := range s {
+		switch {
+		case r == '\x1b':
+			inEscape = true
+		case inEscape && r == 'm':
+			inEscape = false
+		case !inEscape:
+			b.WriteRune(r)
+		}
+	}
+	return len([]rune(b.String()))
+}
+
 func TestSponsoredRowsKeepOrganicRowShape(t *testing.T) {
 	// Same columns and cell renderers as organic; only the NAME cell
 	// carries the marker. SECURITY stays dash for an unscored boost.

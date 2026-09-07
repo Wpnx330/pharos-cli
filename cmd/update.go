@@ -16,6 +16,7 @@ import (
 )
 
 var updateDryRun bool
+var updateCheck bool
 var updateJSON bool
 
 // updateEntry is one server row in the update JSON report.
@@ -23,7 +24,16 @@ type updateEntry struct {
 	Name   string `json:"name"`
 	From   string `json:"from,omitempty"`
 	To     string `json:"to,omitempty"`
-	Action string `json:"action"` // "updated" | "up_to_date" | "update_available" | "not_found" | "failed"
+	Action string `json:"action"` // "updated" | "up_to_date" | "update_available" | "pinned" | "not_found" | "failed"
+	// W5.1 origin extras. Origin is the lockfile provenance, omitted
+	// when the entry has none (legacy entries — never null). Pinned
+	// marks servers whose lockfile entry carries PinnedAt. Repo and
+	// Changelog are --check-only derivations from ALREADY-fetched
+	// registry data (no extra fetches), omitted when not derivable.
+	Origin    *lockfile.OriginInfo `json:"origin,omitempty"`
+	Pinned    bool                 `json:"pinned,omitempty"`
+	Repo      string               `json:"repo,omitempty"`
+	Changelog string               `json:"changelog,omitempty"`
 }
 
 // updateReport is the JSON shape of `update --json`.
@@ -33,6 +43,7 @@ type updateReport struct {
 	UpToDate         int           `json:"up_to_date"`
 	NotFound         int           `json:"not_found"`
 	UpdatesAvailable int           `json:"updates_available"`
+	Pinned           int           `json:"pinned"`
 	Servers          []updateEntry `json:"servers"`
 }
 
@@ -42,7 +53,13 @@ var updateCmd = &cobra.Command{
 	Long: ui.Label.Render("pharos update") + ` checks all servers in pharos.lock for newer versions.
 With a name argument, updates only that server.
 
-Use --dry-run to see what would change without modifying anything.`,
+Use --dry-run to see what would change without modifying anything.
+Use --check for the same no-apply preview plus origin-aware extras:
+when a server's origin or registry metadata carries a repository URL on
+a known git host (github/gitlab), the repo and a changelog link are
+shown. --dry-run and --check may be combined; they select the same mode.
+
+Use --all (or no arguments) to update every server in the lockfile.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		_, client := loadConfig()
@@ -86,8 +103,13 @@ Use --dry-run to see what would change without modifying anything.`,
 			}
 		}
 
+		// W5.1: --check is an alias of --dry-run with origin-aware
+		// extras (repo/changelog links). Both flags may be passed
+		// together — they select the same no-apply mode.
+		checkMode := updateDryRun || updateCheck
+
 		var updatesAvailable, upToDate, notFound, updated int
-		report := &updateReport{DryRun: updateDryRun, Servers: []updateEntry{}}
+		report := &updateReport{DryRun: checkMode, Servers: []updateEntry{}}
 
 		// Sort server names for deterministic output
 		names := make([]string, 0, len(lf.Servers))
@@ -106,11 +128,20 @@ Use --dry-run to see what would change without modifying anything.`,
 			if err != nil {
 				notFound++
 				report.NotFound++
-				report.Servers = append(report.Servers, updateEntry{Name: name, From: entry.Version, Action: "not_found"})
+				report.Servers = append(report.Servers, updateEntry{Name: name, From: entry.Version, Action: "not_found", Origin: entry.Origin})
 				if !JSONRequested() {
 					fmt.Printf("  %s  %s — %s\n", ui.Muted.Render("?"), name, ui.Muted.Render("not found in registry"))
 				}
 				continue
+			}
+
+			// W5.1 --check extras: repo/changelog links derived from
+			// data already fetched (origin Ref, packument repo_url) —
+			// never an extra network call, never fabricated for
+			// unknown hosts.
+			repo, changelog := "", ""
+			if updateCheck {
+				repo, changelog = deriveRepoLinks(entry, pkg)
 			}
 
 			latest := ""
@@ -124,19 +155,27 @@ Use --dry-run to see what would change without modifying anything.`,
 			if latest == entry.Version {
 				upToDate++
 				report.UpToDate++
-				report.Servers = append(report.Servers, updateEntry{Name: name, From: entry.Version, To: latest, Action: "up_to_date"})
+				report.Servers = append(report.Servers, updateEntry{
+					Name: name, From: entry.Version, To: latest, Action: "up_to_date",
+					Origin: entry.Origin, Repo: repo, Changelog: changelog,
+				})
 				if !JSONRequested() {
 					fmt.Printf("  %s  %s@%s %s\n", ui.Success.Render("✓"), name, entry.Version, ui.Muted.Render("(up to date)"))
+					printCheckOriginExtras(repo, changelog)
 				}
 				continue
 			}
 
 			updatesAvailable++
-			if updateDryRun {
+			if checkMode {
 				report.UpdatesAvailable++
-				report.Servers = append(report.Servers, updateEntry{Name: name, From: entry.Version, To: latest, Action: "update_available"})
+				report.Servers = append(report.Servers, updateEntry{
+					Name: name, From: entry.Version, To: latest, Action: "update_available",
+					Origin: entry.Origin, Repo: repo, Changelog: changelog,
+				})
 				if !JSONRequested() {
 					fmt.Printf("  %s  %s: %s → %s\n", ui.Label.Render("→"), name, entry.Version, latest)
+					printCheckOriginExtras(repo, changelog)
 				}
 				continue
 			}
@@ -224,11 +263,15 @@ Use --dry-run to see what would change without modifying anything.`,
 			report.Servers = append(report.Servers, updateEntry{Name: name, From: entry.Version, To: latest, Action: "updated"})
 		}
 
-		if updateDryRun {
+		if checkMode {
 			if JSONRequested() {
 				return printUpdateJSON(report)
 			}
-			fmt.Printf("\n%s  %d update(s) available (dry run)\n", ui.Label.Render("Summary:"), updatesAvailable)
+			mode := "dry run"
+			if updateCheck {
+				mode = "check"
+			}
+			fmt.Printf("\n%s  %d update(s) available (%s)\n", ui.Label.Render("Summary:"), updatesAvailable, mode)
 			return nil
 		}
 
@@ -302,6 +345,7 @@ func originAfterUpdate(entry lockfile.ServerEntry, name, latest string) *lockfil
 
 func init() {
 	updateCmd.Flags().BoolVar(&updateDryRun, "dry-run", false, "show what would change without applying updates")
+	updateCmd.Flags().BoolVar(&updateCheck, "check", false, "like --dry-run, plus repo/changelog links for git-hosted origins")
 	updateCmd.Flags().BoolVar(&updateJSON, "json", false, "output as JSON")
 	rootCmd.AddCommand(updateCmd)
 }

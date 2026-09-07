@@ -1,8 +1,14 @@
 package cmd
 
 import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -316,3 +322,323 @@ func TestUpdateLockfileRefreshesPinnedOnReinstall(t *testing.T) {
  		t.Errorf("origin after reinstall = %+v, want the new install origin", entry.Origin)
  	}
  }
+
+// =============================================================
+// W5.1 A6 — `pharos update --check` origin-aware extras
+// =============================================================
+
+// checkRegistryWithRepo serves echo-server@1.0.0 with a repo_url, plus a
+// stale-able beta-server at latest 2.0.0 whose repo_url sits on an
+// UNKNOWN git host (links must be suppressed, never fabricated).
+func checkRegistryWithRepo(t *testing.T) {
+	t.Helper()
+	home := isolateHome(t)
+	t.Setenv("PHAROS_WINDOWS_USERS_ROOT", filepath.Join(t.TempDir(), "absent"))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/v1/packages/echo-server"):
+			_, _ = io.WriteString(w, `{
+				"name": "echo-server",
+				"repo_url": "https://github.com/example/echo",
+				"dist_tags": {"latest": "1.0.0"},
+				"versions": [
+					{"version": "1.0.0", "status": "active", "created_at": "2026-01-01T00:00:00Z",
+					 "manifest": {"name": "echo-server", "version": "1.0.0", "transport": "http-sse",
+					              "endpoint": "https://echo.example.test/sse", "capabilities": ["tools"]}}
+				]
+			}`)
+		case strings.HasPrefix(r.URL.Path, "/v1/packages/beta-server"):
+			_, _ = io.WriteString(w, `{
+				"name": "beta-server",
+				"repo_url": "https://git.sr.ht/~example/beta",
+				"dist_tags": {"latest": "2.0.0"},
+				"versions": [
+					{"version": "2.0.0", "status": "active", "created_at": "2026-01-01T00:00:00Z",
+					 "manifest": {"name": "beta-server", "version": "2.0.0", "transport": "http-sse",
+					              "endpoint": "https://beta.example.test/sse", "capabilities": ["tools"]}},
+					{"version": "1.0.0", "status": "active", "created_at": "2026-01-01T00:00:00Z",
+					 "manifest": {"name": "beta-server", "version": "1.0.0", "transport": "http-sse",
+					              "endpoint": "https://beta.example.test/sse", "capabilities": ["tools"]}}
+				]
+			}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	dir := filepath.Join(home, ".pharos")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := `{"registry":` + strconv.Quote(srv.URL) + `}`
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// plantW51Lockfile writes a lockfile JSON into cwd and fails on error.
+func plantW51Lockfile(t *testing.T, serversJSON string) {
+	t.Helper()
+	lf := `{"version":1,"servers":` + serversJSON + `}`
+	if err := os.WriteFile(filepath.Join(originCwd(t), "pharos.lock"), []byte(lf), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// parseUpdateReport requires stdout to be exactly one valid update
+// report JSON document.
+func parseUpdateReport(t *testing.T, stdout string) updateReport {
+	t.Helper()
+	trimmed := strings.TrimSpace(stdout)
+	if trimmed == "" {
+		t.Fatal("stdout is empty — no update report JSON emitted")
+	}
+	var r updateReport
+	if err := json.Unmarshal([]byte(trimmed), &r); err != nil {
+		t.Fatalf("stdout is not a single update report JSON document: %v\n%s", err, trimmed)
+	}
+	return r
+}
+
+// findUpdateRow returns the report row for a server.
+func findUpdateRow(t *testing.T, r updateReport, name string) updateEntry {
+	t.Helper()
+	for _, e := range r.Servers {
+		if e.Name == name {
+			return e
+		}
+	}
+	t.Fatalf("server %q missing from update report: %+v", name, r.Servers)
+	return updateEntry{}
+}
+
+// TestUpdateCheckDerivesRepoLinks: --check emits the repo + releases
+// changelog for a github-hosted package (legacy nil-origin entry —
+// backfill treats it as registry and derives from packument repo_url),
+// and emits NEITHER for an unknown git host.
+func TestUpdateCheckDerivesRepoLinks(t *testing.T) {
+	checkRegistryWithRepo(t)
+	fakeGenericClient(t)
+	inTempDir(t)
+	// Legacy entries: no origin — backfill = registry derivation path.
+	plantW51Lockfile(t, `{
+		"echo-server":{"version":"0.9.0","integrity":"sha512-x","transport":"http-sse","resolved":"","installedAt":"2026-01-01T00:00:00Z"},
+		"beta-server":{"version":"1.0.0","integrity":"sha512-x","transport":"http-sse","resolved":"","installedAt":"2026-01-01T00:00:00Z"}
+	}`)
+
+	stdout, _ := runContract(t,
+		map[string]string{"PHAROS_JSON": "1", "PHAROS_NON_INTERACTIVE": "1"},
+		"update", "--check", "--json")
+
+	report := parseUpdateReport(t, stdout)
+	if !report.DryRun {
+		t.Error("--check report must set dry_run=true (check is a no-apply mode)")
+	}
+
+	echo := findUpdateRow(t, report, "echo-server")
+	if echo.Action != "update_available" {
+		t.Errorf("echo action = %q, want update_available", echo.Action)
+	}
+	if echo.Repo != "https://github.com/example/echo" {
+		t.Errorf("echo repo = %q, want the github URL", echo.Repo)
+	}
+	if echo.Changelog != "https://github.com/example/echo/releases" {
+		t.Errorf("echo changelog = %q, want the releases URL", echo.Changelog)
+	}
+	if echo.Origin != nil {
+		t.Errorf("legacy entry origin = %+v, want omitted (nil)", echo.Origin)
+	}
+
+	// Unknown host (sourcehut): no fabricated links.
+	beta := findUpdateRow(t, report, "beta-server")
+	if beta.Repo != "" || beta.Changelog != "" {
+		t.Errorf("unknown-host repo/changelog = %q/%q, want both empty (never fabricate)", beta.Repo, beta.Changelog)
+	}
+}
+
+// TestUpdateCheckOriginEmittedWhenStored: a stored origin rides along on
+// the report rows; adopted Ref on a known host wins over packument data.
+func TestUpdateCheckOriginEmittedWhenStored(t *testing.T) {
+	checkRegistryWithRepo(t)
+	fakeGenericClient(t)
+	inTempDir(t)
+	plantW51Lockfile(t, `{
+		"echo-server":{"version":"0.9.0","integrity":"sha512-x","transport":"http-sse","resolved":"","installedAt":"2026-01-01T00:00:00Z",
+		"origin":{"kind":"adopted","ref":"https://gitlab.com/example/echo","installed_via":"pharos import --adopt","adopted_from":"cursor"}}
+	}`)
+
+	stdout, _ := runContract(t,
+		map[string]string{"PHAROS_JSON": "1", "PHAROS_NON_INTERACTIVE": "1"},
+		"update", "--check", "--json")
+
+	report := parseUpdateReport(t, stdout)
+	echo := findUpdateRow(t, report, "echo-server")
+	if echo.Origin == nil {
+		t.Fatal("stored origin missing from report row")
+	}
+	if echo.Origin.Kind != "adopted" || echo.Origin.AdoptedFrom != "cursor" {
+		t.Errorf("origin = %+v, want adopted/cursor", echo.Origin)
+	}
+	// Adopted Ref is a known gitlab host → gitlab releases shape.
+	if echo.Repo != "https://gitlab.com/example/echo" {
+		t.Errorf("repo = %q, want the gitlab URL", echo.Repo)
+	}
+	if echo.Changelog != "https://gitlab.com/example/echo/-/releases" {
+		t.Errorf("changelog = %q, want the gitlab -/releases shape", echo.Changelog)
+	}
+}
+
+// TestUpdateCheckDoesNotApply: --check must not modify the lockfile.
+func TestUpdateCheckDoesNotApply(t *testing.T) {
+	checkRegistryWithRepo(t)
+	fakeGenericClient(t)
+	dir := inTempDir(t)
+	plantW51Lockfile(t, `{
+		"echo-server":{"version":"0.9.0","integrity":"sha512-x","transport":"http-sse","resolved":"","installedAt":"2026-01-01T00:00:00Z"}
+	}`)
+	before, err := os.ReadFile(filepath.Join(dir, "pharos.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runContract(t,
+		map[string]string{"PHAROS_NON_INTERACTIVE": "1"},
+		"update", "--check")
+
+	after, err := os.ReadFile(filepath.Join(dir, "pharos.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Error("--check modified the lockfile")
+	}
+	entry := originLockLoad(t, "echo-server")
+	if entry.Version != "0.9.0" {
+		t.Errorf("version after --check = %q, want 0.9.0 (unchanged)", entry.Version)
+	}
+}
+
+// TestUpdateCheckHumanExtras: human mode prints the repo/changelog line
+// under the preview row and suppresses it entirely for unknown hosts.
+func TestUpdateCheckHumanExtras(t *testing.T) {
+	checkRegistryWithRepo(t)
+	fakeGenericClient(t)
+	inTempDir(t)
+	plantW51Lockfile(t, `{
+		"echo-server":{"version":"0.9.0","integrity":"sha512-x","transport":"http-sse","resolved":"","installedAt":"2026-01-01T00:00:00Z"},
+		"beta-server":{"version":"1.0.0","integrity":"sha512-x","transport":"http-sse","resolved":"","installedAt":"2026-01-01T00:00:00Z"}
+	}`)
+
+	_, combined := runContract(t,
+		map[string]string{"PHAROS_NON_INTERACTIVE": "1"},
+		"update", "--check")
+
+	if !strings.Contains(combined, "repo: https://github.com/example/echo") {
+		t.Errorf("github repo line missing in:\n%s", combined)
+	}
+	if !strings.Contains(combined, "changelog: https://github.com/example/echo/releases") {
+		t.Errorf("github changelog line missing in:\n%s", combined)
+	}
+	if strings.Contains(combined, "git.sr.ht") {
+		t.Errorf("unknown host must not appear as a derived link:\n%s", combined)
+	}
+	if !strings.Contains(combined, "(check)") {
+		t.Errorf("check-mode summary missing in:\n%s", combined)
+	}
+}
+
+// TestUpdateCheckAndDryRunBothFlags: both flags together select the same
+// no-apply mode with extras (documented alias behavior).
+func TestUpdateCheckAndDryRunBothFlags(t *testing.T) {
+	checkRegistryWithRepo(t)
+	fakeGenericClient(t)
+	inTempDir(t)
+	plantW51Lockfile(t, `{
+		"echo-server":{"version":"0.9.0","integrity":"sha512-x","transport":"http-sse","resolved":"","installedAt":"2026-01-01T00:00:00Z"}
+	}`)
+
+	stdout, _ := runContract(t,
+		map[string]string{"PHAROS_JSON": "1", "PHAROS_NON_INTERACTIVE": "1"},
+		"update", "--check", "--dry-run", "--json")
+
+	report := parseUpdateReport(t, stdout)
+	if !report.DryRun {
+		t.Error("dry_run must be true when both --check and --dry-run are passed")
+	}
+	echo := findUpdateRow(t, report, "echo-server")
+	if echo.Repo != "https://github.com/example/echo" {
+		t.Errorf("repo = %q, want extras present under the combined mode", echo.Repo)
+	}
+	// No apply happened.
+	entry := originLockLoad(t, "echo-server")
+	if entry.Version != "0.9.0" {
+		t.Errorf("version = %q, want unchanged", entry.Version)
+	}
+}
+
+// ── derivation helper unit tests ────────────────────────────────────────
+
+func TestNormalizeRepoURL(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"https://github.com/x/y", "https://github.com/x/y"},
+		{"git+https://github.com/x/y.git", "https://github.com/x/y"},
+		{"  https://github.com/x/y.git  ", "https://github.com/x/y"},
+		{"git@github.com:x/y.git", "git@github.com:x/y"}, // scp-style left alone
+	}
+	for _, tc := range cases {
+		if got := normalizeRepoURL(tc.in); got != tc.want {
+			t.Errorf("normalizeRepoURL(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestGitHostReleasesBase(t *testing.T) {
+	if _, _, ok := gitHostReleasesBase("echo-server@1.0.0"); ok {
+		t.Error("a registry Ref is not a URL — must not derive")
+	}
+	if _, _, ok := gitHostReleasesBase("https://git.sr.ht/~x/y"); ok {
+		t.Error("unknown host must not derive")
+	}
+	if _, _, ok := gitHostReleasesBase("ftp://github.com/x/y"); ok {
+		t.Error("non-http(s) scheme must not derive")
+	}
+	if _, _, ok := gitHostReleasesBase(""); ok {
+		t.Error("empty ref must not derive")
+	}
+	if repo, releases, ok := gitHostReleasesBase("git+https://github.com/x/y.git"); !ok || repo != "https://github.com/x/y" || releases != "releases" {
+		t.Errorf("github derivation = %q/%q/%v", repo, releases, ok)
+	}
+	if _, releases, ok := gitHostReleasesBase("https://gitlab.com/x/y"); !ok || releases != "-/releases" {
+		t.Errorf("gitlab releases path = %q (ok=%v), want -/releases", releases, ok)
+	}
+}
+
+// TestUpdateReportJSONAbsentNot — JSON purity discipline: absent
+// origin/repo/changelog (entry level) are OMITTED (never null), the
+// report's pinned COUNTER is always present like its sibling counters,
+// and servers stays a non-null array.
+func TestUpdateReportJSONAbsentNot(t *testing.T) {
+	report := updateReport{Servers: []updateEntry{{Name: "a", Action: "up_to_date"}}}
+	data := mustMarshalIndent(report)
+	s := string(data)
+	if strings.Contains(s, "null") {
+		t.Errorf("report serialized null for absent fields:\n%s", s)
+	}
+	for _, key := range []string{`"origin"`, `"repo"`, `"changelog"`, `"pinned"`} {
+		if strings.Contains(s, `"pinned": true`) || strings.Contains(s, `"pinned":true`) {
+			continue
+		}
+		if key != `"pinned"` && strings.Contains(s, key) {
+			t.Errorf("absent %s must be omitted, not emitted:\n%s", key, s)
+		}
+	}
+	if !strings.Contains(s, `"servers": [`) && !strings.Contains(s, `"servers":`) {
+		t.Errorf("servers array missing:\n%s", s)
+	}
+	if !strings.Contains(s, `"pinned": 0`) {
+		t.Errorf("pinned counter must always be present (sibling counters are):\n%s", s)
+	}
+}

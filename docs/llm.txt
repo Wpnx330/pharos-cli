@@ -534,6 +534,7 @@ NON-INTERACTIVE: --yes, or PHAROS_ASSUME_YES=1
 SHORT: Check for and apply updates to installed MCP servers
 USAGE: pharos update [name] [flags]
 FLAGS:
+  --check <bool> (default: false) like --dry-run, plus repo/changelog links for git-hosted origins
   --dry-run <bool> (default: false) show what would change without applying updates
   --help <bool> (default: false) help for update
   --json <bool> (default: false) output as JSON

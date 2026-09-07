@@ -37,7 +37,7 @@ var searchCmd = &cobra.Command{
 			fmt.Fprintln(os.Stderr, ui.Error.Render("Search failed:"), err)
 			return
 		}
-		if len(results.Results) == 0 {
+		if len(results.Results) == 0 && len(results.Boosted) == 0 {
 			fmt.Println(ui.Muted.Render("No packages found."))
 			return
 		}
@@ -46,17 +46,7 @@ var searchCmd = &cobra.Command{
 			fmt.Println(string(data))
 			return
 		}
-		cols := searchTableColumns()
-		var rows []ui.TableRow
-		for _, r := range results.Results {
-			rows = append(rows, searchTableRow(r))
-		}
-		fmt.Print(ui.RenderTable(cols, rows))
-		fmt.Println(searchInfoFooter())
-		fmt.Printf("\n%s\n", ui.Muted.Render(fmt.Sprintf("%d package(s) found", results.Total)))
-		if hint := searchNextPageHint(query, searchPage, searchRegistry, searchTransport, results.NextCursor); hint != "" {
-			fmt.Println(ui.Muted.Render(hint))
-		}
+		renderSearchResults(results, query, searchPage, searchRegistry, searchTransport)
 	},
 }
 
@@ -207,4 +197,61 @@ func formatSearchDownloads(n int64) string {
 func trimDownloadsDecimal(v float64) string {
 	s := strconv.FormatFloat(v, 'f', 1, 64)
 	return strings.TrimSuffix(s, ".0")
+}
+
+// maxSponsoredSlots mirrors the registry's boosted-slot cap (SPEC §D1:
+// two reads as curation, three reads as ads). The server already enforces
+// it; the CLI re-asserts it so a misbehaving registry can never surface
+// more than two paid rows.
+const maxSponsoredSlots = 2
+
+// sponsoredHeader is the muted section title printed above the boosted
+// rows. Deliberately lowercase-subtle in tone: the CLI is the integrity
+// surface, and paid entries are disclosed, never merchandised.
+const sponsoredHeader = "SPONSORED"
+
+// sponsoredMarker is appended to the NAME cell of every boosted row.
+const sponsoredMarker = " [boosted]"
+
+// renderSearchResults prints the text search output: the SPONSORED
+// mini-section (only when the registry sent boosted entries) above the
+// organic table, which keeps its exact pre-boosts rendering — columns,
+// widths, footer, count, and next-page hint are untouched. With no
+// boosted entries the output is byte-identical to the organic-only
+// rendering.
+func renderSearchResults(results *api.SearchResponse, query string, page int, registry, transport string) {
+	if len(results.Boosted) > 0 {
+		fmt.Println(ui.Muted.Render(sponsoredHeader))
+		fmt.Print(ui.RenderTable(searchTableColumns(), sponsoredTableRows(results.Boosted)))
+	}
+	if len(results.Results) == 0 {
+		return
+	}
+	cols := searchTableColumns()
+	var rows []ui.TableRow
+	for _, r := range results.Results {
+		rows = append(rows, searchTableRow(r))
+	}
+	fmt.Print(ui.RenderTable(cols, rows))
+	fmt.Println(searchInfoFooter())
+	fmt.Printf("\n%s\n", ui.Muted.Render(fmt.Sprintf("%d package(s) found", results.Total)))
+	if hint := searchNextPageHint(query, page, registry, transport, results.NextCursor); hint != "" {
+		fmt.Println(ui.Muted.Render(hint))
+	}
+}
+
+// sponsoredTableRows renders boosted entries with the same row shape as
+// organic results plus the [boosted] NAME marker. Rows beyond
+// maxSponsoredSlots are dropped (defense in depth, SPEC §D1 cap).
+func sponsoredTableRows(boosted []api.SearchResult) []ui.TableRow {
+	rows := make([]ui.TableRow, 0, min(len(boosted), maxSponsoredSlots))
+	for _, r := range boosted {
+		if len(rows) == maxSponsoredSlots {
+			break
+		}
+		row := searchTableRow(r)
+		row[0] = ui.PackageName.Render(r.Name + sponsoredMarker)
+		rows = append(rows, row)
+	}
+	return rows
 }

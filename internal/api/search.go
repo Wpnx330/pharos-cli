@@ -41,6 +41,11 @@ type SearchResult struct {
 	// omit the key); both parse to a nil pointer. The tag has no
 	// omitempty so --json echoes the registry's explicit-null contract.
 	Scorecard *ScorecardSummary `json:"scorecard"`
+	// Sponsored marks a paid (boosted) entry (SPEC §D1: label always).
+	// The registry sends "sponsored": true only on items in the boosted
+	// array and omits the key on organic rows, so the tag mirrors the
+	// server's omitempty exactly — --json round-trips the contract.
+	Sponsored bool `json:"sponsored,omitempty"`
 }
 
 // Publisher is the publisher namespace flattened from the registry's
@@ -73,9 +78,16 @@ func (p *Publisher) UnmarshalJSON(data []byte) error {
 
 // SearchResponse is the response envelope for the search endpoint.
 type SearchResponse struct {
-	Results    []SearchResult `json:"results"`
-	NextCursor string         `json:"nextCursor"`
-	Total      int            `json:"total"`
+	Results []SearchResult `json:"results"`
+	// Boosted holds sponsored slots in a separate array (organic results
+	// are never reordered by payment). The registry always sends the key
+	// — an empty array when nothing matched — so the tag has no omitempty
+	// and --json echoes that contract. Older registries omit the key;
+	// that deserializes to nil and the CLI renders no boosted section.
+	Boosted []SearchResult `json:"boosted"`
+	// NextCursor is the opaque pagination offset for the next page.
+	NextCursor string `json:"nextCursor"`
+	Total      int    `json:"total"`
 }
 
 // SearchParams holds query, pagination, and filter arguments for GET /v1/search.
@@ -112,6 +124,12 @@ func (c *Client) Search(params SearchParams) (*SearchResponse, error) {
 	var resp SearchResponse
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, err
+	}
+	// Normalize the boosted key so --json always echoes the current
+	// server contract (an explicit empty array, never null): registries
+	// predating W4.2 omit the key, which deserializes to nil.
+	if resp.Boosted == nil {
+		resp.Boosted = []SearchResult{}
 	}
 	return &resp, nil
 }

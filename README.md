@@ -106,6 +106,7 @@ pharos daemon log -n 100       # Show last 100 lines of daemon log
 pharos daemon autostart --on   # Enable autostart on boot
 pharos daemon autostart --off  # Disable autostart on boot
 pharos daemon autostart        # Show current autostart status
+pharos budget                  # Idle-cost budget — resident processes, memory, unload suggestions
 
 # Auth
 pharos login                   # GitHub OAuth login (opens browser)
@@ -620,6 +621,29 @@ The daemon can re-read `~/.pharos/mcp.json` and reconcile — adding new servers
 ```bash
 touch ~/.pharos/daemon.reload   # works on Linux, macOS, and Windows
 ```
+
+### Idle-cost budget (`pharos budget`)
+
+Nobody manages the *cost* side of MCP fleets: every stdio server is a resident process, and every daemon-managed HTTP/SSE server holds a JIT-loaded backing process until its idle timeout unloads it. `pharos budget` aggregates that standing cost and suggests where it can be cut:
+
+```bash
+pharos budget          # human report
+pharos budget --json   # full structured report
+```
+
+The report shows: the daemon itself (PID, uptime, RSS), a resident-process count (live backing processes + the daemon) with estimated memory, and a per-server table — each server's idle time against **its own** idle timeout with a BUDGET flag:
+
+| Flag | Meaning |
+|------|---------|
+| `active` | inside its idle budget |
+| `over` | past its budget and still resident (due to unload) |
+| `idle` | past its budget, unloaded (the normal JIT end state) |
+| `always-on` | `idleTimeout=0` — no auto-unload budget exists |
+| `never-used` | no recorded request |
+
+It ends with **advisory suggestions** — servers idle >30 days, resident always-on servers that haven't served a request in 7+ days, and a daemon holding zero servers — naming the real commands (`pharos stop <name>`, `pharos daemon stop`) and never applying anything. `pharos budget` is strictly read-only: it reads `~/.pharos/daemon.json` plus OS process probes, writes nothing, prints no receipt. Memory figures are OS RSS **estimates** (labeled as such); a failed probe shows `—` and never fails the command. When the daemon isn't running, that's a valid report: 0 resident processes, exit 0. Token metering is not implemented (no API exposes usage yet).
+
+Under `--json` (or `PHAROS_JSON=1`) the report is a single document: `daemon{pid, startedAt, uptimeMinutes}` (omitted when not running), `servers[]{name, pid?, port, startedAt?, lastActivity?, idleMinutes?, idleTimeoutMinutes, resident, memoryRSSBytes?}` (`?` fields omitted when unknown, never null), `totals{residentProcesses, estimatedMemoryBytes?}`, and `suggestions[]{code, message}` with machine-stable codes (`idle_servers`, `always_on_idle`, `daemon_no_servers`).
 
 ### Autostart on boot
 

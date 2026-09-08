@@ -744,6 +744,36 @@ An expose requires the daemon to be running and managing `<name>` (checked read-
 - `--json` start output is a single pure document: `{name, addr, port, expiresAt, token}` (the one-time handoff). All progress and errors go to stderr, per the W1.1 JSON-purity contract.
 - The token is passed to the detached `--background` worker via the `PHAROS_EXPOSE_TOKEN` environment variable; worker output goes to `~/.pharos/expose.log`. (Environment variables are readable by processes running as the same user — e.g. via `/proc/<pid>/environ` on Linux — so on a shared host, prefer a foreground run or trust same-user accounts.)
 
+## MCP stdio server (`pharos serve`)
+
+`pharos serve` turns Pharos into a [Model Context Protocol](https://modelcontextprotocol.io) **stdio server**: newline-delimited JSON-RPC 2.0 on stdin/stdout, so MCP clients (Claude Desktop, Cursor, Hermes, ...) can use Pharos directly as a tool provider. No SDK, no extra dependencies — the protocol core is hand-rolled in `internal/mcpserver/` (the same framing discipline as the `pharos try` client in `internal/mcpclient/`).
+
+Tools exposed:
+
+| Tool | Arguments | What it does |
+|------|-----------|--------------|
+| `search` | `query`, `limit?` (1–50, default 10), `transport?` | Registry search: name, version, description, 30-day downloads, transports, scorecard grade |
+| `info` | `name` | Package details: publisher, license, versions, latest, transport, scorecard, and a ready-to-run `pharos install` hint |
+| `list_installed` | — | Contents of `pharos.lock` (name, version, origin, pinned, clients) — read-only |
+| `install` | `name`, `version?` | **Opt-in** via `--allow-install`; runs the same pipeline as `pharos install` (store, canonical config, detected MCP clients, `pharos.lock`) |
+
+The `install` tool is **off by default**. When the flag is absent it is omitted from `tools/list`, and a direct `tools/call` for it answers an `isError` result telling the client to restart with `--allow-install`. When enabled it honors `PHAROS_REMOTE_ONLY` like the CLI. Tool failures are `isError:true` tool results, never protocol errors and never a crash; unknown methods answer `-32601`, bad params `-32602`.
+
+Wire it into an MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "pharos": {
+      "command": "pharos",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+stdout carries **only** protocol frames (diagnostics go to stderr), the handshake answers `initialize` with `protocolVersion 2024-11-05` and `serverInfo {name: "pharos"}`, and the server runs until the client closes stdin. This also lets registry indexers such as [Glama](https://glama.ai/mcp) introspect Pharos itself over stdio for listing and badge purposes.
+
 ## Author
 
 Built by [Chris Wykel](https://chriswykel.com) — reach me at chris@chriswykel.com.

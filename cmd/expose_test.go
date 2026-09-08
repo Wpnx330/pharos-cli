@@ -235,10 +235,10 @@ func TestClassifyExpose(t *testing.T) {
 		wantSt   string
 	}{
 		{
-			name:   "expired wins over live pid",
-			entry:  expose.Entry{PID: 4242, ExpiresAt: now.Add(-time.Minute)},
+			name:    "expired wins over live pid",
+			entry:   expose.Entry{PID: 4242, ExpiresAt: now.Add(-time.Minute)},
 			wantExp: true,
-			wantSt: "expired",
+			wantSt:  "expired",
 		},
 		{
 			name:     "live pid inside ttl",

@@ -12,8 +12,8 @@ func withTempDaemonDir(t *testing.T) string {
 	t.Helper()
 	tmpDir := t.TempDir()
 	orig := daemonDirFn
-	daemonDirFn = func() (string, error) { return tmpDir, nil }
-	t.Cleanup(func() { daemonDirFn = orig })
+	setDaemonDirFn(func() (string, error) { return tmpDir, nil })
+	t.Cleanup(func() { setDaemonDirFn(orig) })
 	return tmpDir
 }
 

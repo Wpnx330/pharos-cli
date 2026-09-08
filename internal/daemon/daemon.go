@@ -29,6 +29,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -41,11 +42,12 @@ import (
 // DaemonStatus holds information about the daemon process and the
 // servers it is currently managing.
 type DaemonStatus struct {
-	Running   bool           // whether the daemon is currently running
-	PID       int            // daemon process ID (0 if not running)
-	Port      int            // base port (informational)
-	StartedAt time.Time      // when the daemon was started
-	Servers   []ServerStatus // managed server details
+	Running      bool              // whether the daemon is currently running
+	PID          int               // daemon process ID (0 if not running)
+	Port         int               // base port (informational)
+	StartedAt    time.Time         // when the daemon was started
+	Servers      []ServerStatus    // managed server details
+	BindFailures map[string]string // server name -> why its proxy bind failed
 }
 
 // ServerStatus holds the state of a single server managed by the daemon.
@@ -65,6 +67,25 @@ type DaemonState struct {
 	PID       int                    `json:"pid"`
 	StartedAt time.Time              `json:"startedAt"`
 	Servers   map[string]ServerState `json:"servers"`
+	// BindFailures records why a server's proxy listener could not be
+	// bound, so status/ensure output can be honest instead of assuming
+	// "running" means reachable. Cleared on a successful bind.
+	BindFailures map[string]string `json:"bindFailures,omitempty"`
+}
+
+// recordBindFailure notes why the named server's proxy bind failed.
+// Safe on a state with a nil BindFailures map.
+func (st *DaemonState) recordBindFailure(name, reason string) {
+	if st.BindFailures == nil {
+		st.BindFailures = make(map[string]string)
+	}
+	st.BindFailures[name] = reason
+}
+
+// clearBindFailure removes any recorded bind failure for the named server.
+// Safe on a state with a nil BindFailures map.
+func (st *DaemonState) clearBindFailure(name string) {
+	delete(st.BindFailures, name)
 }
 
 // ServerState is the per-server entry in DaemonState.
@@ -91,8 +112,21 @@ func daemonDir() (string, error) {
 	return dir, nil
 }
 
-// daemonDirFn is overridable in tests.
-var daemonDirFn = daemonDir
+// daemonDirResolver holds the daemon-directory resolver atomically because
+// backing-process goroutines may resolve daemon paths (via saveState) long
+// after the call that spawned them returns, concurrently with test cleanup
+// reassignment (regression: DATA RACE on the previous plain global).
+var daemonDirResolver atomic.Value
+
+func init() { daemonDirResolver.Store(daemonDir) }
+
+// setDaemonDirFn overrides the daemon-directory resolver (tests only).
+func setDaemonDirFn(fn func() (string, error)) { daemonDirResolver.Store(fn) }
+
+// daemonDirFn resolves the daemon directory via the current resolver.
+func daemonDirFn() (string, error) {
+	return daemonDirResolver.Load().(func() (string, error))()
+}
 
 func daemonPIDPath() (string, error) {
 	dir, err := daemonDirFn()
@@ -443,16 +477,25 @@ func Start() error {
 
 		ms.BackingPort = resolveBackingPort(ms.Command, ms.Args, srv.URL, port)
 
-		// Start proxy listener
-		listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		// Start proxy listener, walking upward past held ports.
+		listener, actual, err := listenFree(port)
 		if err != nil {
-			d.log.Printf("ERROR: failed to listen on port %d for %s: %v", port, name, err)
+			d.log.Printf("ERROR: failed to listen near port %d for %s: %v", port, name, err)
+			d.mu.Lock()
+			d.state.recordBindFailure(name, err.Error())
+			d.mu.Unlock()
 			continue
 		}
+		if actual != port {
+			d.log.Printf("WARNING: port %d held — %s proxy moved to %d", port, name, actual)
+		}
+		port = actual
+		ms.Port = port
 		ms.listener = listener
 		ms.state = "unloaded"
 
 		d.mu.Lock()
+		d.state.clearBindFailure(name)
 		d.servers[name] = ms
 		d.state.Servers[name] = ServerState{
 			State:       "unloaded",
@@ -580,9 +623,10 @@ func Status() (*DaemonStatus, error) {
 	}
 
 	ds := &DaemonStatus{
-		Running:   true,
-		PID:       pid,
-		StartedAt: st.StartedAt,
+		Running:      true,
+		PID:          pid,
+		StartedAt:    st.StartedAt,
+		BindFailures: st.BindFailures,
 	}
 
 	// Read /proc for memory if running
@@ -760,14 +804,21 @@ func (d *Daemon) reconcile() {
 			ms.Env = append(ms.Env, k+"="+v)
 		}
 
-		listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		listener, actual, err := listenFree(port)
 		if err != nil {
-			d.log.Printf("ERROR: failed to listen on port %d for %s: %v", port, name, err)
+			d.log.Printf("ERROR: failed to listen near port %d for %s: %v", port, name, err)
+			d.state.recordBindFailure(name, err.Error())
 			continue
 		}
+		if actual != port {
+			d.log.Printf("WARNING: port %d held — %s proxy moved to %d", port, name, actual)
+		}
+		port = actual
+		ms.Port = port
 		ms.listener = listener
 		ms.state = "unloaded"
 
+		d.state.clearBindFailure(name)
 		d.servers[name] = ms
 		d.state.Servers[name] = ServerState{
 			State:       "unloaded",
@@ -842,6 +893,7 @@ func (d *Daemon) reconcile() {
 			}
 			delete(d.servers, name)
 			delete(d.state.Servers, name)
+			d.state.clearBindFailure(name)
 			d.log.Printf("Removed server %s via SIGHUP reconcile", name)
 		}
 	}
@@ -1051,6 +1103,29 @@ func isPortOpen(port int) bool {
 	}
 	conn.Close()
 	return true
+}
+
+// maxPortProbeHops bounds how far listenFree walks upward from the
+// preferred port before giving up.
+const maxPortProbeHops = 100
+
+// listenFree binds 127.0.0.1 on the preferred port, walking upward while
+// the port is held (bounded by maxPortProbeHops). It returns the listener
+// and the actual bound port so callers can correct persisted port
+// assignments instead of silently leaving a server unmanaged.
+func listenFree(preferred int) (net.Listener, int, error) {
+	port := preferred
+	for hop := 0; hop < maxPortProbeHops; hop++ {
+		if !isUsablePort(port) {
+			return nil, 0, fmt.Errorf("no usable port near %d", preferred)
+		}
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err == nil {
+			return ln, port, nil
+		}
+		port++
+	}
+	return nil, 0, fmt.Errorf("no free port near %d after probing %d ports", preferred, maxPortProbeHops)
 }
 
 func readProcessMemory(pid int) int64 {

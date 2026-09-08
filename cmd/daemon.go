@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -213,8 +214,29 @@ func runDaemonStatus(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  %s  %s\n", ui.Muted.Render("Started:"), formatTimeAgo(status.StartedAt))
 	}
 
+	// Proxy port bind failures — a running daemon does not guarantee every
+	// configured server is actually reachable.
+	if len(status.BindFailures) > 0 {
+		names := make([]string, 0, len(status.BindFailures))
+		for n := range status.BindFailures {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		fmt.Printf("\n%s\n", ui.Error.Render("⚠ Proxy port bind failures:"))
+		for _, n := range names {
+			fmt.Printf("  %s  %s — %s\n", ui.Error.Render("✗"),
+				ui.PackageName.Render(n), status.BindFailures[n])
+		}
+		fmt.Printf("  %s  %s\n", ui.Muted.Render("Fix:"),
+			"free the port, then run 'pharos daemon restart' (~/.pharos/daemon.log has details)")
+	}
+
 	if len(status.Servers) == 0 {
-		fmt.Printf("\n%s\n", ui.Muted.Render("No servers managed by daemon."))
+		if len(status.BindFailures) > 0 {
+			fmt.Printf("\n%s\n", ui.Muted.Render("No servers managed — all proxy port binds failed."))
+		} else {
+			fmt.Printf("\n%s\n", ui.Muted.Render("No servers managed by daemon."))
+		}
 		return nil
 	}
 
@@ -284,11 +306,12 @@ var daemonStatusJSON bool
 // internal/daemon's types so the wire format stays stable even if the
 // internal structs change.
 type daemonStatusOut struct {
-	Running   bool              `json:"running"`
-	PID       int               `json:"pid"`
-	Port      int               `json:"port,omitempty"`
-	StartedAt string            `json:"started_at,omitempty"`
-	Servers   []daemonServerOut `json:"servers"`
+	Running      bool              `json:"running"`
+	PID          int               `json:"pid"`
+	Port         int               `json:"port,omitempty"`
+	StartedAt    string            `json:"started_at,omitempty"`
+	Servers      []daemonServerOut `json:"servers"`
+	BindFailures map[string]string `json:"bind_failures,omitempty"`
 }
 
 // daemonServerOut is one managed server in the status JSON.
@@ -304,10 +327,11 @@ type daemonServerOut struct {
 // printDaemonStatusJSON emits the daemon status as JSON to stdout.
 func printDaemonStatusJSON(status *daemon.DaemonStatus) error {
 	out := daemonStatusOut{
-		Running: status.Running,
-		PID:     status.PID,
-		Port:    status.Port,
-		Servers: make([]daemonServerOut, 0, len(status.Servers)),
+		Running:      status.Running,
+		PID:          status.PID,
+		Port:         status.Port,
+		Servers:      make([]daemonServerOut, 0, len(status.Servers)),
+		BindFailures: status.BindFailures,
 	}
 	if !status.StartedAt.IsZero() {
 		out.StartedAt = status.StartedAt.UTC().Format(time.RFC3339)

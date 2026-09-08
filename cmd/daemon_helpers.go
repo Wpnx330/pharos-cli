@@ -36,6 +36,18 @@ func ensureDaemonRunning(name string) {
 				ui.Muted.Render("·"))
 		}
 		waitForKind2Listen(defaultKind2ListenPort, 5*time.Second)
+		// Honesty gate (QA D-1): also fire on the already-running path —
+		// this is the common install case. If the daemon could not bind a
+		// proxy port for this server, say so now.
+		if st, err := daemon.Status(); err == nil && st != nil &&
+			len(st.BindFailures) > 0 {
+			if reason, failed := st.BindFailures[name]; failed {
+				fmt.Fprintf(os.Stderr, "  %s  proxy bind FAILED for %s: %s\n",
+					ui.Error.Render("✗"), name, reason)
+				fmt.Fprintf(os.Stderr, "  %s  free the port and run 'pharos daemon restart' — see ~/.pharos/daemon.log\n",
+					ui.Muted.Render("Fix:"))
+			}
+		}
 		return
 	}
 
@@ -73,6 +85,19 @@ func ensureDaemonRunning(name string) {
 			// Start() already passed consumeLoadRequests before we queued.
 			queueBackingLoad(name)
 			waitForKind2Listen(defaultKind2ListenPort, 5*time.Second)
+			// Honesty gate (QA D-1): "daemon started" is not "server
+			// reachable". If the daemon could not bind the proxy port for
+			// this server, say so now instead of reporting a success the
+			// next `pharos list` will contradict.
+			if st, err := daemon.Status(); err == nil && st != nil &&
+				len(st.BindFailures) > 0 {
+				if reason, failed := st.BindFailures[name]; failed {
+					fmt.Fprintf(os.Stderr, "  %s  proxy bind FAILED for %s: %s\n",
+						ui.Error.Render("✗"), name, reason)
+					fmt.Fprintf(os.Stderr, "  %s  free the port and run 'pharos daemon restart' — see ~/.pharos/daemon.log\n",
+						ui.Muted.Render("Fix:"))
+				}
+			}
 			return
 		}
 		time.Sleep(200 * time.Millisecond)

@@ -23,8 +23,8 @@ import (
 func TestStateSaveLoad(t *testing.T) {
 	tmpDir := t.TempDir()
 	orig := daemonDirFn
-	daemonDirFn = func() (string, error) { return tmpDir, nil }
-	defer func() { daemonDirFn = orig }()
+	setDaemonDirFn(func() (string, error) { return tmpDir, nil })
+	defer func() { setDaemonDirFn(orig) }()
 
 	st := &DaemonState{
 		PID:       12345,
@@ -68,8 +68,8 @@ func TestStateSaveLoad(t *testing.T) {
 func TestStateLoadMissing(t *testing.T) {
 	tmpDir := t.TempDir()
 	orig := daemonDirFn
-	daemonDirFn = func() (string, error) { return tmpDir, nil }
-	defer func() { daemonDirFn = orig }()
+	setDaemonDirFn(func() (string, error) { return tmpDir, nil })
+	defer func() { setDaemonDirFn(orig) }()
 
 	st, err := loadState()
 	if err != nil {
@@ -86,8 +86,8 @@ func TestStateLoadMissing(t *testing.T) {
 func TestStateFilePermissions(t *testing.T) {
 	tmpDir := t.TempDir()
 	orig := daemonDirFn
-	daemonDirFn = func() (string, error) { return tmpDir, nil }
-	defer func() { daemonDirFn = orig }()
+	setDaemonDirFn(func() (string, error) { return tmpDir, nil })
+	defer func() { setDaemonDirFn(orig) }()
 
 	st := &DaemonState{
 		PID:     1,
@@ -117,8 +117,8 @@ func TestStateFilePermissions(t *testing.T) {
 func TestPIDFileWriteRead(t *testing.T) {
 	tmpDir := t.TempDir()
 	orig := daemonDirFn
-	daemonDirFn = func() (string, error) { return tmpDir, nil }
-	defer func() { daemonDirFn = orig }()
+	setDaemonDirFn(func() (string, error) { return tmpDir, nil })
+	defer func() { setDaemonDirFn(orig) }()
 
 	if err := writeDaemonPID(99999); err != nil {
 		t.Fatalf("writeDaemonPID: %v", err)
@@ -143,8 +143,8 @@ func TestPIDFileWriteRead(t *testing.T) {
 func TestPIDFileMissing(t *testing.T) {
 	tmpDir := t.TempDir()
 	orig := daemonDirFn
-	daemonDirFn = func() (string, error) { return tmpDir, nil }
-	defer func() { daemonDirFn = orig }()
+	setDaemonDirFn(func() (string, error) { return tmpDir, nil })
+	defer func() { setDaemonDirFn(orig) }()
 
 	pid, err := readDaemonPID()
 	if err != nil {
@@ -254,8 +254,8 @@ func TestIsProcessAlive(t *testing.T) {
 func TestProxyForwarding(t *testing.T) {
 	tmpDir := t.TempDir()
 	orig := daemonDirFn
-	daemonDirFn = func() (string, error) { return tmpDir, nil }
-	defer func() { daemonDirFn = orig }()
+	setDaemonDirFn(func() (string, error) { return tmpDir, nil })
+	defer func() { setDaemonDirFn(orig) }()
 
 	// Start a backing server
 	backing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -434,8 +434,8 @@ func TestStopBackingWhenNotRunning(t *testing.T) {
 func TestStatusNotRunning(t *testing.T) {
 	tmpDir := t.TempDir()
 	orig := daemonDirFn
-	daemonDirFn = func() (string, error) { return tmpDir, nil }
-	defer func() { daemonDirFn = orig }()
+	setDaemonDirFn(func() (string, error) { return tmpDir, nil })
+	defer func() { setDaemonDirFn(orig) }()
 
 	// No PID file → not running
 	st, err := Status()
@@ -452,8 +452,8 @@ func TestStatusNotRunning(t *testing.T) {
 func TestStopServerCreatesRequestFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	orig := daemonDirFn
-	daemonDirFn = func() (string, error) { return tmpDir, nil }
-	defer func() { daemonDirFn = orig }()
+	setDaemonDirFn(func() (string, error) { return tmpDir, nil })
+	defer func() { setDaemonDirFn(orig) }()
 
 	// Start a dummy process that just sleeps, to use as a fake daemon PID
 	dummy := exec.Command("sleep", "10")
@@ -492,8 +492,8 @@ func TestStopServerCreatesRequestFile(t *testing.T) {
 func TestStopServerNoDaemon(t *testing.T) {
 	tmpDir := t.TempDir()
 	orig := daemonDirFn
-	daemonDirFn = func() (string, error) { return tmpDir, nil }
-	defer func() { daemonDirFn = orig }()
+	setDaemonDirFn(func() (string, error) { return tmpDir, nil })
+	defer func() { setDaemonDirFn(orig) }()
 
 	// No PID file — daemon not running
 	err := StopServer("test-server")
@@ -522,8 +522,8 @@ func TestAutostartStatusNotEnabled(t *testing.T) {
 func TestLogPath(t *testing.T) {
 	tmpDir := t.TempDir()
 	orig := daemonDirFn
-	daemonDirFn = func() (string, error) { return tmpDir, nil }
-	defer func() { daemonDirFn = orig }()
+	setDaemonDirFn(func() (string, error) { return tmpDir, nil })
+	defer func() { setDaemonDirFn(orig) }()
 
 	path, err := LogPath()
 	if err != nil {
@@ -641,8 +641,8 @@ func TestShouldManageServerKind1URLOnlySkipped(t *testing.T) {
 func TestLoadServerCreatesRequestFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	orig := daemonDirFn
-	daemonDirFn = func() (string, error) { return tmpDir, nil }
-	defer func() { daemonDirFn = orig }()
+	setDaemonDirFn(func() (string, error) { return tmpDir, nil })
+	defer func() { setDaemonDirFn(orig) }()
 
 	dummy := exec.Command("sleep", "10")
 	if err := dummy.Start(); err != nil {
@@ -681,8 +681,8 @@ func TestLoadServerCreatesRequestFile(t *testing.T) {
 func TestLoadServerNoDaemon(t *testing.T) {
 	tmpDir := t.TempDir()
 	orig := daemonDirFn
-	daemonDirFn = func() (string, error) { return tmpDir, nil }
-	defer func() { daemonDirFn = orig }()
+	setDaemonDirFn(func() (string, error) { return tmpDir, nil })
+	defer func() { setDaemonDirFn(orig) }()
 
 	err := LoadServer("test-echo-server")
 	if err == nil {
@@ -693,8 +693,8 @@ func TestLoadServerNoDaemon(t *testing.T) {
 func TestLoadServerSanitizesPathTraversal(t *testing.T) {
 	tmpDir := t.TempDir()
 	orig := daemonDirFn
-	daemonDirFn = func() (string, error) { return tmpDir, nil }
-	defer func() { daemonDirFn = orig }()
+	setDaemonDirFn(func() (string, error) { return tmpDir, nil })
+	defer func() { setDaemonDirFn(orig) }()
 
 	dummy := exec.Command("sleep", "10")
 	if err := dummy.Start(); err != nil {
@@ -719,8 +719,8 @@ func TestLoadServerSanitizesPathTraversal(t *testing.T) {
 func TestConsumeLoadRequests(t *testing.T) {
 	tmpDir := t.TempDir()
 	orig := daemonDirFn
-	daemonDirFn = func() (string, error) { return tmpDir, nil }
-	defer func() { daemonDirFn = orig }()
+	setDaemonDirFn(func() (string, error) { return tmpDir, nil })
+	defer func() { setDaemonDirFn(orig) }()
 
 	loadDir := filepath.Join(tmpDir, "daemon.load")
 	if err := os.MkdirAll(loadDir, 0o700); err != nil {
@@ -796,8 +796,8 @@ func testDaemon(t *testing.T) *Daemon {
 	t.Helper()
 	tmp := t.TempDir()
 	orig := daemonDirFn
-	daemonDirFn = func() (string, error) { return tmp, nil }
-	t.Cleanup(func() { daemonDirFn = orig })
+	setDaemonDirFn(func() (string, error) { return tmp, nil })
+	t.Cleanup(func() { setDaemonDirFn(orig) })
 
 	origWait := backingReadyWait
 	backingReadyWait = 150 * time.Millisecond

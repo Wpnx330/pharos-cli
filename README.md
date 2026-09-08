@@ -108,6 +108,14 @@ pharos daemon autostart --off  # Disable autostart on boot
 pharos daemon autostart        # Show current autostart status
 pharos budget                  # Idle-cost budget — resident processes, memory, unload suggestions
 
+# Secure tunnel sharing (token-authed reverse proxy)
+pharos expose web --addr :9500         # Share daemon-managed 'web' on port 9500 (token shown once)
+pharos expose web --addr 127.0.0.1:9500  # Token-authed loopback-only share
+pharos expose web --addr :9500 --ttl 2h  # Shorter lifetime (default 8h, max 24h)
+pharos expose web --addr :9500 --background  # Detach after showing the token
+pharos expose list             # Show exposes + liveness (live/stopped/expired)
+pharos expose stop web         # Graceful stop (or clean up a stale entry)
+
 # Auth
 pharos login                   # GitHub OAuth login (opens browser)
 pharos whoami                  # Show current authenticated user
@@ -677,6 +685,62 @@ The daemon runs on **all four primary platforms**:
 | Windows | amd64 | `CREATE_NEW_PROCESS_GROUP`, `TerminateProcess` | File-based only (no SIGHUP) |
 
 Platform-specific code is isolated via Go build tags. On Windows, `readProcessMemory` returns 0 (there is no `/proc` filesystem) — this only affects memory reporting in `daemon status`, not server management.
+
+## Secure Tunnel Sharing (`pharos expose`)
+
+`pharos expose <name>` publishes one daemon-managed HTTP/SSE server through a **token-authed reverse proxy**: a public listener you choose forwards to the daemon's loopback proxy listener for that server (`127.0.0.1:<daemon proxy port>`).
+
+**What it is NOT:** this is not a public relay service, not WebRTC, and not a Cloudflare Tunnel integration. There is no third-party tunnel in the path — remote clients connect to *your* listener directly, and pharos never phones home or opens outbound tunnels. If you need NAT traversal, put the listener behind your own infrastructure.
+
+### Quick start
+
+```bash
+pharos daemon start                    # expose requires the daemon
+pharos expose web --addr :9500         # the public bind is always explicit
+```
+
+The token is generated from `crypto/rand` (256-bit, base64url) and printed **once** with a ready-to-copy snippet:
+
+```
+✓  exposing web → 127.0.0.1:8421 on :9500
+
+  Token (shown once; stored only as a SHA-256 hash in ~/.pharos/expose.json):
+    pU3x…43-chars
+
+  Remote clients:
+    curl -H "Authorization: Bearer pU3x…" http://<host>:9500/mcp
+```
+
+Every request must present `Authorization: Bearer <token>`; the comparison is constant-time (`crypto/subtle`). Anything else — missing header, wrong scheme, malformed value, wrong token — gets a `401` JSON error (`{"error":{"code":"unauthorized",…}}`) and **never reaches the backing server**. The validated header is then stripped before proxying, so your public token is never propagated to the local server (whose logs stay free of the bearer token).
+
+### Security model
+
+- **Default-deny auth.** The auth gate sits in front of the proxy; no token, no proxying, full stop.
+- **Explicit public bind.** `--addr` is required — pharos never silently binds `0.0.0.0`. Loopback-only sharing is valid and useful for same-host multi-user cases: `--addr 127.0.0.1:9500`.
+- **Hash-only at rest.** `~/.pharos/expose.json` stores the SHA-256 hash, address, PID, and expiry — never the token. Lose the printed token and you re-run expose.
+- **TTL enforced by the expose process.** Default 8h, hard cap 24h (`--ttl 2h`); long-lived tunnels are a different feature. On expiry the listener closes and the process exits cleanly.
+- **Isolation.** Expose runs as its own process in front of the daemon; it never changes daemon code or state, and a crash of the expose process cannot affect the daemon or the backing server. The backing path stays loopback-only.
+- **No token in logs.** Background workers log a token *fingerprint* (first 8 chars of the SHA-256) only.
+
+### Lifecycle
+
+```bash
+pharos expose web --addr :9500              # foreground (Ctrl-C = clean stop)
+pharos expose web --addr :9500 --background # detach; token shown first, PID confirmed ~5s
+pharos expose list                          # NAME/ADDR/TARGET/PID/STATUS/EXPIRES
+pharos expose stop web                      # graceful stop (10s grace), or stale-entry cleanup
+```
+
+State lives in `~/.pharos/expose.json`; `expose list --json` reports `{exposes: [{name, addr, port, backingPort, pid?, live, expired, expiresAt}]}` with `omitempty` discipline (`?` fields omitted when unknown, never null; `live`/`expired` always present). Stops are cooperative and Windows-safe: `expose stop` writes `~/.pharos/expose.stop/<name>` (the same file-based control pattern the daemon uses), the expose process notices within ~1s and shuts down cleanly. SIGINT/SIGTERM work too.
+
+An expose requires the daemon to be running and managing `<name>` (checked read-only via daemon state — same precondition style as `daemon status`). Exposing works whether the backing server is loaded or JIT-unloaded: requests through the tunnel trigger the daemon's normal JIT load.
+
+### Notes
+
+- MCP client configs point at the public address with the `Authorization: Bearer <token>` header (streamable-http/http transports).
+- One expose per server name at a time; a second start for the same name exits 1 with a hint.
+- `--json` start output is a single pure document: `{name, addr, port, expiresAt, token}` (the one-time handoff). All progress and errors go to stderr, per the W1.1 JSON-purity contract.
+- The token is passed to the detached `--background` worker via the `PHAROS_EXPOSE_TOKEN` environment variable; worker output goes to `~/.pharos/expose.log`.
 
 ## Author
 

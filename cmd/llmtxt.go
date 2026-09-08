@@ -219,6 +219,11 @@ var llmNotes = map[string]llmNote{
 		env:    "PHAROS_JSON=1 or --json",
 		ni:     "no prompts; requires registry access",
 	},
+	"pharos serve": {
+		output: "MCP stdio server: stdout carries ONLY newline-delimited JSON-RPC 2.0 protocol frames — initialize (protocolVersion 2024-11-05, serverInfo pharos), tools/list, tools/call, ping; unknown method -32601, bad params -32602, parse error -32700; tool failures are isError:true tool results, never a crash. Diagnostics go to stderr. Tools: search(query, limit?, transport?), info(name), list_installed(); install(name, version?) only with --allow-install (omitted from tools/list when disabled; a direct tools/call answers an isError result naming the flag)",
+		env:    "no PHAROS_JSON/PHAROS_ASSUME_YES contract (protocol server, not a CLI output command); registry + token from ~/.pharos/config.json; the install tool honors PHAROS_REMOTE_ONLY when --allow-install is set",
+		ni:     "no prompts by design; serve runs until stdin closes or the process is signalled (MCP clients stop it by closing stdin); --allow-install gates the install tool, which writes the canonical config, detected MCP clients, and pharos.lock",
+	},
 	"pharos start": {
 		output: "started confirmation lines (PID, port, log path); informational refusals for stdio/remote servers; JSON N/A",
 		ni:     "no prompts",

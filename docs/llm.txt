@@ -31,7 +31,7 @@ USAGE: pharos [flags]
 FLAGS:
   --help <bool> (default: false) help for pharos
   --version <bool> (default: false) version for pharos
-SUBCOMMANDS: audit, budget, completion, config, daemon, doctor, expose, health, help, import, info, init, install, list, llmtxt, lock, login, oauth, package, pin, profile, publish, purge, remove, republish, search, start, stop, try, unpin, unpublish, update, version, whoami
+SUBCOMMANDS: audit, budget, completion, config, daemon, doctor, expose, health, help, import, info, init, install, list, llmtxt, lock, login, oauth, package, pin, profile, publish, purge, remove, republish, search, serve, start, stop, try, unpin, unpublish, update, version, whoami
 OUTPUT: help text listing subcommands
 ENV: all three contract vars are inherited by every subcommand
 NON-INTERACTIVE: no prompts; safe by default
@@ -535,6 +535,16 @@ FLAGS:
 OUTPUT: JSON: registry search response {results: [...], nextCursor, total}; each result also carries the trust signals publisher (flattened namespace string), category, tools_count, version_status when the registry sends them. Plain: results table (NAME VERSION TRANSPORT REGISTRY OWNER CATEGORY DESCRIPTION DOWNLOADS; version_status shown as a " (stale)"-style suffix only when not "active") + hint footer
 ENV: PHAROS_JSON=1 or --json
 NON-INTERACTIVE: no prompts; requires registry access
+
+# COMMAND: pharos serve
+SHORT: Run the Pharos MCP stdio server (JSON-RPC 2.0 on stdin/stdout)
+USAGE: pharos serve [flags]
+FLAGS:
+  --allow-install <bool> (default: false) expose the install tool to MCP clients (installs run the same pipeline as 'pharos install': store, canonical config, detected MCP clients, pharos.lock); default OFF
+  --help <bool> (default: false) help for serve
+OUTPUT: MCP stdio server: stdout carries ONLY newline-delimited JSON-RPC 2.0 protocol frames — initialize (protocolVersion 2024-11-05, serverInfo pharos), tools/list, tools/call, ping; unknown method -32601, bad params -32602, parse error -32700; tool failures are isError:true tool results, never a crash. Diagnostics go to stderr. Tools: search(query, limit?, transport?), info(name), list_installed(); install(name, version?) only with --allow-install (omitted from tools/list when disabled; a direct tools/call answers an isError result naming the flag)
+ENV: no PHAROS_JSON/PHAROS_ASSUME_YES contract (protocol server, not a CLI output command); registry + token from ~/.pharos/config.json; the install tool honors PHAROS_REMOTE_ONLY when --allow-install is set
+NON-INTERACTIVE: no prompts by design; serve runs until stdin closes or the process is signalled (MCP clients stop it by closing stdin); --allow-install gates the install tool, which writes the canonical config, detected MCP clients, and pharos.lock
 
 # COMMAND: pharos start
 SHORT: Start a locally installed MCP server

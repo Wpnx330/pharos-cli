@@ -117,10 +117,14 @@ type procsProbe interface {
 	RSS(pid int) (int64, bool)
 }
 
-// osProbes is the real probe set (internal/procs).
+// osProbes is the real probe set. Liveness routes through the daemon's
+// own canonical check (daemon.IsProcessAlive — the read-only export) so
+// budget sees process state exactly as the daemon does and the check is
+// not duplicated here; RSS stays on internal/procs, the portable probe
+// library.
 type osProbes struct{}
 
-func (osProbes) Alive(pid int) bool        { return procs.Alive(pid) }
+func (osProbes) Alive(pid int) bool        { return daemon.IsProcessAlive(pid) }
 func (osProbes) RSS(pid int) (int64, bool) { return procs.RSS(pid) }
 
 // ── Idle classification ──────────────────────────────────────────────────
@@ -163,79 +167,81 @@ func classifyBudgetIdle(idleMinutes int64, idleTimeoutMin int, resident, hasActi
 
 // ── Report assembly ──────────────────────────────────────────────────────
 
-// buildBudgetReport assembles the budget report from the daemon status
-// and the persisted state file. Liveness comes from probe.Alive — the
-// daemon's own check — so a persisted "running" state with a dead PID is
-// reported as not resident, and residency is never inferred from the
-// state file's bookkeeping. now is injected for deterministic tests.
-func buildBudgetReport(now time.Time, status *daemon.DaemonStatus, state *daemon.DaemonState, probe procsProbe) *budgetReport {
+// buildBudgetReport assembles the budget report from the daemon's
+// persisted state (~/.pharos/daemon.json), read via the read-only
+// daemon.ReadState export. Daemon liveness comes from probe.Alive — the
+// daemon's own check (daemon.IsProcessAlive) — so a persisted state with
+// a dead PID is reported as an idle system, and residency is never
+// inferred from the state file's bookkeeping. Nothing in this path
+// writes or mutates anything (budget's write-nothing contract): unlike
+// daemon.Status(), a stale daemon.pid is left exactly where it is. now
+// is injected for deterministic tests.
+func buildBudgetReport(now time.Time, state *daemon.DaemonState, probe procsProbe) *budgetReport {
 	rep := &budgetReport{
 		Servers:     []budgetServer{},
 		Suggestions: []budgetSuggestion{},
 	}
-	if status == nil || !status.Running {
+	if state == nil || state.PID <= 0 || !probe.Alive(state.PID) {
 		// Idle system: a valid budget report with 0 processes.
 		return rep
 	}
 
 	rep.DaemonRunning = true
-	rep.DaemonPID = status.PID
-	rep.DaemonStartedAt = status.StartedAt
+	rep.DaemonPID = state.PID
+	rep.DaemonStartedAt = state.StartedAt
 	rep.ResidentProcesses = 1 // the daemon itself
-	if !status.StartedAt.IsZero() {
-		if up := int64(now.Sub(status.StartedAt).Minutes()); up > 0 {
+	if !state.StartedAt.IsZero() {
+		if up := int64(now.Sub(state.StartedAt).Minutes()); up > 0 {
 			rep.DaemonUptimeMinutes = up
 		}
 	}
 
 	// The daemon's own RSS is part of the standing cost.
-	if bytes, ok := probe.RSS(status.PID); ok {
+	if bytes, ok := probe.RSS(state.PID); ok {
 		rep.DaemonMemoryRSS = bytes
 		rep.DaemonMemoryKnown = true
 		rep.EstimatedMemoryBytes += bytes
 		rep.MemoryEstimateKnown = true
 	}
 
-	if state != nil {
-		// Deterministic order: servers sorted by name.
-		names := make([]string, 0, len(state.Servers))
-		for name := range state.Servers {
-			names = append(names, name)
-		}
-		sort.Strings(names)
+	// Deterministic order: servers sorted by name.
+	names := make([]string, 0, len(state.Servers))
+	for name := range state.Servers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
 
-		for _, name := range names {
-			ss := state.Servers[name]
-			s := budgetServer{
-				Name:         name,
-				PID:          ss.PID,
-				Port:         ss.Port,
-				StartedAt:    ss.StartedAt,
-				LastActivity: ss.LastActivity,
-				IdleTimeout:  ss.IdleTimeout,
-				HasActivity:  !ss.LastActivity.IsZero(),
-			}
-			if s.HasActivity {
-				idle := int64(now.Sub(ss.LastActivity).Minutes())
-				if idle < 0 {
-					idle = 0 // clock skew between daemon and probe host
-				}
-				s.IdleMinutes = idle
-			}
-			// Residency is liveness of the backing PID, not the state
-			// file's bookkeeping — a dead PID is not a resident process.
-			if ss.PID > 0 && probe.Alive(ss.PID) {
-				s.Resident = true
-				rep.ResidentProcesses++
-				if bytes, ok := probe.RSS(ss.PID); ok {
-					s.MemoryRSS = bytes
-					s.MemoryKnown = true
-					rep.EstimatedMemoryBytes += bytes
-					rep.MemoryEstimateKnown = true
-				}
-			}
-			rep.Servers = append(rep.Servers, s)
+	for _, name := range names {
+		ss := state.Servers[name]
+		s := budgetServer{
+			Name:         name,
+			PID:          ss.PID,
+			Port:         ss.Port,
+			StartedAt:    ss.StartedAt,
+			LastActivity: ss.LastActivity,
+			IdleTimeout:  ss.IdleTimeout,
+			HasActivity:  !ss.LastActivity.IsZero(),
 		}
+		if s.HasActivity {
+			idle := int64(now.Sub(ss.LastActivity).Minutes())
+			if idle < 0 {
+				idle = 0 // clock skew between daemon and probe host
+			}
+			s.IdleMinutes = idle
+		}
+		// Residency is liveness of the backing PID, not the state
+		// file's bookkeeping — a dead PID is not a resident process.
+		if ss.PID > 0 && probe.Alive(ss.PID) {
+			s.Resident = true
+			rep.ResidentProcesses++
+			if bytes, ok := probe.RSS(ss.PID); ok {
+				s.MemoryRSS = bytes
+				s.MemoryKnown = true
+				rep.EstimatedMemoryBytes += bytes
+				rep.MemoryEstimateKnown = true
+			}
+		}
+		rep.Servers = append(rep.Servers, s)
 	}
 
 	rep.Suggestions = buildBudgetSuggestions(rep.Servers, true)
@@ -535,23 +541,19 @@ func formatBudgetIdle(minutes int64) string {
 // `pharos daemon status`: a daemon that is not running is a valid report
 // (exit 0); a state file that exists but cannot be read is a real failure
 // (exit 1). Memory-probe failures never fail the command.
+//
+// The state is loaded through the read-only daemon.ReadState export and
+// daemon liveness checked through the daemon's own canonical check (wired
+// in via the osProbes seam): unlike daemon.Status(), nothing in this path
+// removes a stale daemon.pid — budget writes nothing, ever.
 func runBudget(cmd *cobra.Command, args []string) {
-	status, err := daemon.Status()
+	state, err := daemon.ReadState()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, ui.Error.Render("Cannot read daemon state:"), err)
 		os.Exit(1)
 	}
 
-	var state *daemon.DaemonState
-	if status.Running {
-		state, err = daemon.ReadState()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, ui.Error.Render("Cannot read daemon state:"), err)
-			os.Exit(1)
-		}
-	}
-
-	rep := buildBudgetReport(time.Now(), status, state, osProbes{})
+	rep := buildBudgetReport(time.Now(), state, osProbes{})
 
 	if JSONRequested() {
 		data, err := renderBudgetJSON(rep)

@@ -2,7 +2,12 @@ package cmd
 
 import (
 	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -26,19 +31,14 @@ func (f fakeProbes) RSS(pid int) (int64, bool) {
 	return v, ok
 }
 
-// budgetFixture builds a daemon status + state covering every flag class:
-// an active server, a resident-past-timeout server, an unloaded server,
-// a resident always-on server, and a never-used server. now is the
-// reference instant every timestamp is relative to.
-func budgetFixture(now time.Time) (*daemon.DaemonStatus, *daemon.DaemonState) {
-	status := &daemon.DaemonStatus{
-		Running:   true,
+// budgetFixture builds a daemon state covering every flag class: an active
+// server, a resident-past-timeout server, an unloaded server, a resident
+// always-on server, and a never-used server. The daemon PID is 100, started
+// 3h before now; probe fixtures decide what is actually alive.
+func budgetFixture(now time.Time) *daemon.DaemonState {
+	return &daemon.DaemonState{
 		PID:       100,
 		StartedAt: now.Add(-3 * time.Hour),
-	}
-	state := &daemon.DaemonState{
-		PID:       100,
-		StartedAt: status.StartedAt,
 		Servers: map[string]daemon.ServerState{
 			"active-srv": {
 				State: "running", PID: 200, Port: 8421,
@@ -69,7 +69,6 @@ func budgetFixture(now time.Time) (*daemon.DaemonStatus, *daemon.DaemonState) {
 			},
 		},
 	}
-	return status, state
 }
 
 // liveProbes marks pids alive with an RSS value each; the daemon (100)
@@ -118,6 +117,7 @@ func TestBudgetClassifyIdle(t *testing.T) {
 		{"timeout zero is always-on", 10, 0, true, true, flagAlwaysOn},
 		{"timeout zero never over", 999999, 0, true, true, flagAlwaysOn},
 		{"inside budget is active", 5, 60, true, true, flagActive},
+		{"zero idle (clock-skew clamp) is active", 0, 60, true, true, flagActive},
 		{"boundary is over", 60, 60, true, true, flagOver},
 		{"past budget resident is over", 61, 60, true, true, flagOver},
 		{"past budget unloaded is idle", 61, 60, false, true, flagIdle},
@@ -300,7 +300,7 @@ func TestBudgetSuggestionsDeterministicOrder(t *testing.T) {
 
 func TestBuildBudgetReportResidencyAndMemory(t *testing.T) {
 	now := time.Now()
-	status, state := budgetFixture(now)
+	state := budgetFixture(now)
 	// 200, 202, and the daemon are live; 201's persisted "running" is
 	// stale bookkeeping (dead PID) and must not count as resident.
 	probe := liveProbes(524288, map[int]int64{
@@ -308,7 +308,7 @@ func TestBuildBudgetReportResidencyAndMemory(t *testing.T) {
 		202: 2097152,
 	})
 
-	rep := buildBudgetReport(now, status, state, probe)
+	rep := buildBudgetReport(now, state, probe)
 
 	if !rep.DaemonRunning || rep.DaemonPID != 100 {
 		t.Fatalf("daemon = running %v pid %d, want running 100", rep.DaemonRunning, rep.DaemonPID)
@@ -353,11 +353,11 @@ func TestBuildBudgetReportResidencyAndMemory(t *testing.T) {
 
 func TestBuildBudgetReportProbesFailGracefully(t *testing.T) {
 	now := time.Now()
-	status, state := budgetFixture(now)
+	state := budgetFixture(now)
 	// Everything alive but no RSS answer succeeds: memory unknown everywhere.
 	probe := fakeProbes{alive: map[int]bool{100: true, 200: true, 202: true}}
 
-	rep := buildBudgetReport(now, status, state, probe)
+	rep := buildBudgetReport(now, state, probe)
 
 	if rep.ResidentProcesses != 3 {
 		t.Errorf("residentProcesses = %d, want 3 (liveness unaffected by RSS probe)", rep.ResidentProcesses)
@@ -377,10 +377,13 @@ func TestBuildBudgetReportProbesFailGracefully(t *testing.T) {
 
 func TestBuildBudgetReportDaemonNotRunning(t *testing.T) {
 	now := time.Now()
-	_, state := budgetFixture(now)
-	probe := liveProbes(999, map[int]int64{200: 1})
+	state := budgetFixture(now) // lists five servers under daemon PID 100
+	// The daemon PID is dead (not in the alive map) while a backing PID
+	// still answers: a dead daemon collapses the whole persisted state to
+	// the idle report — servers included.
+	probe := fakeProbes{alive: map[int]bool{200: true}, rss: map[int]int64{200: 1}}
 
-	rep := buildBudgetReport(now, &daemon.DaemonStatus{Running: false}, state, probe)
+	rep := buildBudgetReport(now, state, probe)
 
 	if rep.DaemonRunning {
 		t.Error("daemonRunning = true, want false")
@@ -397,7 +400,7 @@ func TestBuildBudgetReportDaemonNotRunning(t *testing.T) {
 }
 
 func TestBuildBudgetReportNilInputs(t *testing.T) {
-	rep := buildBudgetReport(time.Now(), nil, nil, fakeProbes{})
+	rep := buildBudgetReport(time.Now(), nil, fakeProbes{})
 	if rep.DaemonRunning || rep.ResidentProcesses != 0 || rep.Suggestions == nil || rep.Servers == nil {
 		t.Errorf("nil status must yield the empty idle report: %+v", rep)
 	}
@@ -405,8 +408,9 @@ func TestBuildBudgetReportNilInputs(t *testing.T) {
 
 func TestBuildBudgetReportServersSortedByName(t *testing.T) {
 	now := time.Now()
-	status, state := budgetFixture(now)
-	rep := buildBudgetReport(now, status, state, fakeProbes{alive: map[int]bool{}})
+	state := budgetFixture(now)
+	// Daemon alive (so its servers are listed), every backing PID dead.
+	rep := buildBudgetReport(now, state, fakeProbes{alive: map[int]bool{100: true}})
 
 	var names []string
 	for _, s := range rep.Servers {
@@ -420,8 +424,8 @@ func TestBuildBudgetReportServersSortedByName(t *testing.T) {
 
 func TestBuildBudgetReportFixtureSuggestions(t *testing.T) {
 	now := time.Now()
-	status, state := budgetFixture(now)
-	rep := buildBudgetReport(now, status, state, liveProbes(524288, map[int]int64{
+	state := budgetFixture(now)
+	rep := buildBudgetReport(now, state, liveProbes(524288, map[int]int64{
 		200: 1048576, 202: 2097152,
 	}))
 
@@ -439,8 +443,8 @@ func TestBuildBudgetReportFixtureSuggestions(t *testing.T) {
 
 func TestBudgetJSONShapeRunning(t *testing.T) {
 	now := time.Now()
-	status, state := budgetFixture(now)
-	rep := buildBudgetReport(now, status, state, liveProbes(524288, map[int]int64{
+	state := budgetFixture(now)
+	rep := buildBudgetReport(now, state, liveProbes(524288, map[int]int64{
 		200: 1048576, 202: 2097152,
 	}))
 
@@ -537,8 +541,8 @@ func TestBudgetJSONShapeRunning(t *testing.T) {
 
 func TestBudgetJSONProbesFailOmitsMemoryTotals(t *testing.T) {
 	now := time.Now()
-	status, state := budgetFixture(now)
-	rep := buildBudgetReport(now, status, state, fakeProbes{alive: map[int]bool{100: true, 200: true}})
+	state := budgetFixture(now)
+	rep := buildBudgetReport(now, state, fakeProbes{alive: map[int]bool{100: true, 200: true}})
 
 	data, err := renderBudgetJSON(rep)
 	if err != nil {
@@ -555,7 +559,7 @@ func TestBudgetJSONProbesFailOmitsMemoryTotals(t *testing.T) {
 }
 
 func TestBudgetJSONNotRunning(t *testing.T) {
-	rep := buildBudgetReport(time.Now(), &daemon.DaemonStatus{Running: false}, nil, fakeProbes{})
+	rep := buildBudgetReport(time.Now(), nil, fakeProbes{})
 
 	data, err := renderBudgetJSON(rep)
 	if err != nil {
@@ -589,7 +593,7 @@ func TestBudgetJSONNotRunning(t *testing.T) {
 // ── Human rendering ──────────────────────────────────────────────────────
 
 func TestRenderBudgetHumanNotRunning(t *testing.T) {
-	rep := buildBudgetReport(time.Now(), &daemon.DaemonStatus{Running: false}, nil, fakeProbes{})
+	rep := buildBudgetReport(time.Now(), nil, fakeProbes{})
 	out := renderBudgetHuman(rep)
 	for _, want := range []string{"Daemon is not running", "0 resident processes", "pharos daemon start"} {
 		if !strings.Contains(out, want) {
@@ -603,8 +607,8 @@ func TestRenderBudgetHumanNotRunning(t *testing.T) {
 
 func TestRenderBudgetHumanRunning(t *testing.T) {
 	now := time.Now()
-	status, state := budgetFixture(now)
-	rep := buildBudgetReport(now, status, state, liveProbes(524288, map[int]int64{
+	state := budgetFixture(now)
+	rep := buildBudgetReport(now, state, liveProbes(524288, map[int]int64{
 		200: 1048576, 202: 2097152,
 	}))
 
@@ -631,13 +635,189 @@ func TestRenderBudgetHumanRunning(t *testing.T) {
 
 func TestRenderBudgetHumanProbeFailureShowsEstimateLabels(t *testing.T) {
 	now := time.Now()
-	status, state := budgetFixture(now)
-	rep := buildBudgetReport(now, status, state, fakeProbes{alive: map[int]bool{100: true}})
+	state := budgetFixture(now)
+	rep := buildBudgetReport(now, state, fakeProbes{alive: map[int]bool{100: true}})
 
 	out := renderBudgetHuman(rep)
 	for _, want := range []string{"n/a (probe failed)", "RSS estimate"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("probe-failure report missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// ── Clock skew (Rec3) ────────────────────────────────────────────────────
+
+// TestBuildBudgetReportClockSkewClampsIdle pins the future-LastActivity
+// case: a daemon host clock ahead of the probe host yields a negative
+// raw idle, which must clamp to 0 and classify as active — never a
+// negative or misclassified row.
+func TestBuildBudgetReportClockSkewClampsIdle(t *testing.T) {
+	now := time.Now()
+	state := &daemon.DaemonState{
+		PID:       100,
+		StartedAt: now.Add(-time.Hour),
+		Servers: map[string]daemon.ServerState{
+			"future-srv": {
+				State: "running", PID: 200, Port: 8421,
+				// Clock skew: activity stamped 5m in the future.
+				LastActivity: now.Add(5 * time.Minute),
+				IdleTimeout:  60,
+			},
+		},
+	}
+	rep := buildBudgetReport(now, state, liveProbes(4096, map[int]int64{200: 1024}))
+
+	s := findServer(rep.Servers, "future-srv")
+	if !s.HasActivity {
+		t.Fatal("future-srv hasActivity = false, want true")
+	}
+	if s.IdleMinutes != 0 {
+		t.Errorf("future-srv idleMinutes = %d, want 0 (negative idle clamps to zero)", s.IdleMinutes)
+	}
+	if got := classifyBudgetIdle(s.IdleMinutes, s.IdleTimeout, s.Resident, s.HasActivity); got != flagActive {
+		t.Errorf("future-srv class = %q, want %q (clamped idle sits inside the budget)", got, flagActive)
+	}
+	if flag := renderBudgetFlag(s); !strings.Contains(flag, "active") {
+		t.Errorf("rendered budget flag = %q, want the active styling", flag)
+	}
+}
+
+// ── JSON shape: just-started daemon (Rec5) ───────────────────────────────
+
+// TestBudgetJSONUptimeUnderAMinuteOmitted pins the omitempty discipline for
+// a daemon younger than a minute: whole-minute uptime truncates to 0, and
+// uptimeMinutes must be omitted (never emitted as a null-hacked zero).
+func TestBudgetJSONUptimeUnderAMinuteOmitted(t *testing.T) {
+	now := time.Now()
+	state := &daemon.DaemonState{
+		PID:       100,
+		StartedAt: now.Add(-30 * time.Second), // just-started daemon
+		Servers:   map[string]daemon.ServerState{},
+	}
+	rep := buildBudgetReport(now, state, fakeProbes{alive: map[int]bool{100: true}})
+
+	data, err := renderBudgetJSON(rep)
+	if err != nil {
+		t.Fatalf("renderBudgetJSON: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, data)
+	}
+
+	daemonDoc, ok := doc["daemon"].(map[string]any)
+	if !ok {
+		t.Fatalf("daemon section missing: %v", doc["daemon"])
+	}
+	if _, present := daemonDoc["uptimeMinutes"]; present {
+		t.Errorf("uptimeMinutes present for a <1m-old daemon, want omitted (omitempty): %v", daemonDoc)
+	}
+	if pid, present := daemonDoc["pid"]; !present || pid.(float64) != 100 {
+		t.Errorf("daemon.pid = %v (present %v), want 100 present", pid, present)
+	}
+}
+
+// ── R1 regression: budget must not delete daemon.pid ─────────────────────
+
+// deadPID returns the PID of a process that has fully exited and been
+// reaped (spawn-wait, same pattern as the internal/procs liveness tests),
+// so the PID is genuinely dead the moment it returns — a stale daemon.pid.
+func deadPID(t *testing.T) int {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("dead-pid fixture relies on unix process reaping")
+	}
+	proc := exec.Command("true")
+	if err := proc.Start(); err != nil {
+		t.Skipf("cannot spawn a probe process: %v", err)
+	}
+	if err := proc.Wait(); err != nil {
+		t.Skipf("wait for probe process failed: %v", err)
+	}
+	return proc.Process.Pid
+}
+
+// writeDaemonFixture plants daemon.pid (daemon format: strconv.Itoa, no
+// trailing newline) plus daemon.json under the isolated home's .pharos dir.
+func writeDaemonFixture(t *testing.T, pid int) (pidPath, stateJSON string) {
+	t.Helper()
+	dir := filepath.Join(contractHome(t), ".pharos")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pidPath = filepath.Join(dir, "daemon.pid")
+	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stateJSON = `{
+  "pid": ` + strconv.Itoa(pid) + `,
+  "startedAt": "2026-01-01T00:00:00Z",
+  "servers": {}
+}`
+	statePath := filepath.Join(dir, "daemon.json")
+	if err := os.WriteFile(statePath, []byte(stateJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return pidPath, stateJSON
+}
+
+// TestBudgetLeavesStaleDaemonPIDInPlace is the R1 regression: the daemon's
+// Status() used to remove a stale daemon.pid as a side effect, violating
+// budget's write-nothing contract. Budget must read the state through the
+// read-only exports and leave the pid file exactly where it is, reporting
+// the dead daemon as the valid idle report.
+func TestBudgetLeavesStaleDaemonPIDInPlace(t *testing.T) {
+	isolateHome(t)
+	dead := deadPID(t)
+	pidPath, stateJSON := writeDaemonFixture(t, dead)
+	statePath := filepath.Join(filepath.Dir(pidPath), "daemon.json")
+
+	_, combined := runContract(t, map[string]string{"PHAROS_NON_INTERACTIVE": "1"}, "budget")
+
+	if _, err := os.Stat(pidPath); err != nil {
+		t.Errorf("daemon.pid was removed by budget (read-only contract): %v", err)
+	}
+	after, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != stateJSON {
+		t.Errorf("daemon.json was modified by budget:\nwant %q\ngot  %q", stateJSON, after)
+	}
+	if !strings.Contains(combined, "Daemon is not running") {
+		t.Errorf("stale-daemon budget output missing the not-running report:\n%s", combined)
+	}
+}
+
+// TestBudgetLeavesLiveDaemonPIDInPlace mirrors the regression for a live
+// daemon: the pid file survives and the report shows the daemon running.
+func TestBudgetLeavesLiveDaemonPIDInPlace(t *testing.T) {
+	isolateHome(t)
+	self := os.Getpid()
+	pidPath, _ := writeDaemonFixture(t, self)
+
+	stdout, _ := runContract(t, map[string]string{"PHAROS_NON_INTERACTIVE": "1"}, "budget", "--json")
+
+	if _, err := os.Stat(pidPath); err != nil {
+		t.Errorf("daemon.pid was removed by budget (read-only contract): %v", err)
+	}
+	trimmed := strings.TrimSpace(stdout)
+	if !json.Valid([]byte(trimmed)) {
+		t.Fatalf("budget --json did not emit valid JSON: %.200q", trimmed)
+	}
+	var doc struct {
+		Daemon *struct {
+			PID int `json:"pid"`
+		} `json:"daemon"`
+	}
+	if err := json.Unmarshal([]byte(trimmed), &doc); err != nil {
+		t.Fatalf("decode budget JSON: %v\n%s", err, trimmed)
+	}
+	if doc.Daemon == nil {
+		t.Fatalf("daemon block missing for a live daemon: %.200q", trimmed)
+	}
+	if doc.Daemon.PID != self {
+		t.Errorf("daemon.pid = %d, want %d", doc.Daemon.PID, self)
 	}
 }

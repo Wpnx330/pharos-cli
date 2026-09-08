@@ -742,3 +742,48 @@ func TestExposeStartSurvivesStaleStopFile(t *testing.T) {
 		t.Error("stale stop file survived the whole run")
 	}
 }
+
+// TestExposeStopStoreReadErrorFailsLoud corrupts the expose store while
+// the stop wait loop is polling: the loop must exit 1 with a loud error
+// instead of treating the unreadable store as a confirmed stop (R-3 —
+// `if _, still, _ := GetEntry(name)` used to discard the error).
+func TestExposeStopStoreReadErrorFailsLoud(t *testing.T) {
+	dir := isolateExposeDir(t)
+	fakeAlive(t, map[int]bool{777777: true}, true)
+
+	now := time.Now()
+	if err := expose.UpsertEntry(expose.Entry{
+		Name: "web", PID: 777777, Addr: ":9500", Port: 9500, BackingPort: 8421,
+		TokenHash: "h", CreatedAt: now, ExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Corrupt the store as soon as the stop request lands — well before
+	// the wait loop's next poll (≥200ms later), after the initial entry
+	// read has succeeded.
+	corrupted := make(chan struct{})
+	go func() {
+		for !expose.StopRequested("web") {
+			time.Sleep(2 * time.Millisecond)
+		}
+		_ = os.WriteFile(filepath.Join(dir, "expose.json"), []byte("{corrupt"), 0o600)
+		close(corrupted)
+	}()
+
+	var code int
+	out := captureStdoutErr(t, func() {
+		code = captureExit(t, func() { runExposeStop(nil, []string{"web"}) })
+	})
+	<-corrupted
+
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1 on store-read error", code)
+	}
+	if !strings.Contains(out, "cannot read expose state") {
+		t.Errorf("output missing the loud store-read error:\n%s", out)
+	}
+	if strings.Contains(out, "expose web stopped") {
+		t.Errorf("false success reported despite unreadable store:\n%s", out)
+	}
+}

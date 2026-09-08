@@ -108,7 +108,7 @@ var llmNotes = map[string]llmNote{
 		ni:     "no prompts; strictly read-only over ~/.pharos/expose.json + OS PID probes; PID liveness is best-effort on Windows (same optimism as the daemon)",
 	},
 	"pharos expose stop": {
-		output: "Plain: stop-requested progress + stopped confirmation, or stale-entry cleanup confirmation; exit 1 when no expose exists for the name or it did not stop within the 10s grace; JSON N/A",
+		output: "Plain: stop-requested progress + stopped confirmation, or stale-entry cleanup confirmation; exit 1 when no expose exists for the name, the expose store cannot be read, or it did not stop within the 10s grace; JSON N/A",
 		env:    "no --json flag; PHAROS_JSON=1 routes progress to stderr",
 		ni:     "no prompts; cooperative stop via ~/.pharos/expose.stop/<name> (Windows-safe, same pattern as daemon stop files); cleans up stale entries for dead PIDs",
 	},

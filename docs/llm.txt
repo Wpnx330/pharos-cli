@@ -240,7 +240,7 @@ SHORT: Gracefully stop a running expose
 USAGE: pharos expose stop <name> [flags]
 FLAGS:
   --help <bool> (default: false) help for stop
-OUTPUT: Plain: stop-requested progress + stopped confirmation, or stale-entry cleanup confirmation; exit 1 when no expose exists for the name or it did not stop within the 10s grace; JSON N/A
+OUTPUT: Plain: stop-requested progress + stopped confirmation, or stale-entry cleanup confirmation; exit 1 when no expose exists for the name, the expose store cannot be read, or it did not stop within the 10s grace; JSON N/A
 ENV: no --json flag; PHAROS_JSON=1 routes progress to stderr
 NON-INTERACTIVE: no prompts; cooperative stop via ~/.pharos/expose.stop/<name> (Windows-safe, same pattern as daemon stop files); cleans up stale entries for dead PIDs
 

@@ -666,7 +666,15 @@ func runExposeStop(cmd *cobra.Command, args []string) {
 	// wait for that (with a PID-liveness fallback for crashed processes).
 	deadline := time.Now().Add(exposeStopWait)
 	for time.Now().Before(deadline) {
-		if _, still, _ := expose.GetEntry(name); !still {
+		_, still, err := expose.GetEntry(name)
+		if err != nil {
+			// A store-read failure is not "stopped": failing loud beats a
+			// false success against state we could not read (R-3).
+			fmt.Fprintf(os.Stderr, "%s  cannot read expose state while waiting for %s: %v\n",
+				ui.Error.Render("✗"), name, err)
+			osExit(1)
+		}
+		if !still {
 			fmt.Printf("%s  expose %s stopped\n", ui.Success.Render("✓"), ui.PackageName.Render(name))
 			return
 		}

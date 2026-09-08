@@ -14,12 +14,21 @@ import (
 	"github.com/Wpnx330/pharos-cli/internal/canonical"
 )
 
-// TestMain doubles as the fake MCP server for `pharos try` tests: when
-// PHAROS_TRY_HELPER is set, this test binary re-executes itself as a
-// scripted stdio server (no network, no external processes, GOOS-agnostic).
+// TestMain doubles as the fake MCP server for `pharos try` tests and the
+// `pharos serve` subprocess for the serve tests: when PHAROS_TRY_HELPER is
+// set, this test binary re-executes itself as a scripted stdio server; when
+// PHAROS_SERVE_HELPER is set, it runs the real serve pipeline over real
+// stdio (no network listeners, no external processes, GOOS-agnostic).
 func TestMain(m *testing.M) {
 	if mode := os.Getenv("PHAROS_TRY_HELPER"); mode != "" {
 		runTryHelper(mode, os.Stdout, os.Stdin)
+		os.Exit(0)
+	}
+	if os.Getenv("PHAROS_SERVE_HELPER") == "1" {
+		if err := serveMain(os.Getenv("PHAROS_SERVE_ALLOW_INSTALL") == "1"); err != nil {
+			fmt.Fprintln(os.Stderr, "pharos serve helper:", err)
+			os.Exit(1)
+		}
 		os.Exit(0)
 	}
 	os.Exit(m.Run())

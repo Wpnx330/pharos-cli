@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -117,6 +118,49 @@ func daemonFixture(now time.Time) *daemon.DaemonState {
 // httpGetLocal dials the loopback expose listener.
 func httpGetLocal(port int) (*http.Response, error) {
 	return http.Get(fmt.Sprintf("http://127.0.0.1:%d/", port))
+}
+
+// restoreExposeFlags snapshots the expose flag globals (runExposeStart
+// reads the package-level flag vars, not a cobra cmd) and restores them
+// at cleanup.
+func restoreExposeFlags(t *testing.T) {
+	t.Helper()
+	orig := struct {
+		addr       string
+		ttl        time.Duration
+		background bool
+		json       bool
+		internal   bool
+	}{exposeAddr, exposeTTL, exposeBackground, exposeJSON, exposeInternal}
+	t.Cleanup(func() {
+		exposeAddr, exposeTTL, exposeBackground, exposeJSON, exposeInternal =
+			orig.addr, orig.ttl, orig.background, orig.json, orig.internal
+	})
+}
+
+// seedDaemonState writes a valid daemon.json into the isolated HOME so
+// daemon.ReadState (which follows os.UserHomeDir) sees an alive daemon
+// managing "web" on proxy port 8421.
+func seedDaemonState(t *testing.T, home string) {
+	t.Helper()
+	dir := filepath.Join(home, ".pharos")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir daemon dir: %v", err)
+	}
+	st := daemon.DaemonState{
+		PID:       100,
+		StartedAt: time.Now().Add(-time.Hour),
+		Servers: map[string]daemon.ServerState{
+			"web": {State: "running", PID: 200, Port: 8421},
+		},
+	}
+	data, err := json.Marshal(st)
+	if err != nil {
+		t.Fatalf("marshal daemon state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "daemon.json"), data, 0o600); err != nil {
+		t.Fatalf("write daemon state: %v", err)
+	}
 }
 
 // ── parseExposeAddr ──────────────────────────────────────────────────────
@@ -560,5 +604,74 @@ func TestExposeStopTimesOutOnLiveProcess(t *testing.T) {
 	}
 	if _, ok, _ := expose.GetEntry("web"); !ok {
 		t.Error("entry was removed despite the stop never being acknowledged")
+	}
+}
+
+// ── foreground start (R-1 JSON purity / R-2 stale stop survival) ─────────
+
+// TestExposeStartJSONStdoutIsSingleDocument runs the FULL foreground start
+// path in JSON mode — both the PHAROS_JSON=1 env flavor and the --json
+// flag flavor — against a fake daemon state, and requires stdout to be
+// EXACTLY one parseable JSON document (decode-then-EOF on the whole
+// buffer). This is the runExposeStart-level purity check that was missing
+// when the handoff was followed by human footer lines on stdout (R-1).
+func TestExposeStartJSONStdoutIsSingleDocument(t *testing.T) {
+	if testing.Short() {
+		t.Skip("short mode")
+	}
+	cases := []struct {
+		name string
+		env  string
+		flag bool
+		port int
+	}{
+		{"PHAROS_JSON=1 env", "1", false, 19761},
+		{"--json flag", "", true, 19762},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := isolateHome(t)
+			seedDaemonState(t, home)
+			isolateExposeDir(t)
+			fakeAlive(t, map[int]bool{}, true) // daemon alive; no live expose PIDs
+			restoreExposeFlags(t)
+			t.Setenv("PHAROS_JSON", tc.env)
+			exposeJSON = tc.flag
+			exposeAddr = fmt.Sprintf("127.0.0.1:%d", tc.port)
+			exposeTTL = 400 * time.Millisecond // serve loop exits via ttl
+			exposeBackground = false
+
+			code := -1
+			out := captureStdout(t, func() {
+				code = captureExit(t, func() { runExposeStart(nil, "web") })
+			})
+			if code != -1 {
+				t.Fatalf("runExposeStart exited %d\nstdout=%q", code, out)
+			}
+
+			// Whole-buffer purity: decode exactly one JSON document, then EOF.
+			dec := json.NewDecoder(strings.NewReader(out))
+			var doc map[string]any
+			if err := dec.Decode(&doc); err != nil {
+				t.Fatalf("stdout is not a JSON document: %v\nstdout=%q", err, out)
+			}
+			if tok, err := dec.Token(); err != io.EOF {
+				t.Fatalf("stdout carries data after the JSON document (tok=%v err=%v)\nstdout=%q", tok, err, out)
+			}
+			for _, k := range []string{"name", "addr", "port", "expiresAt", "token"} {
+				if _, ok := doc[k]; !ok {
+					t.Errorf("start document missing key %q", k)
+				}
+			}
+			if doc["name"] != "web" {
+				t.Errorf("name = %v, want web", doc["name"])
+			}
+			if p, _ := doc["port"].(float64); int(p) != tc.port {
+				t.Errorf("port = %v, want %d", doc["port"], tc.port)
+			}
+			if tok, _ := doc["token"].(string); tok == "" {
+				t.Error("start document missing the one-time token")
+			}
+		})
 	}
 }

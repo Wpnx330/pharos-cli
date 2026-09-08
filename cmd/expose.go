@@ -267,9 +267,13 @@ func runExposeStart(cmd *cobra.Command, name string) {
 	}
 
 	printExposeHandoff(entry, token, ttl)
-	fmt.Printf("  %s  Ctrl-C here, or 'pharos expose stop %s' from another shell\n",
+	// Stop instruction + serving notice go through progressf: stdout in
+	// human mode, stderr in JSON mode — the handoff document stays the
+	// only stdout output in both modes (W5.3 review R-1; the spec's
+	// "handoff: stop instructions" note is honored on stderr in JSON).
+	progressf("  %s  Ctrl-C here, or 'pharos expose stop %s' from another shell\n",
 		ui.Muted.Render("Stop it:"), entry.Name)
-	fmt.Printf("\n%s\n", ui.Muted.Render("Serving... (Ctrl-C to stop)"))
+	progressf("\n%s\n", ui.Muted.Render("Serving... (Ctrl-C to stop)"))
 
 	err = expose.ServeListener(ln, expose.ServeConfig{
 		Entry:  entry,

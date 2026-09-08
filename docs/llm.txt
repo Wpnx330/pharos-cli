@@ -31,7 +31,7 @@ USAGE: pharos [flags]
 FLAGS:
   --help <bool> (default: false) help for pharos
   --version <bool> (default: false) version for pharos
-SUBCOMMANDS: audit, budget, completion, config, daemon, doctor, health, help, import, info, init, install, list, llmtxt, lock, login, oauth, package, pin, profile, publish, purge, remove, republish, search, start, stop, try, unpin, unpublish, update, version, whoami
+SUBCOMMANDS: audit, budget, completion, config, daemon, doctor, expose, health, help, import, info, init, install, list, llmtxt, lock, login, oauth, package, pin, profile, publish, purge, remove, republish, search, start, stop, try, unpin, unpublish, update, version, whoami
 OUTPUT: help text listing subcommands
 ENV: all three contract vars are inherited by every subcommand
 NON-INTERACTIVE: no prompts; safe by default
@@ -210,6 +210,39 @@ FLAGS:
 OUTPUT: JSON: {checks: [{name, status, detail, findings?}], failures, healthy}; with --diff each "Config drift: <client>" check may carry findings: [{server, kind: missing|modified|extra, severity: error|info, field, expected, actual, message}]. Plain: per-check pass/fail list, drift findings as indented bullet lines
 ENV: PHAROS_JSON=1 or --json
 NON-INTERACTIVE: no prompts; the registry connectivity check requires network access; --diff is read-only
+
+# COMMAND: pharos expose
+SHORT: Expose a daemon-managed server via a token-authed reverse proxy
+USAGE: pharos expose <name> [flags]
+FLAGS:
+  --addr <string> (default: ) public listen address, host:port (REQUIRED) — e.g. :9500 for all interfaces or 127.0.0.1:9500 for loopback only
+  --background <bool> (default: false) start detached in the background after showing the token
+  --help <bool> (default: false) help for expose
+  --json <bool> (default: false) output as JSON
+  --ttl <duration> (default: 8h0m0s) lifetime of the expose (max 24h)
+SUBCOMMANDS: list, stop
+OUTPUT: start: one-time token handoff — JSON: {name, addr, port, expiresAt, token} (single pure stdout document; progress to stderr); Plain: banner + token (shown once, stored only as a SHA-256 hash in ~/.pharos/expose.json) + ready-to-copy curl/client-header snippet + expiry line. Exit 1 (stderr guidance) when --addr is missing/invalid, --ttl is <=0 or >24h, the daemon is not running, the name is not daemon-managed, an expose for the name is already live, or the listen address is taken
+ENV: PHAROS_JSON=1 or --json (stdout stays the single start document; all progress/errors to stderr)
+NON-INTERACTIVE: no prompts; foreground by default (Ctrl-C or 'pharos expose stop <name>' stops); --background detaches via the repo's re-exec+detach pattern (token passed by env, worker output in ~/.pharos/expose.log, ~5s PID/liveness confirmation); token shown once — hash-only at rest; the expose process enforces its own TTL (default 8h, max 24h) and stops cleanly on expiry, signal, or stop request; never runs without the daemon managing <name>
+
+# COMMAND: pharos expose list
+SHORT: List configured exposes with liveness
+USAGE: pharos expose list [flags]
+FLAGS:
+  --help <bool> (default: false) help for list
+  --json <bool> (default: false) output as JSON
+OUTPUT: JSON: {exposes: [{name, addr, port, backingPort, pid?, live, expired, expiresAt}]} (pid omitted when 0 via omitempty, never null; live/expired always present; entry order = store order, sorted by name). Plain: EXPOSE table (NAME/ADDR/TARGET/PID/STATUS/EXPIRES; STATUS live|stopped|expired from recorded-PID liveness + TTL)
+ENV: PHAROS_JSON=1 or --json
+NON-INTERACTIVE: no prompts; strictly read-only over ~/.pharos/expose.json + OS PID probes; PID liveness is best-effort on Windows (same optimism as the daemon)
+
+# COMMAND: pharos expose stop
+SHORT: Gracefully stop a running expose
+USAGE: pharos expose stop <name> [flags]
+FLAGS:
+  --help <bool> (default: false) help for stop
+OUTPUT: Plain: stop-requested progress + stopped confirmation, or stale-entry cleanup confirmation; exit 1 when no expose exists for the name or it did not stop within the 10s grace; JSON N/A
+ENV: no --json flag; PHAROS_JSON=1 routes progress to stderr
+NON-INTERACTIVE: no prompts; cooperative stop via ~/.pharos/expose.stop/<name> (Windows-safe, same pattern as daemon stop files); cleans up stale entries for dead PIDs
 
 # COMMAND: pharos health
 SHORT: Check the PHAROS registry health

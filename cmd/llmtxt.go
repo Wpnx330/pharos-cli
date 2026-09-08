@@ -97,6 +97,21 @@ var llmNotes = map[string]llmNote{
 		env:    "PHAROS_JSON=1 or --json",
 		ni:     "no prompts; the registry connectivity check requires network access; --diff is read-only",
 	},
+	"pharos expose": {
+		output: "start: one-time token handoff — JSON: {name, addr, port, expiresAt, token} (single pure stdout document; progress to stderr); Plain: banner + token (shown once, stored only as a SHA-256 hash in ~/.pharos/expose.json) + ready-to-copy curl/client-header snippet + expiry line. Exit 1 (stderr guidance) when --addr is missing/invalid, --ttl is <=0 or >24h, the daemon is not running, the name is not daemon-managed, an expose for the name is already live, or the listen address is taken",
+		env:    "PHAROS_JSON=1 or --json (stdout stays the single start document; all progress/errors to stderr)",
+		ni:     "no prompts; foreground by default (Ctrl-C or 'pharos expose stop <name>' stops); --background detaches via the repo's re-exec+detach pattern (token passed by env, worker output in ~/.pharos/expose.log, ~5s PID/liveness confirmation); token shown once — hash-only at rest; the expose process enforces its own TTL (default 8h, max 24h) and stops cleanly on expiry, signal, or stop request; never runs without the daemon managing <name>",
+	},
+	"pharos expose list": {
+		output: "JSON: {exposes: [{name, addr, port, backingPort, pid?, live, expired, expiresAt}]} (pid omitted when 0 via omitempty, never null; live/expired always present; entry order = store order, sorted by name). Plain: EXPOSE table (NAME/ADDR/TARGET/PID/STATUS/EXPIRES; STATUS live|stopped|expired from recorded-PID liveness + TTL)",
+		env:    "PHAROS_JSON=1 or --json",
+		ni:     "no prompts; strictly read-only over ~/.pharos/expose.json + OS PID probes; PID liveness is best-effort on Windows (same optimism as the daemon)",
+	},
+	"pharos expose stop": {
+		output: "Plain: stop-requested progress + stopped confirmation, or stale-entry cleanup confirmation; exit 1 when no expose exists for the name or it did not stop within the 10s grace; JSON N/A",
+		env:    "no --json flag; PHAROS_JSON=1 routes progress to stderr",
+		ni:     "no prompts; cooperative stop via ~/.pharos/expose.stop/<name> (Windows-safe, same pattern as daemon stop files); cleans up stale entries for dead PIDs",
+	},
 	"pharos health": {
 		output: "JSON: {status, version, latency}. Plain: three labeled lines",
 		env:    "PHAROS_JSON=1 or --json",

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -711,9 +712,13 @@ func TestStoreFilePermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	perm := info.Mode().Perm()
-	if perm&0o077 != 0 {
-		t.Errorf("expose.json permissions = %o, want no group/other bits (0600-style)", perm)
+	// windows cannot represent unix perm bits — files written 0600 stat
+	// back as 0666 (only the read-only bit round-trips), so the
+	// no-group/other-bits assertion is meaningful on unix only.
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm&0o077 != 0 {
+			t.Errorf("expose.json permissions = %o, want no group/other bits (0600-style)", perm)
+		}
 	}
 }
 

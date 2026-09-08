@@ -717,6 +717,7 @@ Every request must present `Authorization: Bearer <token>`; the comparison is co
 
 - **Default-deny auth.** The auth gate sits in front of the proxy; no token, no proxying, full stop.
 - **Explicit public bind.** `--addr` is required — pharos never silently binds `0.0.0.0`. Loopback-only sharing is valid and useful for same-host multi-user cases: `--addr 127.0.0.1:9500`.
+- **Plaintext HTTP on the wire.** The bearer token travels in cleartext on every request: a `127.0.0.1` bind keeps it on-host, but a LAN / `0.0.0.0` bind puts the token on the wire where anyone who can observe the traffic can read it. For remote sharing, front the listener with TLS (a reverse proxy) or reach it through an SSH tunnel.
 - **Hash-only at rest.** `~/.pharos/expose.json` stores the SHA-256 hash, address, PID, and expiry — never the token. Lose the printed token and you re-run expose.
 - **TTL enforced by the expose process.** Default 8h, hard cap 24h (`--ttl 2h`); long-lived tunnels are a different feature. On expiry the listener closes and the process exits cleanly.
 - **Isolation.** Expose runs as its own process in front of the daemon; it never changes daemon code or state, and a crash of the expose process cannot affect the daemon or the backing server. The backing path stays loopback-only.
@@ -739,6 +740,7 @@ An expose requires the daemon to be running and managing `<name>` (checked read-
 
 - MCP client configs point at the public address with the `Authorization: Bearer <token>` header (streamable-http/http transports).
 - One expose per server name at a time; a second start for the same name exits 1 with a hint.
+- A taken listen address fails with exit 1 in the **foreground** only. With `--background` the parent exits 0 after the token handoff; a bind failure surfaces as a delayed `not confirmed yet (port may be taken)` warning on stderr (~5s later) and an `ERROR: cannot listen ...` line in `~/.pharos/expose.log`.
 - `--json` start output is a single pure document: `{name, addr, port, expiresAt, token}` (the one-time handoff). All progress and errors go to stderr, per the W1.1 JSON-purity contract.
 - The token is passed to the detached `--background` worker via the `PHAROS_EXPOSE_TOKEN` environment variable; worker output goes to `~/.pharos/expose.log`. (Environment variables are readable by processes running as the same user — e.g. via `/proc/<pid>/environ` on Linux — so on a shared host, prefer a foreground run or trust same-user accounts.)
 

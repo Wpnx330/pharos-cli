@@ -740,7 +740,7 @@ An expose requires the daemon to be running and managing `<name>` (checked read-
 - MCP client configs point at the public address with the `Authorization: Bearer <token>` header (streamable-http/http transports).
 - One expose per server name at a time; a second start for the same name exits 1 with a hint.
 - `--json` start output is a single pure document: `{name, addr, port, expiresAt, token}` (the one-time handoff). All progress and errors go to stderr, per the W1.1 JSON-purity contract.
-- The token is passed to the detached `--background` worker via the `PHAROS_EXPOSE_TOKEN` environment variable; worker output goes to `~/.pharos/expose.log`.
+- The token is passed to the detached `--background` worker via the `PHAROS_EXPOSE_TOKEN` environment variable; worker output goes to `~/.pharos/expose.log`. (Environment variables are readable by processes running as the same user — e.g. via `/proc/<pid>/environ` on Linux — so on a shared host, prefer a foreground run or trust same-user accounts.)
 
 ## Author
 

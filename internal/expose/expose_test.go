@@ -19,13 +19,13 @@ import (
 
 // ── Test seam: isolated ~/.pharos dir ────────────────────────────────────
 
-// isolateDir points dirFn at a fresh temp dir for the duration of the test.
+// isolateDir points DirFn at a fresh temp dir for the duration of the test.
 func isolateDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	orig := dirFn
-	dirFn = func() (string, error) { return dir, nil }
-	t.Cleanup(func() { dirFn = orig })
+	orig := DirFn
+	DirFn = func() (string, error) { return dir, nil }
+	t.Cleanup(func() { DirFn = orig })
 	return dir
 }
 
@@ -65,7 +65,7 @@ func startBacking(t *testing.T, respBody string) (port int, rec *backingRecord) 
 // ServeListener in the background with a real store entry. It returns the
 // bound port. stopPoll is shortened so stop-request tests stay fast. The
 // registered cleanup stops the server via a stop file and waits for the
-// goroutine to exit before the dirFn restore runs (cleanup LIFO), so no
+// goroutine to exit before the DirFn restore runs (cleanup LIFO), so no
 // goroutine outlives the test seam.
 func serveForTest(t *testing.T, token, name string, backingPort int, ttl time.Duration) int {
 	t.Helper()
@@ -194,9 +194,9 @@ func TestFingerprintShortAndSafe(t *testing.T) {
 
 func TestBearerTokenParsing(t *testing.T) {
 	cases := []struct {
-		name    string
-		header  string
-		want    string
+		name   string
+		header string
+		want   string
 	}{
 		{"canonical", "Bearer abc123", "abc123"},
 		{"lowercase scheme", "bearer abc123", "abc123"},
@@ -655,6 +655,34 @@ func TestRemoveEntryGuardedByHashAndPID(t *testing.T) {
 	}
 }
 
+func TestUpsertEntryFailsLoudlyWhenLiveLockHeld(t *testing.T) {
+	dir := isolateDir(t)
+
+	origTimeout := lockTimeout
+	lockTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { lockTimeout = origTimeout })
+
+	// A freshly created lock file is "live" (not stealable until
+	// lockStaleAge): the write must fail with an error, not proceed unlocked.
+	lockPath := filepath.Join(dir, "expose.json.lock")
+	if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
+		t.Fatalf("seed lock file: %v", err)
+	}
+
+	err := UpsertEntry(Entry{Name: "web", PID: 1, TokenHash: "abc"})
+	if err == nil {
+		t.Fatal("UpsertEntry under a live foreign lock = nil error, want error")
+	}
+	if !strings.Contains(err.Error(), "locked by another process") {
+		t.Errorf("error = %q, want locked-by-another-process message", err)
+	}
+
+	// Nothing may have been written while unlocked.
+	if _, ok, _ := GetEntry("web"); ok {
+		t.Error("entry written despite lock contention — unlocked write raced")
+	}
+}
+
 func TestStoreFilePermissions(t *testing.T) {
 	dir := isolateDir(t)
 	token, _ := GenerateToken()
@@ -737,7 +765,7 @@ func TestServeListenerStopsOnStopRequestFile(t *testing.T) {
 		t.Error("store entry still present after stop")
 	}
 	// Stop file consumed.
-	if stopRequested("stopme") {
+	if StopRequested("stopme") {
 		t.Error("stop-request file not cleared after shutdown")
 	}
 }
@@ -747,7 +775,7 @@ func TestRequestStopCreatesAndClearStopRemovesFile(t *testing.T) {
 	if err := RequestStop("web"); err != nil {
 		t.Fatalf("RequestStop: %v", err)
 	}
-	if !stopRequested("web") {
+	if !StopRequested("web") {
 		t.Error("stop file not visible after RequestStop")
 	}
 	// Path traversal: a hostile name is sanitized to its base, landing
@@ -755,14 +783,14 @@ func TestRequestStopCreatesAndClearStopRemovesFile(t *testing.T) {
 	if err := RequestStop("../evil"); err != nil {
 		t.Fatalf("RequestStop(traversal): %v", err)
 	}
-	if !stopRequested("evil") {
+	if !StopRequested("evil") {
 		t.Error("sanitized stop file for '../evil' not found inside stop dir")
 	}
 	if _, err := os.Stat(filepath.Join(dir, "evil")); err == nil {
 		t.Error("traversal name created a file outside the stop dir")
 	}
-	clearStop("web")
-	if stopRequested("web") {
+	ClearStop("web")
+	if StopRequested("web") {
 		t.Error("stop file still present after clearStop")
 	}
 }

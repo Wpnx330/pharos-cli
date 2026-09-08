@@ -184,23 +184,24 @@ const StoreVersion = 1
 // TokenHash is the SHA-256 hex of the bearer token — never the token itself.
 type Entry struct {
 	Name        string    `json:"name"`
-	PID         int       `json:"pid"`        // expose process PID; 0 = unknown
-	Addr        string    `json:"addr"`       // public listen address as configured
-	Port        int       `json:"port"`       // public port
+	PID         int       `json:"pid"`         // expose process PID; 0 = unknown
+	Addr        string    `json:"addr"`        // public listen address as configured
+	Port        int       `json:"port"`        // public port
 	BackingPort int       `json:"backingPort"` // daemon proxy port for the server
-	TokenHash   string    `json:"tokenHash"`  // SHA-256 hex — NOT the token
+	TokenHash   string    `json:"tokenHash"`   // SHA-256 hex — NOT the token
 	CreatedAt   time.Time `json:"createdAt"`
 	ExpiresAt   time.Time `json:"expiresAt"`
 }
 
 // store is the on-disk shape of expose.json.
 type store struct {
-	Version int             `json:"version"`
+	Version int              `json:"version"`
 	Exposes map[string]Entry `json:"exposes"`
 }
 
-// dirFn is the expose home directory (~/.pharos), overridable in tests.
-var dirFn = defaultDir
+// DirFn is the expose home directory (~/.pharos), overridable by tests to
+// isolate filesystem state (cmd-level tests and this package's own tests).
+var DirFn = defaultDir
 
 func defaultDir() (string, error) {
 	home, err := os.UserHomeDir()
@@ -216,7 +217,7 @@ func defaultDir() (string, error) {
 
 // StorePath returns the path to expose.json.
 func StorePath() (string, error) {
-	dir, err := dirFn()
+	dir, err := DirFn()
 	if err != nil {
 		return "", err
 	}
@@ -225,7 +226,7 @@ func StorePath() (string, error) {
 
 // StopDirPath returns the directory holding per-name stop request files.
 func StopDirPath() (string, error) {
-	dir, err := dirFn()
+	dir, err := DirFn()
 	if err != nil {
 		return "", err
 	}
@@ -234,7 +235,7 @@ func StopDirPath() (string, error) {
 
 // LogPath returns the path to the expose log (background workers only).
 func LogPath() (string, error) {
-	dir, err := dirFn()
+	dir, err := DirFn()
 	if err != nil {
 		return "", err
 	}
@@ -289,18 +290,19 @@ func saveStore(st *store) error {
 	return nil
 }
 
-// lockStore takes a best-effort exclusive lock around read-modify-write
-// cycles on expose.json. Multiple expose processes (and the stop/list
-// commands) can touch the file concurrently; the lock keeps an entry from
-// being lost between a read and its write. It is advisory: a crashed
-// holder's lock is stolen after lockStaleAge.
+// lockStore takes an exclusive lock around read-modify-write cycles on
+// expose.json. Multiple expose processes (and the stop/list commands) can
+// touch the file concurrently; the lock keeps an entry from being lost
+// between a read and its write. It is advisory: a crashed holder's lock is
+// stolen after lockStaleAge, and a live lock held past the two-second
+// deadline fails with an error rather than proceeding unlocked.
 func lockStore() (func(), error) {
 	path, err := StorePath()
 	if err != nil {
 		return nil, err
 	}
 	lockPath := path + ".lock"
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(lockTimeout)
 	for {
 		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
@@ -316,13 +318,19 @@ func lockStore() (func(), error) {
 			continue
 		}
 		if time.Now().After(deadline) {
-			// Proceed unlocked rather than wedging the CLI forever; the
-			// atomic-rename save keeps the file itself consistent.
-			return func() {}, nil
+			// Failing loudly beats racing an unseen writer: an unlocked
+			// read-modify-write could drop a concurrent expose's entry.
+			// Stale locks are stolen above, so this only fires while a real
+			// writer holds the lock — retrying the command is safe.
+			return nil, fmt.Errorf("expose store is locked by another process (%s) — retry in a moment", lockPath)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
 }
+
+// lockTimeout bounds how long store writers wait for a live lock before
+// failing. It is a var so tests can shrink it.
+var lockTimeout = 2 * time.Second
 
 const lockStaleAge = 5 * time.Second
 
@@ -422,7 +430,7 @@ func RequestStop(name string) error {
 }
 
 // stopRequested reports whether a stop-request file exists for name.
-func stopRequested(name string) bool {
+func StopRequested(name string) bool {
 	dir, err := StopDirPath()
 	if err != nil {
 		return false
@@ -432,7 +440,7 @@ func stopRequested(name string) bool {
 }
 
 // clearStop removes the stop-request file for name (shutdown cleanup).
-func clearStop(name string) {
+func ClearStop(name string) {
 	dir, err := StopDirPath()
 	if err != nil {
 		return
@@ -445,9 +453,9 @@ func clearStop(name string) {
 // ServeConfig configures ServeListener. Zero-value fields select defaults;
 // Now/StopPoll/SignalCh are injection points for deterministic tests.
 type ServeConfig struct {
-	Entry Entry          // identity of this expose (Name, Addr, Port, BackingPort, TokenHash)
-	Token string         // plain bearer token (never persisted, never logged)
-	TTL   time.Duration  // remaining lifetime; expiry closes the listener
+	Entry Entry         // identity of this expose (Name, Addr, Port, BackingPort, TokenHash)
+	Token string        // plain bearer token (never persisted, never logged)
+	TTL   time.Duration // remaining lifetime; expiry closes the listener
 
 	// Now is injectable for tests; defaults to time.Now.
 	Now func() time.Time
@@ -514,7 +522,7 @@ func ServeListener(l net.Listener, cfg ServeConfig) error {
 			if err != nil && !errors.Is(err, http.ErrServerClosed) {
 				// A non-shutdown accept failure: clean up state, report it.
 				removeOwnEntry(cfg.Entry)
-				clearStop(cfg.Entry.Name)
+				ClearStop(cfg.Entry.Name)
 				return fmt.Errorf("expose listener: %w", err)
 			}
 			cause = "listener-closed"
@@ -523,7 +531,7 @@ func ServeListener(l net.Listener, cfg ServeConfig) error {
 		case s := <-sigCh:
 			cause = fmt.Sprintf("signal:%v", s)
 		case <-stopTick.C:
-			if stopRequested(cfg.Entry.Name) {
+			if StopRequested(cfg.Entry.Name) {
 				cause = "stop-request"
 			}
 		}
@@ -536,7 +544,7 @@ func ServeListener(l net.Listener, cfg ServeConfig) error {
 	_ = l.Close()
 
 	removeOwnEntry(cfg.Entry)
-	clearStop(cfg.Entry.Name)
+	ClearStop(cfg.Entry.Name)
 	if cfg.OnStop != nil {
 		cfg.OnStop(cause)
 	}

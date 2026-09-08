@@ -781,6 +781,31 @@ func TestAgentContractTable(t *testing.T) {
 			wantOut: []string{"daemon stopped"},
 		},
 
+		// ── Budget (idle-cost report; read-only over daemon state) ──
+		{
+			name:    "budget reports an idle system non-interactively",
+			args:    []string{"budget"},
+			env:     map[string]string{"PHAROS_NON_INTERACTIVE": "1"},
+			setup:   func(t *testing.T) { isolateHome(t) },
+			wantOut: []string{"Daemon is not running"},
+		},
+		{
+			name:    "budget --json emits a single idle-system JSON document",
+			args:    []string{"budget", "--json"},
+			env:     map[string]string{"PHAROS_NON_INTERACTIVE": "1"},
+			setup:   func(t *testing.T) { isolateHome(t) },
+			wantOut: []string{`"residentProcesses": 0`},
+			jsonOut: true,
+		},
+		{
+			name:    "budget emits a single JSON document under PHAROS_JSON env",
+			args:    []string{"budget"},
+			env:     map[string]string{"PHAROS_JSON": "1"},
+			setup:   func(t *testing.T) { isolateHome(t) },
+			wantOut: []string{`"residentProcesses": 0`},
+			jsonOut: true,
+		},
+
 		// ── Config / auth / system ──
 		{
 			name:    "config get completes non-interactively",

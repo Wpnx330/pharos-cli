@@ -5,7 +5,6 @@ package procs
 import (
 	"os/exec"
 	"strconv"
-	"strings"
 )
 
 // RSS returns the working-set size of pid in bytes via
@@ -23,23 +22,5 @@ func RSS(pid int) (int64, bool) {
 	if err != nil {
 		return 0, false
 	}
-	line := strings.TrimSpace(string(out))
-	if line == "" {
-		return 0, false
-	}
-	// CSV row: "image name","PID","session name","session#","mem usage"
-	parts := strings.Split(line, "\",\"")
-	if len(parts) < 5 {
-		return 0, false
-	}
-	mem := strings.TrimSpace(parts[len(parts)-1])
-	mem = strings.TrimSuffix(strings.TrimPrefix(mem, "\""), "\"")
-	mem = strings.TrimSuffix(mem, " K")
-	mem = strings.ReplaceAll(mem, ",", "")
-	mem = strings.ReplaceAll(mem, "\"", "")
-	kb, err := strconv.ParseInt(strings.TrimSpace(mem), 10, 64)
-	if err != nil || kb < 0 {
-		return 0, false
-	}
-	return kb * 1024, true
+	return parseTasklistMemUsage(string(out))
 }

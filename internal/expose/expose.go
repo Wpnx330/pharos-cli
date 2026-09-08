@@ -474,6 +474,20 @@ func Listen(addr string) (net.Listener, error) {
 	return net.Listen("tcp", addr)
 }
 
+// newPublicServer builds the http.Server for a public expose listener.
+// ReadHeaderTimeout caps slowloris-style header stalls; IdleTimeout reaps
+// keep-alive connections that go quiet (this is the product's first
+// non-loopback bind, so the posture is deliberately strict). ReadTimeout
+// and WriteTimeout stay unset: expose fronts streaming request bodies and
+// SSE responses, which an unbounded read/write window legitimately needs.
+func newPublicServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+}
+
 // ServeListener runs the expose server on an already-bound listener until
 // the TTL expires, a signal arrives, or a stop request is filed — then
 // closes the listener, removes its store entry, and returns nil (clean
@@ -500,7 +514,7 @@ func ServeListener(l net.Listener, cfg ServeConfig) error {
 	ttl := time.AfterFunc(cfg.TTL, func() { close(ttlExpired) })
 	defer ttl.Stop()
 
-	server := &http.Server{Handler: Handler(cfg.Token, cfg.Entry.BackingPort)}
+	server := newPublicServer(Handler(cfg.Token, cfg.Entry.BackingPort))
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.Serve(l) }()
 

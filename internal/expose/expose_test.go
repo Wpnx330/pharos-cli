@@ -469,6 +469,24 @@ func TestEndToEnd401Then200ThroughRealListener(t *testing.T) {
 	}
 }
 
+// ── Server hardening (C-1: public-bind timeouts) ─────────────────────────
+
+func TestPublicServerTimeoutsHardened(t *testing.T) {
+	srv := newPublicServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	if srv.ReadHeaderTimeout != 10*time.Second {
+		t.Errorf("ReadHeaderTimeout = %v, want 10s (slowloris header cap)", srv.ReadHeaderTimeout)
+	}
+	if srv.IdleTimeout != 120*time.Second {
+		t.Errorf("IdleTimeout = %v, want 120s (idle keep-alive reap)", srv.IdleTimeout)
+	}
+	if srv.WriteTimeout != 0 {
+		t.Errorf("WriteTimeout = %v, want 0 (SSE responses must not be cut off)", srv.WriteTimeout)
+	}
+	if srv.ReadTimeout != 0 {
+		t.Errorf("ReadTimeout = %v, want 0 (streaming request bodies)", srv.ReadTimeout)
+	}
+}
+
 // ── TTL expiry ───────────────────────────────────────────────────────────
 
 func TestServeListenerTTLExpiryStopsListenerAndCleansEntry(t *testing.T) {

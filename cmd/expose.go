@@ -265,6 +265,10 @@ func runExposeStart(cmd *cobra.Command, name string) {
 		fmt.Fprintln(os.Stderr, ui.Error.Render("Cannot record expose state:"), err)
 		osExit(1)
 	}
+	// A stop request that predates this process is stale by definition —
+	// clear it so the first 1s stop tick cannot kill the fresh tunnel
+	// (W5.3 review R-2).
+	expose.ClearStop(name)
 
 	printExposeHandoff(entry, token, ttl)
 	// Stop instruction + serving notice go through progressf: stdout in
@@ -476,6 +480,10 @@ func runExposeWorker(cmd *cobra.Command, args []string) {
 		ln.Close()
 		osExit(1)
 	}
+	// A stop request that predates this process is stale by definition —
+	// clear it so the first 1s stop tick cannot kill the fresh tunnel
+	// (W5.3 review R-2).
+	expose.ClearStop(name)
 
 	logger.Printf("expose %s listening on %s -> 127.0.0.1:%d (token sha256:%s, expires %s)",
 		name, exposeAddr, backingPort, expose.Fingerprint(entry.TokenHash),

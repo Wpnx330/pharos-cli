@@ -675,3 +675,70 @@ func TestExposeStartJSONStdoutIsSingleDocument(t *testing.T) {
 		})
 	}
 }
+
+// TestExposeStartSurvivesStaleStopFile plants a stop-request file that
+// predates the process, then runs the FULL foreground start path: the
+// tunnel must survive past two default (1s) stop ticks, keep answering,
+// and hold its store entry (W5.3 review R-2 — a stale request must not
+// kill the next tunnel ~1s after start).
+func TestExposeStartSurvivesStaleStopFile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("short mode")
+	}
+	home := isolateHome(t)
+	seedDaemonState(t, home)
+	isolateExposeDir(t)
+	fakeAlive(t, map[int]bool{}, true)
+	restoreExposeFlags(t)
+	t.Setenv("PHAROS_JSON", "") // human mode: JSONRequested() must be false
+	exposeAddr = "127.0.0.1:19763"
+	exposeTTL = 4 * time.Second // serve loop exits via ttl after the checks
+	exposeBackground = false
+	exposeJSON = false
+
+	// A stop request left behind by a previous expose run.
+	if err := expose.RequestStop("web"); err != nil {
+		t.Fatalf("seed stale stop file: %v", err)
+	}
+
+	const port = 19763
+	outCh := make(chan string, 1)
+	go func() { outCh <- captureStdout(t, func() { runExposeStart(nil, "web") }) }()
+
+	// Wait for the tunnel to answer at all.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		resp, err := httpGetLocal(port)
+		if err == nil {
+			resp.Body.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("expose listener never came up")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Two default stop ticks must elapse with the tunnel still alive.
+	time.Sleep(2200 * time.Millisecond)
+	resp, err := httpGetLocal(port)
+	if err != nil {
+		t.Fatalf("tunnel died after start (stale stop file consumed?): %v", err)
+	}
+	resp.Body.Close()
+	if e, ok, _ := expose.GetEntry("web"); !ok || e.PID != os.Getpid() {
+		t.Errorf("entry = %+v ok=%v, want this process's live entry", e, ok)
+	}
+
+	select {
+	case out := <-outCh:
+		if !strings.Contains(out, "Serving") {
+			t.Errorf("human start output missing the serving notice:\n%s", out)
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("foreground serve did not exit after ttl")
+	}
+	if expose.StopRequested("web") {
+		t.Error("stale stop file survived the whole run")
+	}
+}

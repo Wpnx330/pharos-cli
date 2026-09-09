@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/Wpnx330/pharos-cli/internal/canonical"
 	"github.com/Wpnx330/pharos-cli/internal/clientconfig"
 	"github.com/Wpnx330/pharos-cli/internal/install"
 	"github.com/Wpnx330/pharos-cli/internal/lockfile"
@@ -81,6 +83,9 @@ Use --all (or no arguments) to update every server in the lockfile.`,
 		// is only added if an update is actually applied and saved.
 		rcpt := newReceiptBuilder("update", "", "")
 		rcpt.noteLock(lockPath)
+		if canonPath, cerr := canonical.FilePath(); cerr == nil {
+			rcpt.noteCanonical(canonPath)
+		}
 		var updatedNames []string
 		var singleLatest string
 		finalizeReceipt := func() {
@@ -261,6 +266,27 @@ Use --all (or no arguments) to update every server in the lockfile.`,
 				}
 			}
 
+			// Rewrite the canonical config (~/.pharos/mcp.json) with the
+			// same shape install writes: the lockfile now carries the new
+			// version/integrity, and binary-runtime commands embed the
+			// version directory — a stale canonical record would have
+			// daemon/try keep launching the old binary. Runtime state a
+			// user or the daemon may have set (installedAt, enabled, idle
+			// timeout, daemon port) is preserved from the existing entry.
+			serverCfg := install.BuildServerConfig(vd.Manifest, storeDir)
+			canonSrv := canonicalServerEntry(name, latest, transport, integrity, serverCfg, storeDir)
+			if prev, gerr := canonical.GetServer(name); gerr == nil && prev != nil {
+				canonSrv.InstalledAt = prev.InstalledAt
+				canonSrv.Enabled = prev.Enabled
+				canonSrv.IdleTimeout = prev.IdleTimeout
+				canonSrv.DaemonPort = prev.DaemonPort
+			}
+			if err := canonical.AddServer(name, canonSrv); err != nil {
+				fmt.Fprintf(os.Stderr, "%s  %v\n", ui.Error.Render("Warning: failed to write canonical config:"), err)
+			} else {
+				rcpt.touchCanonical()
+			}
+
 			// Rewrite affected client configs with the NEW server config
 			// (same write path as install: clientconfig.MergeServer). The
 			// builder captures each rewritten file + a "replaced" server row.
@@ -391,6 +417,40 @@ func printUpdateJSON(report *updateReport) error {
 	}
 	fmt.Println(string(data))
 	return nil
+}
+
+// canonicalServerEntry builds the canonical (~/.pharos/mcp.json) record
+// for name@version in exactly the shape `pharos install` writes: transport,
+// enabled flag, package provenance (name/version/integrity/source), the
+// launch line (URL for remotes, command/args otherwise) from the server
+// config, and the store version dir as cwd. `pharos update` applies it so
+// the canonical record tracks the newly installed version instead of
+// drifting stale behind the lockfile.
+func canonicalServerEntry(name, version, transport, integrity string, serverCfg clientconfig.ServerConfig, storeDir string) canonical.Server {
+	srv := canonical.Server{
+		Transport:   transport,
+		Enabled:     true,
+		IdleTimeout: installIdleTimeout,
+		Package: canonical.PackageInfo{
+			Name:      name,
+			Version:   version,
+			Integrity: integrity,
+			Source:    "pharos",
+		},
+	}
+	if serverCfg.URL != "" {
+		srv.URL = serverCfg.URL
+	} else {
+		srv.Command = serverCfg.Command
+		srv.Args = serverCfg.Args
+	}
+	if len(serverCfg.Env) > 0 {
+		srv.Env = serverCfg.Env
+	}
+	if storeDir != "" {
+		srv.Cwd = filepath.Join(storeDir, name, version)
+	}
+	return srv
 }
 
 // originAfterUpdate computes the Origin an updated lockfile entry

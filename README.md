@@ -25,7 +25,7 @@ Windows PowerShell (not cmd — `curl | sh` is not a cmd command):
 irm https://getpharos.dev/install.ps1 | iex
 ```
 
-Until `/install.ps1` is live on the site, download the `.exe` from [the latest release](https://github.com/Wpnx330/pharos-cli/releases/latest) (`pharos_1.0.0_windows_amd64.exe`) and put it on your PATH.
+Until `/install.ps1` is live on the site, download the `.exe` from [the latest release](https://github.com/Wpnx330/pharos-cli/releases/latest) (`pharos_2.0.0_windows_amd64.exe`) and put it on your PATH.
 
 From source:
 

@@ -68,7 +68,7 @@ var llmNotes = map[string]llmNote{
 		ni:     "no prompts; strictly read-only over ~/.pharos/daemon.json + OS process probes (no daemon/config/lockfile writes, no receipt, suggestions never auto-applied); exits 1 only when a present daemon state cannot be read; memory-probe failures never fail the command",
 	},
 	"pharos daemon start": {
-		output: "startup confirmation lines (PID, log path); exits 1 if already running; JSON N/A",
+		output: "startup confirmation lines (PID, log path); stderr warning block when any server failed to bind its proxy port (review C-1); exits 1 if already running; JSON N/A",
 		ni:     "no prompts; backgrounds itself by default",
 	},
 	"pharos daemon stop": {

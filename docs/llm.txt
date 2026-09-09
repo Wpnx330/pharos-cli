@@ -179,7 +179,7 @@ USAGE: pharos daemon start [flags]
 FLAGS:
   --foreground <bool> (default: false) run in foreground (for debugging)
   --help <bool> (default: false) help for start
-OUTPUT: startup confirmation lines (PID, log path); exits 1 if already running; JSON N/A
+OUTPUT: startup confirmation lines (PID, log path); stderr warning block when any server failed to bind its proxy port (review C-1); exits 1 if already running; JSON N/A
 NON-INTERACTIVE: no prompts; backgrounds itself by default
 
 # COMMAND: pharos daemon status

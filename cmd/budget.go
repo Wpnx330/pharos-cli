@@ -32,13 +32,16 @@ var budgetJSON bool
 var budgetCmd = &cobra.Command{
 	Use:   "budget",
 	Short: "Show the idle-cost budget — resident processes, memory, unload suggestions",
-	Long: ui.Label.Render("pharos budget") + ` — what your MCP fleet costs while it sits idle.
+	Long: ui.Label.Render("pharos budget") + ` — what your daemon-managed fleet costs while it sits idle.
 
-Every stdio server is a resident process, and every daemon-managed
+Covers daemon-managed resident servers only: each daemon-managed
 HTTP/SSE server holds a JIT-loaded backing process until its idle
-timeout unloads it. pharos budget aggregates that standing cost:
+timeout unloads it. pharos budget aggregates that standing cost —
 live processes, estimated memory, per-server idle time against each
-server's own idle-timeout, and advisory suggestions.
+server's own idle-timeout, and advisory suggestions. Plain stdio
+servers are launched on demand by the MCP client itself, and budget
+reads only the daemon's state (~/.pharos/daemon.json), so they never
+appear in this report.
 
 Read-only: nothing is unloaded or reconfigured by this command, and
 no receipt is written. Memory figures are OS RSS estimates, never

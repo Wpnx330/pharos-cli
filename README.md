@@ -632,7 +632,7 @@ touch ~/.pharos/daemon.reload   # works on Linux, macOS, and Windows
 
 ### Idle-cost budget (`pharos budget`)
 
-Nobody manages the *cost* side of MCP fleets: every stdio server is a resident process, and every daemon-managed HTTP/SSE server holds a JIT-loaded backing process until its idle timeout unloads it. `pharos budget` aggregates that standing cost and suggests where it can be cut:
+Nobody manages the *cost* side of MCP fleets: every daemon-managed HTTP/SSE server holds a JIT-loaded backing process until its idle timeout unloads it. `pharos budget` aggregates that standing cost and suggests where it can be cut. **Scope: daemon-managed resident servers only** — plain stdio servers are launched on demand by your MCP client, and budget (which reads `~/.pharos/daemon.json`) never sees them, so they are not aggregated here:
 
 ```bash
 pharos budget          # human report

@@ -80,6 +80,12 @@ pharos list --running          # Show only running servers (daemon-managed)
 pharos start <name>            # Start a locally installed MCP server
 pharos stop <name>             # Stop a running MCP server
 pharos update [name]           # Check for and apply updates to installed servers — installs the new version and rewrites affected client configs
+pharos update --all            # Update every server in pharos.lock
+pharos update --dry-run        # Preview what an update would change without applying it
+pharos update --check          # Same no-apply preview + repo/changelog links for git-hosted servers
+pharos pin <name>              # Pin a server at its installed version (see "Version pinning")
+pharos pin <name> <version>    # Install a specific version, then pin it
+pharos unpin <name>            # Release the pin
 pharos lock                    # Resolve dependencies and write ./pharos.lock
 pharos import                  # Import existing MCP client configs into a pharos.lock
 pharos import --adopt          # One-command onboarding: adopt every detected client config as the managed baseline (conflicts resolved interactively)
@@ -313,6 +319,14 @@ Safe writes guarantee *pharos* never corrupts a config — but nothing stopped a
 ```
 
 Only compared fields (`command`, `args`, `env`, `url`, `type`) count; reformatting (key order, whitespace, empty containers) never counts as drift, and unknown user keys inside an entry are left alone. Numeric env/args spellings (`PORT = 8080` vs `"8080"`) are not drift, Grok remote `headers` are compared like `env`, and `--client` subset installs read as healthy for clients they were never written to (lockfile records which clients received each server). Clients pharos has never written to are skipped silently — including a client whose config file has been deleted outright (recreate it with `pharos install`; per-server MISSING findings are not emitted for a whole missing file). Under `PHAROS_JSON=1` the findings appear on the drift checks in the doctor JSON report.
+
+## Version pinning
+
+`pharos pin <name>` locks a server at its currently installed version so updates can't move it; `pharos pin <name> <version>` installs a specific version first, then pins it. `pharos unpin <name>` releases the pin.
+
+- Pinned servers are **skipped by `pharos update` and `pharos update --all`** — no registry call, no change. The summary table lists them with the `pinned` action and the `pharos unpin` hint.
+- `pharos update --check` (and `--dry-run`) still probe pinned servers and report what's available, marked `pinned`, so you can see what you're missing without applying anything.
+- Installing a different version of a pinned server (directly or through dependency resolution) moves the pin to that installed version — most-recent-install-wins.
 
 ## Import & Adopt
 

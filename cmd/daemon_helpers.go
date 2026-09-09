@@ -207,5 +207,3 @@ func waitForDaemonStateStable(timeout time.Duration) {
 		time.Sleep(150 * time.Millisecond)
 	}
 }
-
-

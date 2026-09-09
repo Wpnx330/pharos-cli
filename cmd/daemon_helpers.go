@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -36,17 +37,15 @@ func ensureDaemonRunning(name string) {
 				ui.Muted.Render("·"))
 		}
 		waitForKind2Listen(defaultKind2ListenPort, 5*time.Second)
-		// Honesty gate (QA D-1): also fire on the already-running path —
-		// this is the common install case. If the daemon could not bind a
-		// proxy port for this server, say so now.
-		if st, err := daemon.Status(); err == nil && st != nil &&
-			len(st.BindFailures) > 0 {
-			if reason, failed := st.BindFailures[name]; failed {
-				fmt.Fprintf(os.Stderr, "  %s  proxy bind FAILED for %s: %s\n",
-					ui.Error.Render("✗"), name, reason)
-				fmt.Fprintf(os.Stderr, "  %s  free the port and run 'pharos daemon restart' — see ~/.pharos/daemon.log\n",
-					ui.Muted.Render("Fix:"))
-			}
+		// Honesty gate (QA D-1, review R-1): reconcile is asynchronous
+		// (reload → reconcile → saveState), so a single Status() read
+		// races it — the reviewer measured 9/9 silent misses when the
+		// daemon was already warm. Poll briefly until this server
+		// resolves into the managed set (bound) or BindFailures
+		// (failed). On timeout say nothing: absence of evidence must
+		// not imply failure, and silence beats a false success.
+		if _, failed, reason := waitForBindOutcome(name, 3*time.Second); failed {
+			reportProxyBindFailure(name, reason)
 		}
 		return
 	}
@@ -85,18 +84,12 @@ func ensureDaemonRunning(name string) {
 			// Start() already passed consumeLoadRequests before we queued.
 			queueBackingLoad(name)
 			waitForKind2Listen(defaultKind2ListenPort, 5*time.Second)
-			// Honesty gate (QA D-1): "daemon started" is not "server
-			// reachable". If the daemon could not bind the proxy port for
-			// this server, say so now instead of reporting a success the
-			// next `pharos list` will contradict.
-			if st, err := daemon.Status(); err == nil && st != nil &&
-				len(st.BindFailures) > 0 {
-				if reason, failed := st.BindFailures[name]; failed {
-					fmt.Fprintf(os.Stderr, "  %s  proxy bind FAILED for %s: %s\n",
-						ui.Error.Render("✗"), name, reason)
-					fmt.Fprintf(os.Stderr, "  %s  free the port and run 'pharos daemon restart' — see ~/.pharos/daemon.log\n",
-						ui.Muted.Render("Fix:"))
-				}
+			// Honesty gate (QA D-1, review R-1): the daemon writes its PID
+			// file before the reconcile that records bind outcomes, so even
+			// on the cold-start path a single Status() read can race the
+			// first reconcile. Same bounded poll as the warm path.
+			if _, failed, reason := waitForBindOutcome(name, 3*time.Second); failed {
+				reportProxyBindFailure(name, reason)
 			}
 			return
 		}
@@ -145,3 +138,74 @@ func queueBackingLoad(name string) bool {
 	}
 	return true
 }
+
+// waitForBindOutcome polls daemon status until the named server resolves
+// into the managed set (bound: returns ok=true) or into BindFailures
+// (failed: returns failed=true with the reason). Review R-1: the daemon's
+// reconcile that records these outcomes runs asynchronously after the PID
+// file appears / reload is sent, so callers must poll briefly instead of
+// doing a single racy Status() read. On timeout (rare: reconcile stalled
+// or daemon died mid-install) returns both false — the caller stays
+// silent rather than guessing. Reads are read-only (loadState path).
+func waitForBindOutcome(name string, timeout time.Duration) (ok bool, failed bool, reason string) {
+	if name == "" {
+		return false, false, ""
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		if st, err := daemon.Status(); err == nil && st != nil && st.Running {
+			for _, s := range st.Servers {
+				if s.Name == name {
+					return true, false, "" // bound and managed
+				}
+			}
+			if r, hit := st.BindFailures[name]; hit {
+				return false, true, r // reconcile recorded the failure
+			}
+		}
+		if !time.Now().Before(deadline) {
+			return false, false, ""
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// reportProxyBindFailure prints the honest bind-failure line for a server
+// whose proxy port could not be bound (QA D-1). Always stderr: install's
+// stdout stays clean for JSON consumers.
+func reportProxyBindFailure(name, reason string) {
+	fmt.Fprintf(os.Stderr, "  %s  proxy bind FAILED for %s: %s\n",
+		ui.Error.Render("✗"), name, reason)
+	fmt.Fprintf(os.Stderr, "  %s  free the port and run 'pharos daemon restart' — see ~/.pharos/daemon.log\n",
+		ui.Muted.Render("Fix:"))
+}
+
+// waitForDaemonStateStable waits until two consecutive daemon-state reads
+// agree, or the timeout elapses. Used by `pharos daemon start` (review
+// C-1) before summarizing bind outcomes: the daemon's initial reconcile is
+// asynchronous, so one immediate Status() read can predate it. Read-only.
+func waitForDaemonStateStable(timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	prev := ""
+	for time.Now().Before(deadline) {
+		cur := ""
+		if st, err := daemon.Status(); err == nil && st != nil {
+			names := make([]string, 0, len(st.Servers)+len(st.BindFailures))
+			for _, s := range st.Servers {
+				names = append(names, s.Name)
+			}
+			for n := range st.BindFailures {
+				names = append(names, "!"+n)
+			}
+			sort.Strings(names)
+			cur = strings.Join(names, ",")
+		}
+		if cur != "" && cur == prev {
+			return
+		}
+		prev = cur
+		time.Sleep(150 * time.Millisecond)
+	}
+}
+
+

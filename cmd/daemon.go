@@ -158,6 +158,26 @@ func runDaemonStart(cmd *cobra.Command, args []string) {
 		s, _ := daemon.Status()
 		if s != nil && s.Running {
 			fmt.Printf("%s  daemon started (PID %d)\n", ui.Success.Render("✓"), s.PID)
+			// Bind-failure awareness (review C-1): "daemon started" must
+			// not hide unbound servers. Reconcile is async, so give it a
+			// brief stability poll before summarizing.
+			waitForDaemonStateStable(1500 * time.Millisecond)
+			if st, err := daemon.Status(); err == nil && st != nil &&
+				len(st.BindFailures) > 0 {
+				names := make([]string, 0, len(st.BindFailures))
+				for n := range st.BindFailures {
+					names = append(names, n)
+				}
+				sort.Strings(names)
+				fmt.Fprintf(os.Stderr, "  %s  %d server(s) failed to bind proxy ports:\n",
+					ui.Error.Render("⚠"), len(names))
+				for _, n := range names {
+					fmt.Fprintf(os.Stderr, "    %s  %s — %s\n", ui.Error.Render("✗"),
+						ui.PackageName.Render(n), st.BindFailures[n])
+				}
+				fmt.Fprintf(os.Stderr, "  %s  see ~/.pharos/daemon.log; 'pharos daemon status' lists details\n",
+					ui.Muted.Render("Fix:"))
+			}
 			fmt.Printf("  %s  %s\n", ui.Muted.Render("Logs:"), "~/.pharos/daemon.log")
 			fmt.Printf("  %s  %s\n", ui.Muted.Render("Status:"), "pharos daemon status")
 			return
@@ -206,9 +226,10 @@ func runDaemonStatus(cmd *cobra.Command, args []string) error {
 		return printDaemonStatusJSON(status)
 	}
 
-	// Daemon summary
+	// Daemon summary — status.Port is never set by Status(), so render
+	// only the PID (review C-2: dead "port 0" rendering removed).
 	fmt.Printf("%s  %s\n", ui.Success.Render("✓ Daemon is running"),
-		fmt.Sprintf("(PID %d, port %d)", status.PID, status.Port))
+		fmt.Sprintf("(PID %d)", status.PID))
 
 	if !status.StartedAt.IsZero() {
 		fmt.Printf("  %s  %s\n", ui.Muted.Render("Started:"), formatTimeAgo(status.StartedAt))

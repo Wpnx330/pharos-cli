@@ -588,7 +588,7 @@ func runExposeList(cmd *cobra.Command, args []string) error {
 	cols := []ui.TableColumn{
 		{Title: "NAME", Width: 22, MaxWidth: 0},
 		{Title: "ADDR", Width: 22, MaxWidth: 22},
-		{Title: "TARGET", Width: 14, MaxWidth: 14},
+		{Title: "TARGET", Width: 8, MaxWidth: 8},
 		{Title: "PID", Width: 8, MaxWidth: 8},
 		{Title: "STATUS", Width: 10, MaxWidth: 10},
 		{Title: "EXPIRES", Width: 20, MaxWidth: 20},
@@ -612,7 +612,7 @@ func runExposeList(cmd *cobra.Command, args []string) error {
 		rows = append(rows, ui.TableRow{
 			ui.PackageName.Render(e.Name),
 			ui.Muted.Render(e.Addr),
-			fmt.Sprintf("127.0.0.1:%d", e.BackingPort),
+			strconv.Itoa(e.BackingPort),
 			pid,
 			statusStr,
 			e.ExpiresAt.Local().Format("Jan 2 15:04 MST"),

@@ -226,6 +226,9 @@ var infoCmd = &cobra.Command{
 				fmt.Printf("\n%s  %s\n", ui.Error.Render("⚠ Requirement not met:"), warning)
 			}
 		}
+
+		// Next-step hint (human mode only — JSON stays a pure document).
+		fmt.Printf("\n%s\n", ui.Muted.Render("Install: pharos install "+pkg.Name))
 	},
 }
 

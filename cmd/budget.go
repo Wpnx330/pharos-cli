@@ -431,7 +431,7 @@ func renderBudgetHuman(rep *budgetReport) string {
 	if rep.MemoryEstimateKnown {
 		memStr = ui.FormatBytes(rep.EstimatedMemoryBytes)
 	}
-	b.WriteString(fmt.Sprintf("\n  %s  %d (%d managed server(s) + daemon)\n",
+	b.WriteString(fmt.Sprintf("\n  %s  %d (%d resident server(s) + daemon)\n",
 		ui.Label.Render("Resident processes:"), rep.ResidentProcesses, len(rep.Servers)-countNotResident(rep.Servers)))
 	b.WriteString(fmt.Sprintf("  %s  %s\n", ui.Label.Render("Estimated memory:"), memStr))
 

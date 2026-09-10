@@ -616,7 +616,7 @@ func TestRenderBudgetHumanRunning(t *testing.T) {
 	for _, want := range []string{
 		"PID 100",
 		"Resident processes:",
-		"3 (2 managed server(s) + daemon)",
+		"3 (2 resident server(s) + daemon)",
 		"Estimated memory:",
 		"active-srv",
 		"MEMORY (EST)",

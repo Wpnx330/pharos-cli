@@ -198,14 +198,30 @@ func TestUpdateRewritesCanonicalBinaryCommandPath(t *testing.T) {
 	}
 
 	// Client config referencing the server via the OLD version-dir command.
+	// Built via json.Marshal, not string concatenation: on Windows the path
+	// contains backslashes, which are invalid raw JSON string escapes — a
+	// hand-concatenated template produces an unparsable file (CI windows
+	// failure, run 34438032910) and the update rewrite would correctly
+	// skip the unparsable config.
 	mcpDir := filepath.Join(contractHome(t), ".config", "mcp")
 	if err := os.MkdirAll(mcpDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	cfgPath := filepath.Join(mcpDir, "mcp.json")
 	oldCmd := filepath.Join(storeDir, "bin-server", "1.0.0", "bin", "server")
-	cfg := `{"mcpServers": {"bin-server": {"command": "` + oldCmd + `", "type": "stdio"}}}`
-	if err := os.WriteFile(cfgPath, []byte(cfg), 0o644); err != nil {
+	plantDoc := map[string]any{
+		"mcpServers": map[string]any{
+			"bin-server": map[string]any{
+				"command": oldCmd,
+				"type":    "stdio",
+			},
+		},
+	}
+	plantBytes, err := json.MarshalIndent(plantDoc, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, plantBytes, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -257,12 +273,30 @@ func TestUpdateRewritesCanonicalBinaryCommandPath(t *testing.T) {
 		t.Errorf("canonical cwd = %q, want the new version dir", srv.Cwd)
 	}
 
-	// The registered client config tracks the same new binary.
+	// The registered client config tracks the same new binary. Parse the
+	// rewritten file — a substring Contains would miss the JSON-escaped
+	// backslashes Windows paths carry inside marshaled JSON.
 	cfgBytes, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(cfgBytes), wantCmd) {
-		t.Errorf("client config not re-pointed at the new binary:\n%s", cfgBytes)
+	var cfgDoc struct {
+		McpServers map[string]json.RawMessage `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(cfgBytes, &cfgDoc); err != nil {
+		t.Fatalf("client config unparsable after rewrite: %v\n%s", err, cfgBytes)
+	}
+	raw, ok := cfgDoc.McpServers["bin-server"]
+	if !ok {
+		t.Fatalf("client config lost the bin-server entry:\n%s", cfgBytes)
+	}
+	var entry struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		t.Fatalf("bin-server entry unparsable: %v\n%s", err, raw)
+	}
+	if entry.Command != wantCmd {
+		t.Errorf("client command = %q, want the NEW version-dir path %q", entry.Command, wantCmd)
 	}
 }
